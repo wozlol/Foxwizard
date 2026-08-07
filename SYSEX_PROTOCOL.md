@@ -13,7 +13,7 @@ F0 7D <deviceId> <cmd> [payload...] F7
 - `deviceId` = `0x4D` (`'M'`) — lets the device ignore other 0x7D traffic on a shared bus/host.
 - `cmd` — one byte, see table below.
 - `payload` — command-specific, always made of 7-bit-safe bytes (0x00–0x7F). Any raw 8-bit data
-  (the 37-byte route struct) is wrapped with the **pack7/unpack7** encoding below before being
+  (the 38-byte route struct) is wrapped with the **pack7/unpack7** encoding below before being
   placed in the payload. Plain scalar fields (indexes, steps, flags) are sent unpacked since
   they're already ≤0x7F or explicitly split into 7-bit chunks.
 
@@ -34,7 +34,7 @@ pack7(raw[0..n)):
 unpack7(packed[0..m)): inverse of the above, reading a leading msbs byte then up to 7 data bytes.
 ```
 
-The route struct is 37 bytes → five groups of 7 + one group of 2 → packed to (5 × 8) + 3 = **43 bytes**.
+The route struct is 39 bytes → five groups of 7 + one group of 4 → packed to (5 × 8) + 5 = **45 bytes**.
 
 ## Commands
 
@@ -48,7 +48,7 @@ The route struct is 37 bytes → five groups of 7 + one group of 2 → packed to
 | 0x20   | GET_ROUTE_COUNT       | host→dev  | (none)                                                         |
 | 0x21   | ROUTE_COUNT           | dev→host  | count(2)                                                       |
 | 0x22   | GET_ROUTE             | host→dev  | index(2)                                                       |
-| 0x23   | ROUTE_DATA            | dev→host  | index(2) + pack7(route struct, 13 bytes → 15 bytes)            |
+| 0x23   | ROUTE_DATA            | dev→host  | index(2) + pack7(route struct, 39 bytes → 45 bytes)            |
 | 0x24   | ADD_ROUTE             | host→dev  | pack7(route struct) — always appended at the end               |
 | 0x25   | SET_ROUTE             | host→dev  | index(2) + pack7(route struct) — replaces in place, order unchanged |
 | 0x26   | DELETE_ROUTE          | host→dev  | index(2) — removes and shifts subsequent routes down            |
@@ -68,21 +68,36 @@ operations are sequential round trips.
 
 **Confirmation, not just "OK."** `checksum` is `(sum of the raw, unpacked payload bytes the device
 actually parsed and applied) mod 128` — a 7-bit-safe running sum. For SET_GLOBAL it's the checksum
-of the 6 global bytes just applied; for ADD_ROUTE/SET_ROUTE it's the checksum of the 13 raw route
+of the 6 global bytes just applied; for ADD_ROUTE/SET_ROUTE it's the checksum of the 39 raw route
 bytes just stored (post-unpack7, i.e. what's actually sitting in the route slot now — not merely
 "message parsed OK"). The web app computes the same checksum locally over what it *sent* and
 compares it against the ACK's checksum. A mismatch (or a timeout) means the device's state doesn't
 provably match what was sent, and the web app retries that message before moving on — this is what
 gives the UI real certainty that the device has the new settings, not just that a command arrived.
 
-## Route struct (37 raw bytes, before pack7)
+## Terminology: Poly Aftertouch vs. Channel Pressure
+
+MIDI has two unrelated messages both colloquially called "aftertouch," and this protocol (and the
+web UI) is careful to distinguish them:
+
+- **Poly Aftertouch** (a.k.a. Polyphonic Key Pressure, status `0xA0`) carries a **note number plus
+  a pressure value** — each currently-held note can report independent pressure. Rare in real
+  hardware (mostly MPE/high-end controllers).
+- **Channel Pressure** (a.k.a. Channel Aftertouch, status `0xD0`) carries **one pressure value for
+  the whole channel**, no note number. This is what most keyboards that advertise "aftertouch"
+  actually send — a single sensor reading regardless of which key you're pressing.
+
+The web UI labels these "Poly Aftertouch" and "Ch Pressure Aftertouch" respectively to keep them
+from being confused with each other.
+
+## Route struct (39 raw bytes, before pack7)
 
 | byte  | field                    | notes |
 |-------|--------------------------|-------|
 | 0     | flags: bit7=enabled, bits1-0=inputDevice | inputDevice: 0=TRS, 1=USB, 2=Both |
 | 1     | inputChannelBitmask low 8   | bit0=ch1 … bit7=ch8 |
 | 2     | inputChannelBitmask high 8  | bit0=ch9 … bit7=ch16 |
-| 3     | dataType enable flags    | bit0=note, bit1=cc, bit2=programChange, bit3=pitchBend, bit4=aftertouch(poly), bit5=channelPressure, bit6=sysex |
+| 3     | dataType enable flags    | bit0=note, bit1=cc, bit2=programChange, bit3=pitchBend, bit4=poly aftertouch, bit5=channel pressure, bit6=sysex, bit7=poly aftertouch remapped to CC (see below) |
 | 4     | noteRangeStart (0–127)   | only meaningful if bit0 of byte3 set |
 | 5     | noteRangeEnd (0–127)     | |
 | 6     | ccRangeStart (0–127)     | only meaningful if bit1 of byte3 set |
@@ -92,7 +107,33 @@ gives the UI real certainty that the device has the new settings, not just that 
 | 10    | outputChannelBitmask high 8 | |
 | 11    | transpose                | encoded as `semitone + 64`, range -64..+63 |
 | 12    | ccMapStart (0–127)       | destination start CC for the mapped cc range; must satisfy `ccMapStart + (ccRangeEnd-ccRangeStart) <= 127` (enforced by the web UI) |
-| 13-36 | name (24 bytes)          | ASCII, zero-padded (not necessarily NUL-terminated if it fills all 24 bytes). The device stores and returns this verbatim but never interprets it — it's purely a label. The web UI enforces the 24-character limit and restricts input to printable ASCII before ever building the wire bytes. |
+| 13    | atMapCC (0–127)          | destination CC number for remapped poly aftertouch, only meaningful if bit7 of byte3 is set (see below) |
+| 14    | cpMapCC: bit7=channel pressure remapped to CC, bits6-0=destination CC number | same remap idea as byte13, but self-contained (its own enable bit) since channel pressure isn't one of the byte3 dataType flags' bit-per-flag scheme |
+| 15-38 | name (24 bytes)          | ASCII, zero-padded (not necessarily NUL-terminated if it fills all 24 bytes). The device stores and returns this verbatim but never interprets it — it's purely a label. The web UI enforces the 24-character limit and restricts input to printable ASCII before ever building the wire bytes. |
+
+**Aftertouch → CC remap.** Normally a route with poly aftertouch enabled (byte3 bit4) passes it
+through unmodified (same note number, pressure value becomes the CC-equivalent data byte). If byte3
+bit7 is also set, the route instead emits the pressure value as a CC message on `atMapCC` — the note
+number is dropped, and the output message's identity for dedup/fan-out purposes becomes
+`(outputChannel, CC, atMapCC)` rather than `(outputChannel, Aftertouch, noteNumber)`, so it can
+collide (and last-route-wins) with a route's ordinary CC output on the same number. The same idea
+applies to channel pressure via byte14's own enable bit and `cpMapCC` — channel pressure only ever
+carries one value with no note number to begin with, so the remap is even more direct: the single
+pressure value becomes the CC value verbatim. The web UI shows both as an indented "AT to CC" switch
+that only appears once the parent switch (Poly Aftertouch / Ch Pressure Aftertouch) is turned on.
+
+**Multiple held notes mapped through poly aftertouch → CC use note priority, not averaging.**
+Collapsing several notes' independent pressure streams onto one CC destination needs *some* rule for
+which note wins — naively forwarding whichever note's message arrived most recently would make the
+output jump erratically as a chord's fingers move independently. Instead, a small per-channel
+note-hold stack (`noteStacks[inputDevice][channel]`, depth 128 — the actual max distinct notes a
+MIDI channel can ever have held at once, not a heuristic cap — in the firmware) tracks every currently
+held note's own last-reported pressure, most-recently-triggered on top. Only the top note's pressure
+drives the mapped CC. When that note releases, the CC immediately falls back to the next-held note's
+own last-reported pressure (not a stale/frozen value — every held note's pressure is tracked
+continuously, whether it's on top or not, from its own real incoming aftertouch messages). Once
+nothing is held, the CC goes to 0. This mirrors ordinary "last note priority" behavior familiar from
+mono synths, applied here to a single CC lane instead of a single voice.
 
 ## Global struct (6 raw bytes, sent unpacked — small enough not to need pack7)
 
@@ -120,7 +161,7 @@ For every incoming MIDI event (from DIN-in or USB-in):
    independent candidate sends (one for the TRS wire, one for the USB wire) before deduping — fan-out
    to genuinely different destinations is never treated as a duplicate. Within each physical port's
    candidate stream, each computed output message has an *identity key* of
-   `(outputChannel, messageKind, number)` — `number` is the note number for Note/Aftertouch, the
+   `(outputChannel, messageKind, number)` — `number` is the note number for Note/Poly Aftertouch, the
    CC number for CC, and unused for ProgramChange/PitchBend/ChannelPressure/Sysex. Upsert each
    computed message into a scratch table keyed this way — a later-evaluated route (higher index)
    **overwrites** an earlier one with the same key *for that port*. This is what makes route order
@@ -146,7 +187,7 @@ routing/fallthrough purposes and are never inspected/mutated, just forwarded who
 
 Global struct + full route list live in RAM during operation (routes are looked at on every MIDI
 event, so RAM residency matters for speed). `COMMIT` writes the current RAM state to EEPROM-backed
-flash (rp2040 core's `EEPROM.h`, ~9.5KB reserved: 6 bytes global + up to 256×37 raw bytes ≈ 9.3KB +
+flash (rp2040 core's `EEPROM.h`, ~9.7KB reserved: 6 bytes global + up to 256×39 raw bytes ≈ 9.6KB +
 a small header/magic-number/count). The web app now edits entirely locally and only talks to the
 device when you explicitly click "Load from Device" or "Save to Device" — earlier revisions pushed
 every field edit live, but that could race with itself (see the SET_GLOBAL/SET_ROUTE section above)

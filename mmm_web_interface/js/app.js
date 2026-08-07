@@ -100,7 +100,10 @@ function defaultRoute() {
     outputDevice: 2, // usb
     outputChannels: 0x0001, // ch1 only
     transpose: 0,
-    ccMapStart: 0
+    ccMapStart: 0,
+    atMapCC: 0,
+    cpMapEnabled: false,
+    cpMapCC: 0
   };
 }
 
@@ -506,8 +509,8 @@ const TYPE_SHORT_LABELS = [
   [DATA_TYPE_BITS.cc, 'CC'],
   [DATA_TYPE_BITS.programChange, 'PC'],
   [DATA_TYPE_BITS.pitchBend, 'Bend'],
-  [DATA_TYPE_BITS.aftertouch, 'Aftertouch'],
-  [DATA_TYPE_BITS.pressure, 'Pressure'],
+  [DATA_TYPE_BITS.pressure, 'Ch Pressure AT'],
+  [DATA_TYPE_BITS.aftertouch, 'Poly AT'],
   [DATA_TYPE_BITS.sysex, 'Sysex']
 ];
 
@@ -516,7 +519,11 @@ const TYPE_SHORT_LABELS = [
 function routeSummary(route) {
   const inCh = route.inputChannels === 0xFFFF ? 'All Ch' : `Ch ${channelsToRangeString(route.inputChannels) || 'None'}`;
   const outCh = route.outputChannels === 0xFFFF ? 'All Ch' : `Ch ${channelsToRangeString(route.outputChannels) || 'None'}`;
-  const types = TYPE_SHORT_LABELS.filter(([bit]) => route.typeFlags & bit).map(([, label]) => label);
+  const types = TYPE_SHORT_LABELS.filter(([bit]) => route.typeFlags & bit).map(([bit, label]) => {
+    if (bit === DATA_TYPE_BITS.aftertouch && (route.typeFlags & DATA_TYPE_BITS.aftertouchMap)) return `Poly AT → CC ${route.atMapCC}`;
+    if (bit === DATA_TYPE_BITS.pressure && route.cpMapEnabled) return `Ch Pressure AT → CC ${route.cpMapCC}`;
+    return label;
+  });
   const typesText = types.length ? types.join(', ') : 'Nothing Selected';
   const transposeText = (route.typeFlags & DATA_TYPE_BITS.note) && route.transpose !== 0
     ? `, Transpose ${route.transpose > 0 ? '+' : ''}${route.transpose}` : '';
@@ -530,6 +537,10 @@ function renderRouteCard(route, index, animateStaple) {
   const ccMapEnabled = !!route._ccMapEnabled;
   const ccMapDisplayValue = ccMapEnabled ? route.ccMapStart : route.ccStart;
   const ccMapInvalid = ccMapEnabled && (route.ccMapStart + ccSpan > 127);
+  const aftertouchOn = !!(route.typeFlags & DATA_TYPE_BITS.aftertouch);
+  const aftertouchMapOn = !!(route.typeFlags & DATA_TYPE_BITS.aftertouchMap);
+  const pressureOn = !!(route.typeFlags & DATA_TYPE_BITS.pressure);
+  const pressureMapOn = !!route.cpMapEnabled;
   const collapsed = !!route._collapsed;
 
   const headerCenter = collapsed
@@ -561,38 +572,54 @@ function renderRouteCard(route, index, animateStaple) {
             <label>Input Channels</label>
             ${channelGrid(index, 'inputChannels', route.inputChannels)}
           </div>
-          <div class="field-row">
-            ${switchHtml(index, 'note', noteOn, 'Note Range')}
-            ${noteOn ? `<div class="range-row">
-              <input type="number" min="0" max="127" value="${route.noteStart}" data-route-index="${index}" data-field="noteStart">
-              <span>to</span>
-              <input type="number" min="0" max="127" value="${route.noteEnd}" data-route-index="${index}" data-field="noteEnd">
-              <button type="button" class="btn btn-ghost btn-tiny" data-route-index="${index}" data-action="setNoteRangeAll">All</button>
-            </div>` : ''}
-          </div>
-          <div class="field-row">
-            ${switchHtml(index, 'cc', ccOn, 'CC Range')}
-            ${ccOn ? `<div class="range-row">
-              <input type="number" min="0" max="127" value="${route.ccStart}" data-route-index="${index}" data-field="ccStart">
-              <span>to</span>
-              <input type="number" min="0" max="127" value="${route.ccEnd}" data-route-index="${index}" data-field="ccEnd">
-              <button type="button" class="btn btn-ghost btn-tiny" data-route-index="${index}" data-action="setCcRangeAll">All</button>
-            </div>` : ''}
-          </div>
-          <div class="field-row">
-            ${switchHtml(index, 'programChange', !!(route.typeFlags & DATA_TYPE_BITS.programChange), 'Program Change')}
-          </div>
-          <div class="field-row">
-            ${switchHtml(index, 'pitchBend', !!(route.typeFlags & DATA_TYPE_BITS.pitchBend), 'Pitch Bend')}
-          </div>
-          <div class="field-row">
-            ${switchHtml(index, 'aftertouch', !!(route.typeFlags & DATA_TYPE_BITS.aftertouch), 'Aftertouch')}
-          </div>
-          <div class="field-row">
-            ${switchHtml(index, 'pressure', !!(route.typeFlags & DATA_TYPE_BITS.pressure), 'Channel Pressure')}
-          </div>
-          <div class="field-row">
-            ${switchHtml(index, 'sysex', !!(route.typeFlags & DATA_TYPE_BITS.sysex), 'Sysex')}
+          <div class="switches-cols">
+            <div class="switches-col">
+              <div class="field-row">
+                ${switchHtml(index, 'note', noteOn, 'Note Range')}
+                ${noteOn ? `<div class="range-row">
+                  <input type="number" min="0" max="127" value="${route.noteStart}" data-route-index="${index}" data-field="noteStart">
+                  <span>to</span>
+                  <input type="number" min="0" max="127" value="${route.noteEnd}" data-route-index="${index}" data-field="noteEnd">
+                  <button type="button" class="btn btn-ghost btn-tiny" data-route-index="${index}" data-action="setNoteRangeAll">All</button>
+                </div>` : ''}
+              </div>
+              <div class="field-row">
+                ${switchHtml(index, 'cc', ccOn, 'CC Range')}
+                ${ccOn ? `<div class="range-row">
+                  <input type="number" min="0" max="127" value="${route.ccStart}" data-route-index="${index}" data-field="ccStart">
+                  <span>to</span>
+                  <input type="number" min="0" max="127" value="${route.ccEnd}" data-route-index="${index}" data-field="ccEnd">
+                  <button type="button" class="btn btn-ghost btn-tiny" data-route-index="${index}" data-action="setCcRangeAll">All</button>
+                </div>` : ''}
+              </div>
+              <div class="field-row">
+                ${switchHtml(index, 'programChange', !!(route.typeFlags & DATA_TYPE_BITS.programChange), 'Program Change')}
+              </div>
+              <div class="field-row">
+                ${switchHtml(index, 'pitchBend', !!(route.typeFlags & DATA_TYPE_BITS.pitchBend), 'Pitch Bend')}
+              </div>
+            </div>
+            <div class="switches-col">
+              <div class="field-row">
+                ${switchHtml(index, 'pressure', pressureOn, 'Ch Pressure Aftertouch')}
+                ${pressureOn ? `<div class="cc-map-row cc-map-row-indent">
+                  ${switchHtml(index, 'pressureMap', pressureMapOn, '↳ AT to CC')}
+                  <input type="number" min="0" max="127" value="${route.cpMapCC}" data-route-index="${index}" data-field="cpMapCC" ${pressureMapOn ? '' : 'disabled'}>
+                </div>
+                <p class="note-hint">${pressureMapOn ? 'Channel pressure is sent as this CC instead.' : 'Channel pressure passes through normally.'}</p>` : ''}
+              </div>
+              <div class="field-row">
+                ${switchHtml(index, 'aftertouch', aftertouchOn, 'Poly Aftertouch')}
+                ${aftertouchOn ? `<div class="cc-map-row cc-map-row-indent">
+                  ${switchHtml(index, 'aftertouchMap', aftertouchMapOn, '↳ AT to CC')}
+                  <input type="number" min="0" max="127" value="${route.atMapCC}" data-route-index="${index}" data-field="atMapCC" ${aftertouchMapOn ? '' : 'disabled'}>
+                </div>
+                <p class="note-hint">${aftertouchMapOn ? 'Aftertouch is sent as this CC instead.' : 'Aftertouch passes through normally.'}</p>` : ''}
+              </div>
+              <div class="field-row">
+                ${switchHtml(index, 'sysex', !!(route.typeFlags & DATA_TYPE_BITS.sysex), 'Sysex')}
+              </div>
+            </div>
           </div>
           <p class="note-hint">Unselected data types pass through normally based on the Main Mode above.</p>
         </div>
@@ -659,7 +686,7 @@ function refreshRouteCard(index, animateStaple) {
 }
 
 // Structural changes (need a re-render): checkboxes that reveal/hide fields, staple toggle, delete
-const STRUCTURAL_FIELDS = new Set(['note', 'cc', 'ccMapEnabled']);
+const STRUCTURAL_FIELDS = new Set(['note', 'cc', 'ccMapEnabled', 'aftertouch', 'aftertouchMap', 'pressure', 'pressureMap']);
 
 routesContainer.addEventListener('click', (e) => {
   const actionEl = e.target.closest('[data-action]');
@@ -747,14 +774,16 @@ function applyRouteFieldChange(route, field, el) {
   if (field === 'programChange') { setTypeFlag(route, DATA_TYPE_BITS.programChange, el.checked); return; }
   if (field === 'pitchBend') { setTypeFlag(route, DATA_TYPE_BITS.pitchBend, el.checked); return; }
   if (field === 'aftertouch') { setTypeFlag(route, DATA_TYPE_BITS.aftertouch, el.checked); return; }
+  if (field === 'aftertouchMap') { setTypeFlag(route, DATA_TYPE_BITS.aftertouchMap, el.checked); return; }
   if (field === 'pressure') { setTypeFlag(route, DATA_TYPE_BITS.pressure, el.checked); return; }
+  if (field === 'pressureMap') { route.cpMapEnabled = el.checked; return; }
   if (field === 'sysex') { setTypeFlag(route, DATA_TYPE_BITS.sysex, el.checked); return; }
   if (field === 'ccMapEnabled') {
     route._ccMapEnabled = el.checked;
     if (!el.checked) route.ccMapStart = route.ccStart; // switching off: snap back to "no remap"
     return;
   }
-  if (['noteStart', 'noteEnd', 'ccStart', 'ccEnd', 'transpose', 'ccMapStart'].includes(field)) {
+  if (['noteStart', 'noteEnd', 'ccStart', 'ccEnd', 'transpose', 'ccMapStart', 'atMapCC', 'cpMapCC'].includes(field)) {
     const raw = el.value.trim();
     // "-" (and "") are valid in-progress states while typing a negative transpose value — bail
     // without touching state or the field so the next keystroke can complete the number. Clamping

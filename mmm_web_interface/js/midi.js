@@ -27,7 +27,7 @@ export const CMD = {
 const MFR_ID = 0x7D;
 const DEVICE_ID = 0x4D;
 export const ROUTE_NAME_MAX_LEN = 24; // must match ROUTE_NAME_MAX_LEN in the firmware
-const ROUTE_RAW_BYTES = 13 + ROUTE_NAME_MAX_LEN;
+const ROUTE_RAW_BYTES = 15 + ROUTE_NAME_MAX_LEN;
 const DEFAULT_TIMEOUT_MS = 1500;
 
 // Fixed-length, zero-padded ASCII — matches the firmware's raw char[ROUTE_NAME_MAX_LEN] field
@@ -93,22 +93,32 @@ function write16(v) {
   return [v & 0x7F, (v >> 7) & 0x7F];
 }
 
-/** Route field object <-> 37 raw wire bytes (13 fixed fields + 24-byte name). */
+/** Route field object <-> 38 raw wire bytes (14 fixed fields + 24-byte name). */
 export function routeToBytes(r) {
   return [
     (r.enabled ? 0x80 : 0) | (r.inputDevice & 0x03),
-    r.inputChannels & 0x7F,
-    (r.inputChannels >> 8) & 0x7F,
-    r.typeFlags & 0x7F,
+    // Full 8-bit low/high bytes, not 7-bit masked — inChLow/inChHigh each carry 8 channel bits
+    // (ch1-8, ch9-16) on the firmware side, and pack7 (applied after this array is built) is what
+    // actually makes every byte MIDI-safe, so masking to 7 bits here would silently drop channel
+    // 8 and channel 16 (bit 7 of each byte) before pack7 ever sees them.
+    r.inputChannels & 0xFF,
+    (r.inputChannels >> 8) & 0xFF,
+    // Full byte, not masked to 7 bits — bit7 (aftertouchMap) needs to survive pack7, which already
+    // extracts each raw byte's true 8th bit into a separate MSB byte on the wire.
+    r.typeFlags & 0xFF,
     r.noteStart & 0x7F,
     r.noteEnd & 0x7F,
     r.ccStart & 0x7F,
     r.ccEnd & 0x7F,
     r.outputDevice & 0x03,
-    r.outputChannels & 0x7F,
-    (r.outputChannels >> 8) & 0x7F,
+    r.outputChannels & 0xFF,
+    (r.outputChannels >> 8) & 0xFF,
     (r.transpose + 64) & 0x7F,
     r.ccMapStart & 0x7F,
+    r.atMapCC & 0x7F,
+    // bit7=channel pressure remapped to CC, bits6-0=destination CC number — packed into one byte
+    // since the CC number itself only needs 7 bits, same trick the firmware uses.
+    (r.cpMapEnabled ? 0x80 : 0) | (r.cpMapCC & 0x7F),
     ...encodeName(r.name)
   ];
 }
@@ -127,13 +137,16 @@ export function bytesToRoute(b) {
     outputChannels: b[9] | (b[10] << 8),
     transpose: b[11] - 64,
     ccMapStart: b[12],
-    name: decodeName(b.slice(13, 13 + ROUTE_NAME_MAX_LEN))
+    atMapCC: b[13],
+    cpMapEnabled: !!(b[14] & 0x80),
+    cpMapCC: b[14] & 0x7F,
+    name: decodeName(b.slice(15, 15 + ROUTE_NAME_MAX_LEN))
   };
 }
 
 export const DATA_TYPE_BITS = {
   note: 0x01, cc: 0x02, programChange: 0x04, pitchBend: 0x08,
-  aftertouch: 0x10, pressure: 0x20, sysex: 0x40
+  aftertouch: 0x10, pressure: 0x20, sysex: 0x40, aftertouchMap: 0x80
 };
 
 export class DeviceLink extends EventTarget {

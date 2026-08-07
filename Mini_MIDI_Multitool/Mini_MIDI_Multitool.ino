@@ -75,7 +75,7 @@ const char USB_DESCRIPTOR_NAME[] = "FoxWizard"; // short name shown by the OS/DA
 
 constexpr uint16_t MAX_ROUTES = 256;
 constexpr uint8_t ROUTE_NAME_MAX_LEN = 24; // ASCII characters, enforced web-side too
-constexpr uint8_t ROUTE_RAW_BYTES = 13 + ROUTE_NAME_MAX_LEN;
+constexpr uint8_t ROUTE_RAW_BYTES = 15 + ROUTE_NAME_MAX_LEN;
 constexpr uint8_t MAX_PENDING = 64;
 
 // ============================================================================================
@@ -139,7 +139,7 @@ struct RouteData {
   uint8_t flags;      // bit7 enabled, bits1-0 inputDevice
   uint8_t inChLow;
   uint8_t inChHigh;
-  uint8_t typeFlags;  // bit0 note,1 cc,2 pc,3 pitch,4 polyAT,5 chanPressure,6 sysex
+  uint8_t typeFlags;  // bit0 note,1 cc,2 pc,3 pitch,4 polyAT,5 chanPressure,6 sysex,7 polyAT mapped to CC
   uint8_t noteStart;
   uint8_t noteEnd;
   uint8_t ccStart;
@@ -149,6 +149,8 @@ struct RouteData {
   uint8_t outChHigh;
   uint8_t transpose;  // semitone + 64
   uint8_t ccMapStart;
+  uint8_t atMapCC;    // destination CC number when typeFlags bit7 is set (poly aftertouch remapped to CC)
+  uint8_t cpMapCC;    // bit7=channel pressure remapped to CC, bits6-0=destination CC number
   char name[ROUTE_NAME_MAX_LEN]; // ASCII, zero-padded, not necessarily NUL-terminated if it fills the buffer
 };
 
@@ -192,7 +194,7 @@ struct PendingMsg {
 
 struct SysexState {
   enum Phase { IDLE, PEEK1, PEEK2, OURS, FORWARDING } phase = IDLE;
-  uint8_t cmdBuf[64]; // cmd(1) + index(2) + pack7(ROUTE_RAW_BYTES=37) which packs to 43 bytes = 46 needed
+  uint8_t cmdBuf[64]; // cmd(1) + index(2) + pack7(ROUTE_RAW_BYTES=39) which packs to 45 bytes = 48 needed
   uint8_t cmdLen = 0;
   uint8_t fwdDevice = OUT_NONE;
 };
@@ -258,6 +260,38 @@ uint32_t lastRampStepMs = 0;
 // octave when the shift changes (per channel, 128-bit bitmask each)
 uint32_t shiftedNoteMask[16][4];
 
+// Poly aftertouch -> CC mapping needs to know which currently-held note should "own" the mapped CC
+// when more than one note is held, otherwise independently-varying finger pressure on different
+// notes would fight over one destination value. Small per-channel note-priority stack: most recent
+// Note On goes on top, Note Off removes wherever it is, and the mapped CC always follows whatever's
+// on top now — falling back to the next-held note's own last-reported pressure, or to 0 once
+// nothing is held. Depth is 128, not a "should be enough" guess — a MIDI channel only has 128
+// possible distinct note numbers (0-127), so this is the actual hard ceiling on how many notes
+// could ever be simultaneously held, and the overflow-guard in noteStackOn() below can never
+// actually trigger. (~8KB of RAM for all 32 channel/device stacks combined, cheap relative to the
+// 256KB available.)
+constexpr uint8_t NOTE_STACK_DEPTH = 128;
+struct NoteHoldStack {
+  uint8_t notes[NOTE_STACK_DEPTH];
+  uint8_t pressures[NOTE_STACK_DEPTH];
+  uint8_t count = 0;
+};
+NoteHoldStack noteStacks[2][16]; // [DEV_TRS/DEV_USB][channel]
+
+// This whole note-hold-stack machinery only matters to routes with poly aftertouch mapped to CC —
+// a rare, minor feature. Rather than paying its (small but nonzero) per-Note-On/Off/aftertouch-
+// message bookkeeping cost on every single MIDI event regardless of whether anything actually uses
+// it, this cached flag gates that work entirely. It's only recomputed when the route list actually
+// changes (add/set/delete/clear/load-from-flash) — never per MIDI event, since a per-event scan of
+// every route would cost more than the bookkeeping it's meant to save.
+bool anyAftertouchMapRoutes = false;
+void recomputeAnyAftertouchMapRoutes() {
+  anyAftertouchMapRoutes = false;
+  for (uint16_t i = 0; i < routeCount; ++i) {
+    if (routes[i].typeFlags & 0x80) { anyAftertouchMapRoutes = true; return; }
+  }
+}
+
 // ============================================================================================
 // Defaults / EEPROM persistence
 // ============================================================================================
@@ -269,6 +303,7 @@ void setFactoryDefaults() {
   globalSettings.buttonToggleMomentary = 0;
   globalSettings.ledBrightnessStep = 10; // 100% (scale is 0..10, step 0 = fully off)
   routeCount = 0;
+  anyAftertouchMapRoutes = false; // no routes left, so trivially true without needing a scan
 }
 
 constexpr uint32_t EEPROM_MAGIC = 0x464F5831; // "FOX1"
@@ -293,6 +328,7 @@ void loadFromFlash() {
     EEPROM.get(addr, routes[i]);
     addr += ROUTE_RAW_BYTES;
   }
+  recomputeAnyAftertouchMapRoutes();
 }
 
 void saveToFlash() {
@@ -582,9 +618,46 @@ bool routeMatches(const RouteData &r, uint8_t inputDevice, uint8_t channel, MsgK
   return true;
 }
 
-void applyRouteOutput(const RouteData &r, uint8_t channel, MsgKind kind, uint8_t number,
+// Push a Note On (note becomes top) or remove a Note Off, wherever it sits in the stack. Retriggering
+// an already-held note keeps its tracked pressure and just moves it back to the top.
+void noteStackOn(NoteHoldStack &s, uint8_t note) {
+  for (uint8_t i = 0; i < s.count; ++i) {
+    if (s.notes[i] == note) {
+      uint8_t pressure = s.pressures[i];
+      for (uint8_t j = i; j < s.count - 1; ++j) { s.notes[j] = s.notes[j + 1]; s.pressures[j] = s.pressures[j + 1]; }
+      s.count--;
+      s.notes[s.count] = note; s.pressures[s.count] = pressure; s.count++;
+      return;
+    }
+  }
+  if (s.count >= NOTE_STACK_DEPTH) return; // beyond depth: not tracked, can't become priority note
+  s.notes[s.count] = note; s.pressures[s.count] = 0; s.count++;
+}
+void noteStackOff(NoteHoldStack &s, uint8_t note) {
+  for (uint8_t i = 0; i < s.count; ++i) {
+    if (s.notes[i] == note) {
+      for (uint8_t j = i; j < s.count - 1; ++j) { s.notes[j] = s.notes[j + 1]; s.pressures[j] = s.pressures[j + 1]; }
+      s.count--;
+      return;
+    }
+  }
+}
+void noteStackSetPressure(NoteHoldStack &s, uint8_t note, uint8_t pressure) {
+  for (uint8_t i = 0; i < s.count; ++i) if (s.notes[i] == note) { s.pressures[i] = pressure; return; }
+}
+
+void applyRouteOutput(const RouteData &r, uint8_t inputDevice, uint8_t channel, MsgKind kind, uint8_t number,
                        uint8_t statusHi, uint8_t data1, uint8_t data2) {
   if (r.outDevice == OUT_NONE) return; // enabled + matched, but deliberately silenced
+
+  if (kind == MK_POLY_AT && (r.typeFlags & 0x80)) {
+    // Only the top-of-stack ("priority") note may drive the mapped CC — see noteStacks above.
+    // emitAftertouchMapUpdate() re-triggers this with the new top's own value whenever priority
+    // shifts, so off-priority notes can just be dropped here without the mapped CC going stale.
+    NoteHoldStack &s = noteStacks[inputDevice == DEV_TRS ? 0 : 1][channel];
+    uint8_t top = s.count ? s.notes[s.count - 1] : 0xFF; // 0xFF: no held note, never a real note number
+    if (number != top) return;
+  }
 
   uint16_t outMask = r.outChLow | ((uint16_t)r.outChHigh << 8);
   for (uint8_t c = 0; c < 16; ++c) {
@@ -612,19 +685,40 @@ void applyRouteOutput(const RouteData &r, uint8_t channel, MsgKind kind, uint8_t
       msg.data1 = (uint8_t)outCc;
       msg.data2 = data2;
     } else if (kind == MK_POLY_AT) {
-      msg.number = number;
-      msg.data1 = number;
-      msg.data2 = data2;
+      if (r.typeFlags & 0x80) {
+        // Remapped: aftertouch pressure becomes a CC value on atMapCC instead of passing through
+        // as aftertouch. Changes msg.kind/statusHi too so dedup and USB CIN treat it as a real CC.
+        msg.kind = MK_CC;
+        msg.statusHi = 0xB0;
+        msg.number = r.atMapCC;
+        msg.data1 = r.atMapCC;
+        msg.data2 = data2;
+      } else {
+        msg.number = number;
+        msg.data1 = number;
+        msg.data2 = data2;
+      }
     } else if (kind == MK_PC) {
       msg.number = 0;
       msg.data1 = data1;
       msg.data2 = 0;
       msg.len = 2;
     } else if (kind == MK_CHAN_PRESSURE) {
-      msg.number = 0;
-      msg.data1 = data1;
-      msg.data2 = 0;
-      msg.len = 2;
+      if (r.cpMapCC & 0x80) {
+        // Same remap trick as poly aftertouch above, bit7 of cpMapCC is the enable flag since the
+        // CC number itself only needs 7 bits.
+        uint8_t destCc = r.cpMapCC & 0x7F;
+        msg.kind = MK_CC;
+        msg.statusHi = 0xB0;
+        msg.number = destCc;
+        msg.data1 = destCc;
+        msg.data2 = data1; // channel pressure's single value becomes the CC value
+      } else {
+        msg.number = 0;
+        msg.data1 = data1;
+        msg.data2 = 0;
+        msg.len = 2;
+      }
     } else if (kind == MK_PITCH) {
       msg.number = 0;
       msg.data1 = data1;
@@ -652,6 +746,24 @@ void flushPending() {
   pendingUsbCount = 0;
 }
 
+// Called whenever a Note On/Off changes which note is on top of a channel's hold stack — pushes a
+// fresh CC value (the new top note's own last-reported pressure, or 0 if nothing's held anymore) to
+// any routes mapping poly aftertouch to CC on that channel/device, so the mapped CC doesn't just
+// sit stale waiting for that note's next real aftertouch message (which may never come).
+void emitAftertouchMapUpdate(uint8_t inputDevice, uint8_t channel, NoteHoldStack &stack) {
+  uint8_t topNote = stack.count ? stack.notes[stack.count - 1] : 0xFF;
+  uint8_t topPressure = stack.count ? stack.pressures[stack.count - 1] : 0;
+  bool any = false;
+  for (uint16_t i = 0; i < routeCount; ++i) {
+    if (!(routes[i].typeFlags & 0x80)) continue;
+    if (routeMatches(routes[i], inputDevice, channel, MK_POLY_AT, topNote)) {
+      any = true;
+      applyRouteOutput(routes[i], inputDevice, channel, MK_POLY_AT, topNote, 0xA0, topNote, topPressure);
+    }
+  }
+  if (any) flushPending();
+}
+
 // USB Adaptor Mode: USB-in -> DIN-out only, DIN-in -> USB-out only (matches the original simple
 // adaptor sketch exactly). Router Mode: everything is merged/broadcast to both physical ports.
 void applyModeDefault(uint8_t inputDevice, uint8_t statusHi, uint8_t channel, uint8_t data1, uint8_t data2, uint8_t len) {
@@ -677,11 +789,28 @@ void processIncomingEvent(uint8_t inputDevice, uint8_t statusHi, uint8_t channel
     default: return; // system common/realtime bytes never reach here
   }
 
+  // Keep the note-hold stack (used for poly aftertouch -> CC priority, see noteStacks above) in
+  // sync with real Note On/Off and poly aftertouch traffic — but only when some route actually
+  // needs it (see anyAftertouchMapRoutes above), so this rare feature costs nothing on every
+  // Note/aftertouch message when nobody's using it.
+  if (anyAftertouchMapRoutes && (kind == MK_NOTE || kind == MK_POLY_AT)) {
+    NoteHoldStack &stack = noteStacks[inputDevice == DEV_TRS ? 0 : 1][channel];
+    if (kind == MK_NOTE) {
+      bool isOn = (statusHi == 0x90 && data2 > 0);
+      uint8_t before = stack.count ? stack.notes[stack.count - 1] : 0xFF;
+      if (isOn) noteStackOn(stack, number); else noteStackOff(stack, number);
+      uint8_t after = stack.count ? stack.notes[stack.count - 1] : 0xFF;
+      if (after != before) emitAftertouchMapUpdate(inputDevice, channel, stack);
+    } else {
+      noteStackSetPressure(stack, number, data2);
+    }
+  }
+
   bool matchedAny = false;
   for (uint16_t i = 0; i < routeCount; ++i) {
     if (routeMatches(routes[i], inputDevice, channel, kind, number)) {
       matchedAny = true;
-      applyRouteOutput(routes[i], channel, kind, number, statusHi, data1, data2);
+      applyRouteOutput(routes[i], inputDevice, channel, kind, number, statusHi, data1, data2);
     }
   }
   flushPending();
@@ -912,7 +1041,7 @@ void handleSysexCommand(uint8_t sourcePort, const uint8_t *cmdBuf, uint8_t cmdLe
       beginReply(CMD_ROUTE_DATA);
       appendReply(idx & 0x7F);
       appendReply((idx >> 7) & 0x7F);
-      uint8_t packed[48]; // pack7(37 raw bytes) = 43 packed bytes
+      uint8_t packed[48]; // pack7(39 raw bytes) = 45 packed bytes
       uint8_t packedLen = pack7((const uint8_t *)&routes[idx], ROUTE_RAW_BYTES, packed);
       for (uint8_t i = 0; i < packedLen; ++i) appendReply(packed[i]);
       sendReply(sourcePort);
@@ -926,6 +1055,7 @@ void handleSysexCommand(uint8_t sourcePort, const uint8_t *cmdBuf, uint8_t cmdLe
       routes[routeCount] = r;
       uint16_t newIndex = routeCount;
       routeCount++;
+      recomputeAnyAftertouchMapRoutes();
       sendAck(sourcePort, cmd, ACK_OK, checksum7((const uint8_t *)&r, ROUTE_RAW_BYTES), newIndex);
       break;
     }
@@ -937,6 +1067,7 @@ void handleSysexCommand(uint8_t sourcePort, const uint8_t *cmdBuf, uint8_t cmdLe
       RouteData r;
       unpack7(payload + 2, payloadLen - 2, (uint8_t *)&r);
       routes[idx] = r;
+      recomputeAnyAftertouchMapRoutes();
       sendAck(sourcePort, cmd, ACK_OK, checksum7((const uint8_t *)&r, ROUTE_RAW_BYTES), idx);
       break;
     }
@@ -947,6 +1078,7 @@ void handleSysexCommand(uint8_t sourcePort, const uint8_t *cmdBuf, uint8_t cmdLe
       if (idx >= routeCount) { sendAck(sourcePort, cmd, ACK_ERR_BAD_INDEX, 0, 0); break; }
       for (uint16_t i = idx; i + 1 < routeCount; ++i) routes[i] = routes[i + 1];
       routeCount--;
+      recomputeAnyAftertouchMapRoutes();
       sendAck(sourcePort, cmd, ACK_OK, 0, idx);
       break;
     }
@@ -969,6 +1101,7 @@ void handleSysexCommand(uint8_t sourcePort, const uint8_t *cmdBuf, uint8_t cmdLe
 
     case CMD_CLEAR_ALL_ROUTES: {
       routeCount = 0;
+      recomputeAnyAftertouchMapRoutes();
       sendAck(sourcePort, cmd, ACK_OK, 0, 0);
       break;
     }

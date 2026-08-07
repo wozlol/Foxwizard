@@ -708,10 +708,22 @@ a { color: var(--accent); }
 }
 
 .field-row-cols { display: grid; grid-template-columns: 1fr 1fr; gap: 12px; }
+
+/* Note/CC Range and Aftertouch's Map-to-CC block grow taller than a plain switch row, so this is
+   two independent flex columns (not a grid tying the two sides' row heights together) — a switch
+   in the right column shouldn't jump around just because the left column's row grew. */
+.switches-cols { display: flex; gap: 20px; }
+.switches-col { flex: 1; min-width: 0; }
+@media (max-width: 480px) {
+  .switches-cols { flex-direction: column; gap: 0; }
+}
 .cc-map-row { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; }
 .cc-map-row input[type="number"] { flex: 1; min-width: 0; }
 .cc-map-row .switch-label { font-size: 0.68rem; }
 .cc-map-row input:disabled { opacity: 0.5; }
+/* The little "↳" branch mark on the switch label already reads as a sub-item, this indent just
+   reinforces it visually as nested under the switch directly above. */
+.cc-map-row-indent { margin-left: 14px; margin-top: 4px; }
 
 .field-row { display: flex; flex-direction: column; gap: 5px; margin-bottom: 10px; }
 .field-row label { font-size: 0.72rem; color: var(--text-dim); }
