@@ -1,0 +1,51 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 512 512">
+  <defs>
+    <linearGradient id="bg" x1="0" y1="0" x2="0" y2="1">
+      <stop offset="0" stop-color="#1a2540"/>
+      <stop offset="1" stop-color="#0f172a"/>
+    </linearGradient>
+    <linearGradient id="fox" x1="0" y1="0" x2="0" y2="1">
+      <stop offset="0" stop-color="#ff9a52"/>
+      <stop offset="1" stop-color="#e8763a"/>
+    </linearGradient>
+    <linearGradient id="hat" x1="0" y1="0" x2="1" y2="1">
+      <stop offset="0" stop-color="#a78bfa"/>
+      <stop offset="1" stop-color="#7c3aed"/>
+    </linearGradient>
+  </defs>
+
+  <rect width="512" height="512" rx="104" fill="url(#bg)"/>
+
+  <!-- fox ears (bumped down slightly so their base tucks under the head/hat with no gap) -->
+  <path d="M154 242 L120 136 L232 216 Z" fill="url(#fox)"/>
+  <path d="M358 242 L392 136 L280 216 Z" fill="url(#fox)"/>
+  <path d="M168 228 L148 160 L216 216 Z" fill="#3a2a22"/>
+  <path d="M344 228 L364 160 L296 216 Z" fill="#3a2a22"/>
+
+  <!-- fox head -->
+  <path d="M256 180
+           C 190 180 146 232 146 302
+           C 146 366 196 412 256 412
+           C 316 412 366 366 366 302
+           C 366 232 322 180 256 180 Z" fill="url(#fox)"/>
+
+  <!-- muzzle -->
+  <path d="M256 268
+           C 218 268 196 300 196 330
+           C 196 360 224 380 256 380
+           C 288 380 316 360 316 330
+           C 316 300 294 268 256 268 Z" fill="#fff3e6"/>
+
+  <!-- nose -->
+  <path d="M256 320 L240 336 L272 336 Z" fill="#2b1c15"/>
+
+  <!-- eyes -->
+  <ellipse cx="212" cy="286" rx="12" ry="15" fill="#241a14"/>
+  <ellipse cx="300" cy="286" rx="12" ry="15" fill="#241a14"/>
+
+  <!-- wizard hat -->
+  <path d="M256 66 L332 210 C 296 194 216 194 180 210 Z" fill="url(#hat)"/>
+  <rect x="176" y="194" width="160" height="22" rx="11" fill="#5b21b6"/>
+  <circle cx="256" cy="66" r="12" fill="#fde68a"/>
+  <path d="M256 44 L262 58 L276 58 L265 67 L269 82 L256 73 L243 82 L247 67 L236 58 L250 58 Z" fill="#fde68a"/>
+</svg>

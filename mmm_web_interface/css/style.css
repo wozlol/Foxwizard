@@ -1,0 +1,787 @@
+/* =============================================================================================
+   FOXWIZARD PATCHLING — design system
+   Dark glass-card look adapted from Regime Radar (dark slate bg, floating rounded cards, blue
+   accent, Russo One display type — sized down from RR's oversized numerals here since this is a
+   settings tool, not a dashboard readout).
+   ============================================================================================= */
+
+:root {
+  --bg: #0f172a;
+  --bg-soft: #16213c;
+  --card: #1a2540;
+  --card-border: rgba(148, 163, 184, 0.14);
+  --card-shadow: 0 20px 40px -18px rgba(0, 0, 0, 0.55), 0 2px 8px rgba(0, 0, 0, 0.35);
+  --box: #101a30;
+  --box-border: rgba(148, 163, 184, 0.12);
+  --text: #e5e9f5;
+  --text-dim: #94a3b8;
+  --text-faint: #64748b;
+  --accent: #3b82f6;
+  --accent-strong: #2563eb;
+  --accent-soft: rgba(59, 130, 246, 0.16);
+  --amber: #f59e0b;
+  --purple: #7c3aed;
+  --green: #22c55e;
+  --red: #ef4444;
+  --radius-lg: 20px;
+  --radius-md: 14px;
+  --radius-sm: 10px;
+}
+
+* { box-sizing: border-box; }
+
+html, body {
+  margin: 0;
+  padding: 0;
+  background: var(--bg);
+  color: var(--text);
+}
+
+body {
+  font-family: 'Inter', -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
+  background:
+    radial-gradient(circle at 15% -10%, rgba(124, 58, 237, 0.12), transparent 40%),
+    radial-gradient(circle at 85% 0%, rgba(59, 130, 246, 0.10), transparent 45%),
+    var(--bg);
+  min-height: 100vh;
+}
+
+h1, h2, h3, .display {
+  font-family: 'Russo One', 'Inter', sans-serif;
+  font-weight: 400;
+  letter-spacing: 0.02em;
+}
+
+a { color: var(--accent); }
+
+/* A quiet nod to synthwave — a soft magenta/cyan horizon glow low in the viewport, fixed and
+   non-interactive. Negative z-index keeps it behind all real content while still painting above
+   the body's own solid background (see stacking-order note: a positioned descendant with
+   z-index:-1 paints after its stacking context's own background but before normal in-flow
+   siblings, which is exactly the "behind content, above bg" layer this needs). Kept deliberately
+   faint — this is ambiance, not a light show. */
+.synthwave-glow {
+  position: fixed;
+  inset: 0;
+  z-index: -1;
+  pointer-events: none;
+  background:
+    radial-gradient(ellipse 70% 45% at 50% 105%, rgba(236, 72, 153, 0.10), transparent 70%),
+    radial-gradient(ellipse 55% 35% at 50% 105%, rgba(34, 211, 238, 0.07), transparent 70%);
+}
+
+::-webkit-scrollbar { height: 10px; width: 10px; }
+::-webkit-scrollbar-thumb { background: rgba(148, 163, 184, 0.25); border-radius: 8px; }
+
+/* ---------------------------------------------------------------------------------------------
+   Header / toolbar
+   --------------------------------------------------------------------------------------------- */
+.app-header {
+  /* Not sticky itself, only .toolbar-sticky below is — the brand row and connection pill scroll
+     off normally, and the toolbar buttons catch and hold at the top once they reach it. */
+}
+
+.toolbar-sticky {
+  position: sticky;
+  top: 0;
+  z-index: 30;
+  background: rgba(15, 23, 42, 0.86);
+  backdrop-filter: blur(14px);
+  border-bottom: 1px solid var(--card-border);
+}
+
+.app-header-inner {
+  max-width: 1100px;
+  margin: 0 auto;
+  padding: 14px 20px 6px;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  flex-wrap: wrap;
+}
+
+.brand { display: flex; align-items: center; gap: 12px; }
+.brand-icon { width: 40px; height: 40px; border-radius: 10px; flex-shrink: 0; }
+.brand-text h1 {
+  margin: 0;
+  font-size: 1.15rem;
+  line-height: 1.1;
+  background: linear-gradient(90deg, #ffb26b, #a78bfa);
+  -webkit-background-clip: text;
+  background-clip: text;
+  color: transparent;
+}
+/* h1's gradient text-fill (color: transparent) would otherwise inherit straight into this link and
+   make it invisible, so it needs its own explicit color rather than the parent's. */
+.brand-by {
+  font-family: 'Inter', sans-serif;
+  font-size: 0.62rem;
+  font-weight: 600;
+  letter-spacing: 0.02em;
+  color: var(--text-dim);
+  text-decoration: none;
+  vertical-align: middle;
+  margin-left: 6px;
+}
+.brand-by:hover { color: var(--accent); text-decoration: underline; }
+.brand-text p { margin: 2px 0 0; font-size: 0.72rem; color: var(--text-dim); letter-spacing: 0.03em; }
+.brand-subtitle { color: inherit; text-decoration: none; }
+.brand-subtitle:hover { color: var(--accent); text-decoration: underline; }
+
+/* margin-left:auto keeps this pinned to the right whether it's sharing the row with .brand or, on
+   narrow viewports, has wrapped onto its own row (flex's justify-content:space-between only
+   right-aligns a lone wrapped item if there's nothing forcing it left, which auto margin does
+   reliably either way). */
+.header-actions { display: flex; align-items: center; gap: 10px; margin-left: auto; }
+
+.install-row { display: flex; justify-content: center; margin-top: 8px; }
+
+.connection-pill {
+  display: inline-flex;
+  align-items: center;
+  gap: 7px;
+  padding: 6px 12px;
+  border-radius: 999px;
+  font-size: 0.78rem;
+  font-weight: 600;
+  background: var(--box);
+  border: 1px solid var(--box-border);
+  color: var(--text-dim);
+}
+.connection-dot { width: 8px; height: 8px; border-radius: 50%; background: var(--text-faint); }
+.connection-pill.connected { color: #bbf7d0; border-color: rgba(34, 197, 94, 0.35); background: rgba(34, 197, 94, 0.1); }
+.connection-pill.connected .connection-dot { background: var(--green); box-shadow: 0 0 8px rgba(34, 197, 94, 0.8); animation: pulseDot 2s ease-in-out infinite; }
+.connection-pill.disconnected { color: #fecaca; border-color: rgba(239, 68, 68, 0.3); background: rgba(239, 68, 68, 0.08); }
+.connection-pill.disconnected .connection-dot { background: var(--red); }
+.connection-pill.connecting .connection-dot { background: var(--amber); animation: pulseDot 1s ease-in-out infinite; }
+
+@keyframes pulseDot {
+  0%, 100% { opacity: 1; }
+  50% { opacity: 0.35; }
+}
+
+.toolbar {
+  max-width: 1100px;
+  margin: 0 auto;
+  padding: 12px 20px;
+  display: flex;
+  flex-wrap: wrap;
+  gap: 10px;
+  justify-content: space-between;
+}
+.toolbar-group { display: flex; gap: 8px; flex-wrap: wrap; }
+
+.app-main {
+  max-width: 1100px;
+  margin: 0 auto;
+  padding: 20px 20px 80px;
+  display: flex;
+  flex-direction: column;
+  gap: 18px;
+}
+
+.app-footer {
+  text-align: center;
+  color: var(--text-faint);
+  font-size: 0.75rem;
+  padding: 30px 20px 50px;
+}
+
+/* ---------------------------------------------------------------------------------------------
+   Buttons
+   --------------------------------------------------------------------------------------------- */
+.btn {
+  appearance: none;
+  border: 1px solid var(--card-border);
+  background: var(--box);
+  color: var(--text);
+  padding: 9px 15px;
+  border-radius: var(--radius-sm);
+  font-size: 0.84rem;
+  font-weight: 600;
+  cursor: pointer;
+  transition: transform 0.15s ease, background 0.15s ease, border-color 0.15s ease;
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+}
+.btn:hover { transform: translateY(-1px); border-color: rgba(148, 163, 184, 0.3); }
+.btn:active { transform: translateY(0); }
+.btn:disabled { opacity: 0.45; cursor: not-allowed; transform: none; }
+
+.btn-primary { background: var(--accent-strong); border-color: var(--accent-strong); color: white; position: relative; }
+.btn-primary.has-unsaved::after {
+  content: "";
+  position: absolute;
+  top: -3px;
+  right: -3px;
+  width: 9px;
+  height: 9px;
+  border-radius: 50%;
+  background: var(--amber);
+  box-shadow: 0 0 6px rgba(245, 158, 11, 0.8);
+  animation: pulseDot 2s ease-in-out infinite;
+}
+.btn-primary:hover { background: #3b82f6; }
+.btn-accent { background: linear-gradient(135deg, #f59e0b, #ea580c); border-color: transparent; color: #1a0f00; }
+.toolbar .btn-accent {
+  box-shadow: 0 0 16px -5px rgba(245, 158, 11, 0.5);
+  transition: transform 0.15s ease, background 0.15s ease, border-color 0.15s ease, box-shadow 0.2s ease;
+}
+.toolbar .btn-accent:hover { box-shadow: 0 0 22px -3px rgba(245, 158, 11, 0.7); }
+.btn-ghost { background: transparent; }
+.btn-danger { background: transparent; border-color: rgba(239, 68, 68, 0.4); color: #fca5a5; }
+.btn-danger:hover { background: rgba(239, 68, 68, 0.1); }
+.btn-icon { padding: 8px; width: 34px; height: 34px; justify-content: center; }
+.btn-tiny { padding: 4px 9px; font-size: 0.72rem; }
+.file-btn { position: relative; }
+
+/* Corner shine (ported from Regime Radar's card top-left highlight) + a soft behind-glow, on the
+   toolbar buttons only — Add Route keeps its own plain accent treatment. */
+.toolbar .btn:not(.btn-accent) {
+  position: relative;
+  overflow: hidden;
+  box-shadow: 0 0 16px -5px rgba(59, 130, 246, 0.4);
+  transition: transform 0.15s ease, background 0.15s ease, border-color 0.15s ease, box-shadow 0.2s ease;
+}
+.toolbar .btn:not(.btn-accent):hover { box-shadow: 0 0 22px -3px rgba(59, 130, 246, 0.6); }
+.toolbar .btn:not(.btn-accent)::before {
+  content: "";
+  position: absolute;
+  top: -1px;
+  left: -1px;
+  width: 44px;
+  height: 44px;
+  background: radial-gradient(ellipse at top left, rgba(255, 255, 255, 0.28) 0%, rgba(255, 255, 255, 0.08) 35%, transparent 65%);
+  pointer-events: none;
+}
+
+/* ---------------------------------------------------------------------------------------------
+   Cards — the "floating box" language, full-width variant for the global + route cards
+   --------------------------------------------------------------------------------------------- */
+.card {
+  background: linear-gradient(180deg, var(--card), rgba(26, 37, 64, 0.85));
+  border: 1px solid var(--card-border);
+  border-radius: var(--radius-lg);
+  box-shadow: var(--card-shadow);
+  padding: 20px;
+}
+
+.card-full { width: 100%; }
+
+.mini-box {
+  background: var(--box);
+  border: 1px solid var(--box-border);
+  border-radius: var(--radius-md);
+  padding: 14px;
+  display: flex;
+  flex-direction: column;
+}
+
+/* Centers the label+control as one unit within a .mini-box that's taller than its content (e.g.
+   stretched by a taller sibling in the same grid row, or by a trailing .note-hint below it) — see
+   the .note-hint override right after: giving it no auto margin of its own is what makes it settle
+   at the very bottom instead of sharing the centering. */
+.mini-box-main { margin-top: auto; margin-bottom: auto; }
+/* Chrome's UA stylesheet gives range inputs a small default margin that isn't symmetric once
+   width:100% is applied — resetting it explicitly is what actually centers the track. */
+.mini-box-main input[type="range"] { display: block; width: 100%; margin: 0; box-sizing: border-box; }
+.mini-box .note-hint { margin-top: 8px; margin-bottom: 0; }
+
+.mini-box-label {
+  font-size: 0.72rem;
+  font-weight: 700;
+  text-transform: uppercase;
+  letter-spacing: 0.06em;
+  color: var(--text-dim);
+  margin: 0 0 10px;
+}
+
+/* Responsive grid of small setting boxes — used inside the global card and each route card.
+   Boxes rearrange automatically as the window narrows toward mobile. */
+.settings-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(220px, 1fr));
+  gap: 12px;
+}
+
+@media (max-width: 640px) {
+  .settings-grid { grid-template-columns: 1fr; }
+  .app-header-inner { padding: 12px 14px 4px; }
+  .toolbar { padding: 10px 14px; }
+  .app-main { padding: 16px 14px 70px; }
+}
+
+/* Below 500px the toolbar's 5 buttons no longer just clump to the left: Load/Save/Download/Upload
+   fill a 2x2 grid together, Add Route becomes its own full-width row underneath. */
+@media (max-width: 500px) {
+  .toolbar {
+    display: grid;
+    grid-template-columns: 1fr 1fr;
+    gap: 8px;
+  }
+  .toolbar-group { display: contents; }
+  .toolbar-group:last-of-type .btn { grid-column: 1 / -1; }
+  .toolbar .btn, .toolbar .file-btn { width: 100%; justify-content: center; }
+}
+
+/* ---------------------------------------------------------------------------------------------
+   Small pill toggle switch (checkboxes, boolean settings)
+   --------------------------------------------------------------------------------------------- */
+.switch { display: inline-flex; align-items: center; gap: 8px; cursor: pointer; user-select: none; }
+.switch input { position: absolute; opacity: 0; width: 0; height: 0; }
+.switch-track {
+  position: relative;
+  width: 40px;
+  height: 22px;
+  border-radius: 999px;
+  background: #374254;
+  transition: background 0.2s ease;
+  flex-shrink: 0;
+}
+.switch-thumb {
+  position: absolute;
+  top: 2px; left: 2px;
+  width: 18px; height: 18px;
+  border-radius: 50%;
+  background: white;
+  transition: transform 0.2s ease;
+}
+.switch input:checked + .switch-track { background: var(--accent-strong); }
+.switch input:checked + .switch-track .switch-thumb { transform: translateX(18px); }
+.switch-label { font-size: 0.82rem; color: var(--text); }
+
+/* Channel picker: 16 tiny toggle chips laid out in a wrapping row */
+.channel-grid {
+  display: grid;
+  grid-template-columns: repeat(8, 1fr);
+  gap: 4px;
+}
+@media (max-width: 420px) {
+  .channel-grid { grid-template-columns: repeat(4, 1fr); }
+}
+.channel-grid-actions { display: grid; grid-template-columns: 1fr 1fr; gap: 6px; margin-top: 6px; }
+.channel-grid-actions .btn { width: 100%; justify-content: center; }
+.channel-chip {
+  position: relative;
+  text-align: center;
+}
+.channel-chip input { position: absolute; opacity: 0; width: 0; height: 0; }
+.channel-chip label {
+  display: block;
+  padding: 5px 0;
+  border-radius: 6px;
+  background: var(--card);
+  border: 1px solid var(--box-border);
+  font-size: 0.68rem;
+  font-weight: 700;
+  color: var(--text-faint);
+  cursor: pointer;
+  transition: background 0.075s ease, color 0.075s ease, border-color 0.075s ease;
+}
+.channel-chip input:checked + label {
+  background: var(--accent-soft);
+  border-color: var(--accent);
+  color: #bfdbfe;
+}
+.channel-warning { font-size: 0.7rem; color: var(--amber); margin: 6px 0 0; }
+
+/* ---------------------------------------------------------------------------------------------
+   Big oversized mode toggle: USB Adaptor Mode (shark) <-> Router Mode (octopus)
+   --------------------------------------------------------------------------------------------- */
+/* Labels sit above the track (so they never compete for space with the sliding knob), the track
+   below is just the big round switch itself. This stays correct at any width instead of trying to
+   cram icon + two text blocks into one pill. */
+.global-card-header {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin-bottom: 14px;
+}
+.main-mode-heading {
+  font-family: 'Russo One', sans-serif;
+  font-size: 1.6rem;
+  color: var(--text);
+  white-space: nowrap;
+  margin: 0;
+}
+
+.mode-toggle-wrap { display: flex; flex-direction: column; align-items: center; gap: 14px; width: 100%; }
+
+.mode-toggle-labels {
+  display: flex;
+  justify-content: space-between;
+  align-items: flex-start;
+  width: 100%;
+  max-width: 420px;
+  gap: 14px;
+}
+.mode-toggle-labels .mode-toggle-side { flex: 1 1 0; display: flex; flex-direction: column; gap: 3px; }
+.mode-toggle-labels .mode-toggle-side.left { text-align: left; align-items: flex-start; }
+.mode-toggle-labels .mode-toggle-side.right { text-align: right; align-items: flex-end; }
+.mode-toggle-side .mode-name { font-family: 'Russo One', sans-serif; font-size: 0.98rem; color: var(--text); transition: color 0.2s ease; }
+.mode-toggle-side .mode-desc { font-size: 0.68rem; color: var(--text-dim); max-width: 170px; }
+.mode-toggle-side.active .mode-name { color: var(--amber); }
+
+.mode-toggle {
+  --w: 220px;
+  --h: 92px;
+  position: relative;
+  width: min(var(--w), 78%);
+  height: var(--h);
+  border-radius: 999px;
+  background: linear-gradient(90deg, #0d3b4f, #1a2540 50%, #2d1a4a);
+  border: 1px solid var(--card-border);
+  cursor: pointer;
+  padding: 0;
+  overflow: visible;
+  -webkit-tap-highlight-color: transparent; /* kills the default mobile-Chrome gray flash box on tap */
+  user-select: none;
+}
+.mode-toggle:focus { outline: none; } /* :focus-visible below still shows a ring for keyboard use */
+.mode-toggle:focus-visible { outline: 2px solid var(--accent); outline-offset: 3px; }
+
+.mode-toggle-knob {
+  position: absolute;
+  top: 6px;
+  /* left only, always a concrete length — CSS can't tween to/from `auto`, so mixing left:auto with
+     right:6px (the previous approach) meant the browser could only snap instantly, never slide. */
+  left: 6px;
+  width: calc(var(--h) - 12px);
+  height: calc(var(--h) - 12px);
+  border-radius: 50%;
+  /* saturated, not white — the pale line-art icons need a dark backdrop to actually read */
+  background: radial-gradient(circle at 32% 28%, #1f5a78, #0d3b4f 70%);
+  box-shadow: 0 8px 18px rgba(0, 0, 0, 0.45), inset 0 0 0 2px rgba(255, 255, 255, 0.12);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  transition: left 0.32s cubic-bezier(0.34, 1.56, 0.64, 1), background 0.32s ease;
+}
+.mode-toggle[data-mode="router"] .mode-toggle-knob {
+  left: calc(100% - var(--h) + 6px);
+  background: radial-gradient(circle at 32% 28%, #7a4bc4, #3d1c5c 70%);
+}
+.mode-toggle-knob img { width: 68%; height: 68%; object-fit: contain; filter: drop-shadow(0 1px 2px rgba(0, 0, 0, 0.4)); }
+
+/* Settle wobble once the slide lands — same decaying squish-and-rotate as Regime Radar's
+   liquid-slosh toggle, just without its baked-in translateX since our knob's position comes from
+   left/right, not transform, so this can layer cleanly on top without fighting the slide. */
+@keyframes knobJiggle {
+  0% { transform: scale(1) rotate(0deg); }
+  15% { transform: scale(0.85, 1.25) rotate(-12deg); }
+  30% { transform: scale(1.3, 0.75) rotate(8deg); }
+  45% { transform: scale(0.8, 1.2) rotate(-6deg); }
+  60% { transform: scale(1.15, 0.85) rotate(4deg); }
+  75% { transform: scale(0.92, 1.08) rotate(-2deg); }
+  90% { transform: scale(1.05, 0.95) rotate(1deg); }
+  100% { transform: scale(1) rotate(0deg); }
+}
+.mode-toggle-knob.jiggle { animation: knobJiggle 1.4s cubic-bezier(0.25, 0.46, 0.45, 0.94); transform-origin: center; }
+
+/* ---------------------------------------------------------------------------------------------
+   Rotary LED brightness knob — 10 discrete steps, 10%-100%
+   --------------------------------------------------------------------------------------------- */
+/* Flex row, vertically centered: the knob (tallest element) sets the box's height symmetrically —
+   equal space above and below it — while the label+percentage sit as a shorter column beside it,
+   also centered to the same midline. This is what makes the knob appear to "rise into" where a
+   normal mini-box's top-aligned label would sit, and keeps the whole cell compact. */
+.lights-box { display: flex; flex-direction: row; align-items: center; justify-content: space-between; gap: 14px; }
+.lights-info { display: flex; flex-direction: column; gap: 4px; }
+.knob {
+  --size: 84px;
+  width: var(--size);
+  height: var(--size);
+  border-radius: 50%;
+  position: relative;
+  flex-shrink: 0;
+  background: radial-gradient(circle at 35% 30%, #26324f, #0d1526 72%);
+  border: 1px solid var(--box-border);
+  box-shadow: inset 0 2px 6px rgba(0, 0, 0, 0.5), 0 6px 16px rgba(0, 0, 0, 0.35);
+  cursor: grab;
+  touch-action: none;
+  transition: box-shadow 0.15s ease;
+}
+.knob.active {
+  cursor: grabbing;
+  box-shadow: inset 0 2px 6px rgba(0, 0, 0, 0.5), 0 6px 16px rgba(0, 0, 0, 0.35), 0 0 18px 4px rgba(245, 158, 11, 0.45);
+}
+.knob:active { cursor: grabbing; }
+/* Full-size overlay so rotate() pivots around the knob's true center; the visible mark is drawn
+   with ::after positioned near the top of that overlay. */
+.knob-indicator {
+  position: absolute;
+  inset: 0;
+  transform-origin: 50% 50%;
+}
+.knob-indicator::after {
+  content: "";
+  position: absolute;
+  left: 50%;
+  top: 10%;
+  width: 4px;
+  height: 32%;
+  background: var(--amber);
+  border-radius: 2px;
+  transform: translateX(-50%);
+  box-shadow: 0 0 6px rgba(245, 158, 11, 0.7);
+}
+.knob-readout { font-family: 'Russo One', sans-serif; font-size: 1.05rem; color: var(--text); }
+.knob-readout-label { font-size: 0.68rem; color: var(--text-dim); text-transform: uppercase; letter-spacing: 0.05em; }
+
+/* ---------------------------------------------------------------------------------------------
+   Radar loading overlay — adapted from Regime Radar's mini-radar sweep (crown dropped)
+   --------------------------------------------------------------------------------------------- */
+.radar-overlay {
+  position: fixed;
+  inset: 0;
+  z-index: 100;
+  background: rgba(4, 8, 20, 0.72);
+  backdrop-filter: blur(3px);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+}
+.radar-overlay[hidden] { display: none; }
+.radar-overlay-card {
+  background: var(--card);
+  border: 1px solid var(--card-border);
+  border-radius: var(--radius-lg);
+  box-shadow: var(--card-shadow);
+  padding: 34px 40px;
+  text-align: center;
+  min-width: 240px;
+}
+.mini-wrap { position: relative; width: 65px; margin: 0 auto; }
+.mini-radar {
+  width: 65px; height: 65px; border-radius: 50%;
+  background: #042904; overflow: visible; position: relative;
+  box-shadow: 0 0 4px #0f0 inset;
+}
+.mini-radar::before {
+  content: ""; position: absolute; inset: 0; border-radius: 50%;
+  background: radial-gradient(circle at center,
+    rgba(0,255,0,.12) 0 27%, rgba(0,255,0,0) 28% 49%,
+    rgba(0,255,0,.08) 50% 71%, rgba(0,255,0,0) 72%);
+}
+.mini-sweep {
+  position: absolute; inset: 0; border-radius: 50%;
+  background: conic-gradient(from 90deg,
+    rgba(0,255,0,0) 0 288deg,
+    rgba(0,255,0,.25) 298deg,
+    rgba(0,255,0,.55) 330deg,
+    rgba(0,255,0,.95) 350deg,
+    rgba(0,255,0,0) 360deg);
+  animation: spinMini 3s linear infinite;
+}
+@keyframes spinMini { to { transform: rotate(360deg); } }
+.mini-blip {
+  position: absolute; left: 71%; top: 47%;
+  width: 4px; height: 4px; border-radius: 50%;
+  background: #00ff00; box-shadow: 0 0 3px 1px #00ff00;
+  animation: pingMini 3s linear infinite;
+}
+@keyframes pingMini { 0%, 50% { opacity: 1; } 100% { opacity: .3; } }
+.radar-overlay-text { margin: 16px 0 2px; font-size: 0.9rem; color: var(--text); }
+.radar-overlay-progress { margin: 0; font-size: 0.76rem; color: var(--text-dim); }
+
+/* ---------------------------------------------------------------------------------------------
+   Staple toggle — reused as each route's enable/disable control. Bending shut = "stapling" the
+   route's input side to its output side (connected); straightening = disabled.
+   --------------------------------------------------------------------------------------------- */
+.staple-toggle {
+  cursor: pointer;
+  display: block;
+  -webkit-tap-highlight-color: transparent;
+  user-select: none;
+}
+.staple-toggle svg { width: 56px; height: 32px; display: block; }
+.staple-toggle:hover { opacity: 0.85; }
+.staple-toggle:focus { outline: none; }
+.staple-toggle:focus-visible { outline: 2px solid var(--accent); outline-offset: 3px; border-radius: 4px; }
+
+/* ---------------------------------------------------------------------------------------------
+   Route cards
+   --------------------------------------------------------------------------------------------- */
+.routes-container {
+  display: flex;
+  flex-direction: column;
+  gap: 18px;
+}
+
+.route-card {
+  position: relative;
+  transition: opacity 0.3s ease;
+}
+.route-card.collapsed { padding-top: 16px; padding-bottom: 16px; }
+
+.route-card-header {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  margin-bottom: 14px;
+  flex-wrap: wrap;
+}
+.route-card.collapsed .route-card-header { margin-bottom: 0; }
+
+.route-collapsed-info {
+  flex: 1;
+  min-width: 140px;
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  cursor: pointer;
+  padding: 2px 0;
+}
+.route-collapsed-name {
+  font-family: 'Russo One', sans-serif;
+  font-size: 0.9rem;
+  color: var(--text);
+}
+.route-collapsed-summary {
+  font-size: 0.74rem;
+  color: var(--text-dim);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+.route-order-badge {
+  width: 30px; height: 30px;
+  border-radius: 50%;
+  background: var(--box);
+  border: 1px solid var(--box-border);
+  display: flex; align-items: center; justify-content: center;
+  font-family: 'Russo One', sans-serif;
+  font-size: 0.82rem;
+  color: var(--text-dim);
+  flex-shrink: 0;
+}
+.route-drag-handle {
+  cursor: grab;
+  color: var(--text-faint);
+  padding: 4px 6px;
+  flex-shrink: 0;
+  touch-action: none;
+  /* touch-action:none alone doesn't stop the native long-press context menu/callout — that's a
+     separate gesture recognizer in mobile Safari/Chrome and needs its own suppression. */
+  -webkit-touch-callout: none;
+  -webkit-user-select: none;
+  user-select: none;
+}
+.route-drag-handle:active { cursor: grabbing; }
+.route-title-input {
+  background: transparent;
+  border: none;
+  color: var(--text);
+  font-family: 'Russo One', sans-serif;
+  font-size: 1rem;
+  flex: 1;
+  min-width: 120px;
+  padding: 4px 2px;
+}
+.route-title-input:focus { outline: none; border-bottom: 1px solid var(--accent); }
+.route-header-spacer { flex: 1; }
+
+.route-io-columns {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 16px;
+  margin-bottom: 14px;
+}
+/* Divider between Input/Output only while they're actually side by side — on the stacked mobile
+   layout it would just be a stray line above the Output section. */
+.route-output-col {
+  border-left: 1px solid var(--box-border);
+  padding-left: 20px;
+}
+@media (max-width: 720px) {
+  .route-io-columns { grid-template-columns: 1fr; }
+  .route-output-col { border-left: none; padding-left: 0; }
+}
+.route-io-columns h3 {
+  margin: 0 0 10px;
+  font-size: 0.8rem;
+  text-transform: uppercase;
+  letter-spacing: 0.06em;
+  color: var(--text-dim);
+}
+
+.field-row-cols { display: grid; grid-template-columns: 1fr 1fr; gap: 12px; }
+.cc-map-row { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; }
+.cc-map-row input[type="number"] { flex: 1; min-width: 0; }
+.cc-map-row .switch-label { font-size: 0.68rem; }
+.cc-map-row input:disabled { opacity: 0.5; }
+
+.field-row { display: flex; flex-direction: column; gap: 5px; margin-bottom: 10px; }
+.field-row label { font-size: 0.72rem; color: var(--text-dim); }
+.field-row select, .field-row input[type="number"] {
+  background: var(--card);
+  border: 1px solid var(--box-border);
+  color: var(--text);
+  border-radius: 8px;
+  padding: 7px 9px;
+  font-size: 0.84rem;
+}
+.range-row { display: flex; align-items: center; gap: 8px; }
+.range-row input[type="number"] { width: 70px; }
+
+.note-hint { font-size: 0.7rem; color: var(--text-faint); margin: 2px 0 0; }
+
+.route-footer { display: flex; justify-content: flex-end; margin-top: 6px; }
+
+/* dragging visuals (ported behavior from Regime Radar's useDragAndDropSimple) */
+.route-card.drag-fading { opacity: 0.3; transition: opacity 0.3s ease; }
+.route-card.drag-over { outline: 2px dashed var(--accent); outline-offset: 4px; }
+.route-drag-clone {
+  position: fixed;
+  z-index: 45;
+  pointer-events: none;
+  transform: scale(1.03) rotate(-1deg);
+  box-shadow: 0 15px 30px -8px rgba(0, 0, 0, 0.5);
+  transition: box-shadow 0.2s ease;
+}
+@keyframes dropBounce {
+  0% { transform: scale(1.02); }
+  50% { transform: scale(0.985); }
+  100% { transform: scale(1); }
+}
+.route-card.dropping { animation: dropBounce 0.4s ease; }
+
+body.dragging-active { overflow: hidden; }
+
+/* ---------------------------------------------------------------------------------------------
+   Empty state / misc
+   --------------------------------------------------------------------------------------------- */
+.empty-hint {
+  text-align: center;
+  color: var(--text-faint);
+  font-size: 0.85rem;
+  padding: 30px 10px;
+}
+.empty-hint a { color: var(--accent); text-decoration: none; font-weight: 600; }
+.empty-hint a:hover { text-decoration: underline; }
+
+.global-card .settings-grid { margin-top: 16px; }
+
+.toast-stack {
+  position: fixed;
+  bottom: 18px;
+  left: 50%;
+  transform: translateX(-50%);
+  z-index: 90;
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  align-items: center;
+}
+.toast {
+  background: var(--card);
+  border: 1px solid var(--card-border);
+  border-radius: 999px;
+  padding: 9px 18px;
+  font-size: 0.82rem;
+  box-shadow: var(--card-shadow);
+}
+.toast.toast-error { border-color: rgba(239, 68, 68, 0.4); color: #fecaca; }
+.toast.toast-success { border-color: rgba(34, 197, 94, 0.4); color: #bbf7d0; }
