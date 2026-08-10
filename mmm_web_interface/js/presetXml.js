@@ -70,10 +70,10 @@ export function serializePreset(state) {
   for (const r of state.routes) {
     lines.push(`    <route name="${esc(r.name || '')}">`);
     lines.push(`      <input device="${IN_DEVICE_NAMES[r.inputDevice]}" channels="${channelsToRangeString(r.inputChannels)}"/>`);
-    lines.push(`      <passthrough programChange="${!!(r.typeFlags & DATA_TYPE_BITS.programChange)}" pitchBend="${!!(r.typeFlags & DATA_TYPE_BITS.pitchBend)}" aftertouch="${!!(r.typeFlags & DATA_TYPE_BITS.aftertouch)}" aftertouchMapEnabled="${!!(r.typeFlags & DATA_TYPE_BITS.aftertouchMap)}" aftertouchMapCC="${r.atMapCC}" pressure="${!!(r.typeFlags & DATA_TYPE_BITS.pressure)}" pressureMapEnabled="${!!r.cpMapEnabled}" pressureMapCC="${r.cpMapCC}" sysex="${!!(r.typeFlags & DATA_TYPE_BITS.sysex)}"/>`);
+    lines.push(`      <passthrough programChange="${!!(r.typeFlags & DATA_TYPE_BITS.programChange)}" pitchBend="${!!(r.typeFlags & DATA_TYPE_BITS.pitchBend)}" aftertouch="${!!(r.typeFlags & DATA_TYPE_BITS.aftertouch)}" aftertouchMapEnabled="${!!(r.typeFlags & DATA_TYPE_BITS.aftertouchMap)}" aftertouchMapCC="${r.atMapCC}" pressure="${!!(r.typeFlags & DATA_TYPE_BITS.pressure)}" pressureMapEnabled="${!!r.cpMapEnabled}" pressureMapCC="${r.cpMapCC}" sysex="${!!(r.typeFlags & DATA_TYPE_BITS.sysex)}" common="${!!r.commonEnabled}" realtime="${!!r.realtimeEnabled}" clock="${!!r.clockEnabled}"/>`);
     lines.push(`      <noteRange enabled="${!!(r.typeFlags & DATA_TYPE_BITS.note)}" start="${r.noteStart}" end="${r.noteEnd}"/>`);
     lines.push(`      <ccRange enabled="${!!(r.typeFlags & DATA_TYPE_BITS.cc)}" start="${r.ccStart}" end="${r.ccEnd}"/>`);
-    lines.push(`      <output device="${OUT_DEVICE_NAMES[r.outputDevice]}" channels="${channelsToRangeString(r.outputChannels)}" transpose="${r.transpose}" ccMapStart="${r.ccMapStart}"/>`);
+    lines.push(`      <output device="${OUT_DEVICE_NAMES[r.outputDevice]}" channels="${channelsToRangeString(r.outputChannels)}" transpose="${r.transpose}" velocityScale="${r.velocityScale}" ccMapStart="${r.ccMapStart}" monoRetrig="${!!r.monoRetrig}" roundRobin="${!!r.roundRobin}" roundRobinRandom="${!!r.roundRobinRandom}"/>`);
     lines.push('    </route>');
   }
   lines.push('  </routes>');
@@ -139,10 +139,22 @@ export function parsePreset(xmlText) {
       outputDevice: Math.max(0, OUT_DEVICE_NAMES.indexOf(outputEl?.getAttribute('device') || 'none')),
       outputChannels: rangeStringToChannels(outputEl?.getAttribute('channels') || 'all'),
       transpose: parseInt(outputEl?.getAttribute('transpose') || '0', 10),
+      velocityScale: parseInt(outputEl?.getAttribute('velocityScale') || '100', 10),
       ccMapStart: parseInt(outputEl?.getAttribute('ccMapStart') || '0', 10),
       atMapCC: parseInt(passEl?.getAttribute('aftertouchMapCC') || '0', 10),
       cpMapEnabled: boolAttr(passEl || document.createElement('x'), 'pressureMapEnabled'),
-      cpMapCC: parseInt(passEl?.getAttribute('pressureMapCC') || '0', 10)
+      cpMapCC: parseInt(passEl?.getAttribute('pressureMapCC') || '0', 10),
+      // Accept the former autoLegato attribute so existing preset files remain importable.
+      monoRetrig: boolAttr(outputEl || document.createElement('x'), 'monoRetrig') ||
+        boolAttr(outputEl || document.createElement('x'), 'autoLegato'),
+      roundRobin: boolAttr(outputEl || document.createElement('x'), 'roundRobin'),
+      roundRobinRandom: boolAttr(outputEl || document.createElement('x'), 'roundRobinRandom'),
+      // Presets saved before Common/Realtime existed have no opinion on these attributes at all —
+      // default to on (matching a freshly-added route) rather than off, only respecting an explicit
+      // false from a preset that was actually saved with this feature.
+      commonEnabled: passEl && passEl.hasAttribute('common') ? boolAttr(passEl, 'common') : true,
+      realtimeEnabled: passEl && passEl.hasAttribute('realtime') ? boolAttr(passEl, 'realtime') : true,
+      clockEnabled: passEl && passEl.hasAttribute('clock') ? boolAttr(passEl, 'clock') : true
     });
   }
 

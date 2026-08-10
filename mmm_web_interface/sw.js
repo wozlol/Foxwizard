@@ -1,6 +1,6 @@
 // Foxwizard Patchling — offline app shell cache.
 // Bump CACHE_NAME whenever any of the listed files change so clients pick up the new version.
-const CACHE_NAME = 'foxwizard-patchling-v1';
+const CACHE_NAME = 'foxwizard-patchling-v2';
 const SHELL_FILES = [
   './',
   './index.html',

@@ -27,7 +27,7 @@ export const CMD = {
 const MFR_ID = 0x7D;
 const DEVICE_ID = 0x4D;
 export const ROUTE_NAME_MAX_LEN = 24; // must match ROUTE_NAME_MAX_LEN in the firmware
-const ROUTE_RAW_BYTES = 15 + ROUTE_NAME_MAX_LEN;
+const ROUTE_RAW_BYTES = 17 + ROUTE_NAME_MAX_LEN;
 const DEFAULT_TIMEOUT_MS = 1500;
 
 // Fixed-length, zero-padded ASCII — matches the firmware's raw char[ROUTE_NAME_MAX_LEN] field
@@ -93,7 +93,7 @@ function write16(v) {
   return [v & 0x7F, (v >> 7) & 0x7F];
 }
 
-/** Route field object <-> 38 raw wire bytes (14 fixed fields + 24-byte name). */
+/** Route field object <-> 41 raw wire bytes (17 fixed fields + 24-byte name). */
 export function routeToBytes(r) {
   return [
     (r.enabled ? 0x80 : 0) | (r.inputDevice & 0x03),
@@ -114,11 +114,21 @@ export function routeToBytes(r) {
     r.outputChannels & 0xFF,
     (r.outputChannels >> 8) & 0xFF,
     (r.transpose + 64) & 0x7F,
+    // Full byte, not masked to 7 bits — range is 10-200, well past 0x7F, and pack7 already handles
+    // any raw byte up to 255 safely.
+    r.velocityScale & 0xFF,
     r.ccMapStart & 0x7F,
     r.atMapCC & 0x7F,
     // bit7=channel pressure remapped to CC, bits6-0=destination CC number — packed into one byte
     // since the CC number itself only needs 7 bits, same trick the firmware uses.
     (r.cpMapEnabled ? 0x80 : 0) | (r.cpMapCC & 0x7F),
+    // bit0=Mono Retrig (poly->mono, last-note priority), bit1=Round Robin (cycles each new note
+    // to a different selected output channel), bit2=System Common, bit3=System Realtime (Transport,
+    // everything but Clock), bit4=MIDI Clock (split from Transport — continuous chatter, not a
+    // one-off event, so worth gating independently), bit5=Round Robin Random (true random channel
+    // pick instead of cycling — only meaningful with bit1 set).
+    (r.monoRetrig ? 0x01 : 0) | (r.roundRobin ? 0x02 : 0) | (r.commonEnabled ? 0x04 : 0) |
+      (r.realtimeEnabled ? 0x08 : 0) | (r.clockEnabled ? 0x10 : 0) | (r.roundRobinRandom ? 0x20 : 0),
     ...encodeName(r.name)
   ];
 }
@@ -136,11 +146,18 @@ export function bytesToRoute(b) {
     outputDevice: b[8],
     outputChannels: b[9] | (b[10] << 8),
     transpose: b[11] - 64,
-    ccMapStart: b[12],
-    atMapCC: b[13],
-    cpMapEnabled: !!(b[14] & 0x80),
-    cpMapCC: b[14] & 0x7F,
-    name: decodeName(b.slice(15, 15 + ROUTE_NAME_MAX_LEN))
+    velocityScale: b[12],
+    ccMapStart: b[13],
+    atMapCC: b[14],
+    cpMapEnabled: !!(b[15] & 0x80),
+    cpMapCC: b[15] & 0x7F,
+    monoRetrig: !!(b[16] & 0x01),
+    roundRobin: !!(b[16] & 0x02),
+    commonEnabled: !!(b[16] & 0x04),
+    realtimeEnabled: !!(b[16] & 0x08),
+    clockEnabled: !!(b[16] & 0x10),
+    roundRobinRandom: !!(b[16] & 0x20),
+    name: decodeName(b.slice(17, 17 + ROUTE_NAME_MAX_LEN))
   };
 }
 

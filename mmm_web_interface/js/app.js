@@ -94,14 +94,24 @@ function defaultRoute() {
     enabled: true,
     inputDevice: 2, // both
     inputChannels: 0x0001, // ch1 only
-    typeFlags: 0,
+    // All top-level input data types on by default (every bit except bit7/aftertouchMap, which is
+    // a sub-switch under Poly Aftertouch, not one of the top-level switches the master toggle
+    // controls) — a fresh route works as a full passthrough immediately, narrow down from there.
+    typeFlags: 0x7F,
     noteStart: 0, noteEnd: 127,
     ccStart: 0, ccEnd: 127,
-    outputDevice: 2, // usb
+    outputDevice: 3, // both
     outputChannels: 0x0001, // ch1 only
     transpose: 0,
+    velocityScale: 100,
     ccMapStart: 0,
     atMapCC: 0,
+    monoRetrig: false,
+    roundRobin: false,
+    roundRobinRandom: false,
+    commonEnabled: true,
+    realtimeEnabled: true,
+    clockEnabled: true,
     cpMapEnabled: false,
     cpMapCC: 0
   };
@@ -486,16 +496,12 @@ function channelGrid(index, field, mask) {
     </div>`;
   }
   html += '</div>';
-  html += `<div class="channel-grid-actions">
-    <button type="button" class="btn btn-ghost btn-tiny" data-route-index="${index}" data-action="setChannelsAll" data-field="${field}">All</button>
-    <button type="button" class="btn btn-ghost btn-tiny" data-route-index="${index}" data-action="setChannelsNone" data-field="${field}">None</button>
-  </div>`;
   return html;
 }
 
-function switchHtml(index, field, checked, label) {
+function switchHtml(index, field, checked, label, extraClass) {
   const id = `sw-${field}-${index}`;
-  return `<label class="switch">
+  return `<label class="switch${extraClass ? ` ${extraClass}` : ''}">
     <input type="checkbox" id="${id}" data-route-index="${index}" data-field="${field}" ${checked ? 'checked' : ''}>
     <span class="switch-track"><span class="switch-thumb"></span></span>
     <span class="switch-label">${label}</span>
@@ -509,10 +515,21 @@ const TYPE_SHORT_LABELS = [
   [DATA_TYPE_BITS.cc, 'CC'],
   [DATA_TYPE_BITS.programChange, 'PC'],
   [DATA_TYPE_BITS.pitchBend, 'Bend'],
-  [DATA_TYPE_BITS.pressure, 'Ch Pressure AT'],
+  [DATA_TYPE_BITS.pressure, 'Ch AT'],
   [DATA_TYPE_BITS.aftertouch, 'Poly AT'],
   [DATA_TYPE_BITS.sysex, 'Sysex']
 ];
+
+// System Common/Realtime/Clock aren't typeFlags bits (typeFlags is full — they live in flags2
+// instead, as plain boolean route fields), so they're not part of TYPE_SHORT_LABELS' bit-filter
+// scheme and need their own check here and in routeSummary below.
+function allInputTypesOn(route) {
+  return (route.typeFlags & 0x7F) === 0x7F && !!route.commonEnabled && !!route.realtimeEnabled && !!route.clockEnabled;
+}
+
+function allInputChannelsOn(route) {
+  return route.inputChannels === 0xFFFF;
+}
 
 // Plain-language one-liner shown in place of the full settings when a route is collapsed — the
 // collapsed card is only as tall as the header, so this is the only thing conveying what it does.
@@ -521,13 +538,22 @@ function routeSummary(route) {
   const outCh = route.outputChannels === 0xFFFF ? 'All Ch' : `Ch ${channelsToRangeString(route.outputChannels) || 'None'}`;
   const types = TYPE_SHORT_LABELS.filter(([bit]) => route.typeFlags & bit).map(([bit, label]) => {
     if (bit === DATA_TYPE_BITS.aftertouch && (route.typeFlags & DATA_TYPE_BITS.aftertouchMap)) return `Poly AT → CC ${route.atMapCC}`;
-    if (bit === DATA_TYPE_BITS.pressure && route.cpMapEnabled) return `Ch Pressure AT → CC ${route.cpMapCC}`;
+    if (bit === DATA_TYPE_BITS.pressure && route.cpMapEnabled) return `Ch AT → CC ${route.cpMapCC}`;
     return label;
   });
+  if (route.commonEnabled) types.push('Common');
+  if (route.realtimeEnabled) types.push('Transport');
+  if (route.clockEnabled) types.push('Clock');
   const typesText = types.length ? types.join(', ') : 'Nothing Selected';
   const transposeText = (route.typeFlags & DATA_TYPE_BITS.note) && route.transpose !== 0
     ? `, Transpose ${route.transpose > 0 ? '+' : ''}${route.transpose}` : '';
-  return `${IN_DEVICE_SHORT[route.inputDevice]} ${inCh} → ${OUT_DEVICE_SHORT[route.outputDevice]} ${outCh} · ${typesText}${transposeText}`;
+  const velocityText = (route.typeFlags & DATA_TYPE_BITS.note) && route.velocityScale !== 100
+    ? `, Velocity ${route.velocityScale}%` : '';
+  const monoRobin = [];
+  if (route.monoRetrig) monoRobin.push('Mono');
+  if (route.roundRobin) monoRobin.push(route.roundRobinRandom ? 'Rand Robin' : 'Round Robin');
+  const monoRobinText = monoRobin.length ? `, ${monoRobin.join(', ')}` : '';
+  return `${IN_DEVICE_SHORT[route.inputDevice]} ${inCh} → ${OUT_DEVICE_SHORT[route.outputDevice]} ${outCh} · ${typesText}${transposeText}${velocityText}${monoRobinText}`;
 }
 
 function renderRouteCard(route, index, animateStaple) {
@@ -563,14 +589,17 @@ function renderRouteCard(route, index, animateStaple) {
     ${collapsed ? '' : `<div class="route-body">
       <div class="route-io-columns">
         <div class="route-input-col">
-          <h3>Input</h3>
-          <div class="field-row">
-            <label>Input Device</label>
+          <div class="col-header-row">
+            <h3>Input</h3>
             <select data-route-index="${index}" data-field="inputDevice">${selectOptions(IN_DEVICE_OPTIONS, route.inputDevice)}</select>
           </div>
           <div class="field-row">
             <label>Input Channels</label>
             ${channelGrid(index, 'inputChannels', route.inputChannels)}
+          </div>
+          <div class="switches-master-row">
+            ${switchHtml(index, 'allInputChannels', allInputChannelsOn(route), 'All Channels', 'switch-purple')}
+            ${switchHtml(index, 'allInputTypes', allInputTypesOn(route), 'All Data', 'switch-purple')}
           </div>
           <div class="switches-cols">
             <div class="switches-col">
@@ -598,26 +627,33 @@ function renderRouteCard(route, index, animateStaple) {
               <div class="field-row">
                 ${switchHtml(index, 'pitchBend', !!(route.typeFlags & DATA_TYPE_BITS.pitchBend), 'Pitch Bend')}
               </div>
+              <div class="field-row">
+                ${switchHtml(index, 'clock', !!route.clockEnabled, 'Clock')}
+              </div>
             </div>
             <div class="switches-col">
               <div class="field-row">
-                ${switchHtml(index, 'pressure', pressureOn, 'Ch Pressure Aftertouch')}
+                ${switchHtml(index, 'pressure', pressureOn, 'Ch Pressure AT')}
                 ${pressureOn ? `<div class="cc-map-row cc-map-row-indent">
                   ${switchHtml(index, 'pressureMap', pressureMapOn, '↳ AT to CC')}
                   <input type="number" min="0" max="127" value="${route.cpMapCC}" data-route-index="${index}" data-field="cpMapCC" ${pressureMapOn ? '' : 'disabled'}>
-                </div>
-                <p class="note-hint">${pressureMapOn ? 'Channel pressure is sent as this CC instead.' : 'Channel pressure passes through normally.'}</p>` : ''}
+                </div>` : ''}
               </div>
               <div class="field-row">
-                ${switchHtml(index, 'aftertouch', aftertouchOn, 'Poly Aftertouch')}
+                ${switchHtml(index, 'aftertouch', aftertouchOn, 'Poly AT')}
                 ${aftertouchOn ? `<div class="cc-map-row cc-map-row-indent">
                   ${switchHtml(index, 'aftertouchMap', aftertouchMapOn, '↳ AT to CC')}
                   <input type="number" min="0" max="127" value="${route.atMapCC}" data-route-index="${index}" data-field="atMapCC" ${aftertouchMapOn ? '' : 'disabled'}>
-                </div>
-                <p class="note-hint">${aftertouchMapOn ? 'Aftertouch is sent as this CC instead.' : 'Aftertouch passes through normally.'}</p>` : ''}
+                </div>` : ''}
               </div>
               <div class="field-row">
                 ${switchHtml(index, 'sysex', !!(route.typeFlags & DATA_TYPE_BITS.sysex), 'Sysex')}
+              </div>
+              <div class="field-row">
+                ${switchHtml(index, 'common', !!route.commonEnabled, 'Common')}
+              </div>
+              <div class="field-row">
+                ${switchHtml(index, 'realtime', !!route.realtimeEnabled, 'Realtime (Transport)')}
               </div>
             </div>
           </div>
@@ -625,28 +661,42 @@ function renderRouteCard(route, index, animateStaple) {
         </div>
 
         <div class="route-output-col">
-          <h3>Output</h3>
-          <div class="field-row">
-            <label>Output Device</label>
+          <div class="col-header-row">
+            <h3>Output</h3>
             <select data-route-index="${index}" data-field="outputDevice">${selectOptions(OUT_DEVICE_OPTIONS, route.outputDevice)}</select>
           </div>
           <div class="field-row">
-            <label>Output Channels <span class="channel-warning">${countBits(route.outputChannels) > 2 ? 'Many channels may add slight lag.' : ''}</span></label>
+            <label>Output Channels <span class="channel-warning">${countBits(route.outputChannels) > 2 ? 'Caution: dense data may lag if cloned to too many channels.' : ''}</span></label>
             ${channelGrid(index, 'outputChannels', route.outputChannels)}
           </div>
           <div class="field-row-cols">
-            <div class="field-row">
-              <label>Transpose</label>
-              <input type="number" min="-64" max="63" value="${route.transpose}" data-route-index="${index}" data-field="transpose">
-              <p class="note-hint">Notes that land outside 0–127 after transpose don't pass.</p>
+            <div class="field-row-cols">
+              <div class="field-subrow">
+                <label>Transpose</label>
+                <input type="number" min="-64" max="63" value="${route.transpose}" data-route-index="${index}" data-field="transpose">
+              </div>
+              <div class="field-subrow">
+                <label>Velocity %</label>
+                <input type="number" min="10" max="200" step="10" value="${route.velocityScale}" data-route-index="${index}" data-field="velocityScale">
+              </div>
             </div>
             <div class="field-row">
-              <label>CC Map Start${ccMapInvalid ? ' — too high' : ''}</label>
               <div class="cc-map-row">
-                ${switchHtml(index, 'ccMapEnabled', ccMapEnabled, 'Map')}
+                ${switchHtml(index, 'ccMapEnabled', ccMapEnabled, `CC Map Start${ccMapInvalid ? ' — too high' : ''}`)}
                 <input type="number" min="0" max="127" value="${ccMapDisplayValue}" data-route-index="${index}" data-field="ccMapStart" ${ccMapEnabled ? '' : 'disabled'} ${ccMapInvalid ? 'style="border-color:var(--red)"' : ''}>
               </div>
               <p class="note-hint">CC range now begins with this CC.</p>
+            </div>
+            <div class="field-row">
+              ${switchHtml(index, 'monoRetrig', !!route.monoRetrig, 'Mono Retrig')}
+              <p class="note-hint">Poly to Mono. Helps samplers play more like analog CV synths. Lifting a key recalls the next still-held key.</p>
+            </div>
+            <div class="field-row">
+              <div class="round-robin-row">
+                ${switchHtml(index, 'roundRobin', !!route.roundRobin, 'Round Robin')}
+                ${route.roundRobin ? switchHtml(index, 'roundRobinRandom', !!route.roundRobinRandom, 'Rand', 'cc-map-row-indent') : ''}
+              </div>
+              <p class="note-hint">Mono to Poly. ${route.roundRobin && route.roundRobinRandom ? 'Picks a random selected channel for each new note.' : 'Cycles each new note to a different selected channel.'}</p>
             </div>
           </div>
         </div>
@@ -663,7 +713,23 @@ function updateChannelWarning(index) {
   const warningEl = card?.querySelector('.channel-warning');
   if (!warningEl) return;
   const on = countBits(state.routes[index].outputChannels) > 2;
-  warningEl.textContent = on ? 'Many channels may add slight lag.' : '';
+  warningEl.textContent = on ? 'Caution: dense data may lag if cloned to too many channels.' : '';
+}
+
+// Same idea as updateChannelWarning above — "All Channels"/"All Data" only reflect the current
+// combined state at render time, and most of the individual switches/checkboxes they summarize
+// don't trigger a full re-render (only the ones with their own nested sub-content do, for that
+// unrelated reason), so without this targeted sync the master switches would silently go stale
+// the moment you turn off anything that doesn't happen to also cause a re-render. Called after
+// every route field change, refresh or not, so it always reflects the state accurately.
+function syncMasterSwitches(index) {
+  const card = routesContainer.querySelector(`.route-card[data-route-index="${index}"]`);
+  if (!card) return;
+  const route = state.routes[index];
+  const allTypesEl = card.querySelector('[data-field="allInputTypes"]');
+  if (allTypesEl) allTypesEl.checked = allInputTypesOn(route);
+  const allChEl = card.querySelector('[data-field="allInputChannels"]');
+  if (allChEl) allChEl.checked = allInputChannelsOn(route);
 }
 
 function countBits(mask) {
@@ -686,7 +752,7 @@ function refreshRouteCard(index, animateStaple) {
 }
 
 // Structural changes (need a re-render): checkboxes that reveal/hide fields, staple toggle, delete
-const STRUCTURAL_FIELDS = new Set(['note', 'cc', 'ccMapEnabled', 'aftertouch', 'aftertouchMap', 'pressure', 'pressureMap']);
+const STRUCTURAL_FIELDS = new Set(['note', 'cc', 'ccMapEnabled', 'aftertouch', 'aftertouchMap', 'pressure', 'pressureMap', 'allInputTypes', 'allInputChannels', 'roundRobin', 'roundRobinRandom']);
 
 routesContainer.addEventListener('click', (e) => {
   const actionEl = e.target.closest('[data-action]');
@@ -710,11 +776,6 @@ routesContainer.addEventListener('click', (e) => {
     state.routes[index].ccEnd = 127;
     refreshRouteCard(index);
     syncRouteLive(index);
-  } else if (action === 'setChannelsAll' || action === 'setChannelsNone') {
-    const field = actionEl.dataset.field; // 'inputChannels' or 'outputChannels'
-    state.routes[index][field] = action === 'setChannelsAll' ? 0xFFFF : 0;
-    refreshRouteCard(index);
-    syncRouteLive(index);
   }
 });
 
@@ -727,6 +788,7 @@ routesContainer.addEventListener('change', (e) => {
   applyRouteFieldChange(route, field, e.target);
   if (STRUCTURAL_FIELDS.has(field)) refreshRouteCard(parseInt(index, 10));
   if (field === 'outputChannels') updateChannelWarning(parseInt(index, 10));
+  syncMasterSwitches(parseInt(index, 10));
   syncRouteLive(parseInt(index, 10));
 });
 
@@ -778,12 +840,34 @@ function applyRouteFieldChange(route, field, el) {
   if (field === 'pressure') { setTypeFlag(route, DATA_TYPE_BITS.pressure, el.checked); return; }
   if (field === 'pressureMap') { route.cpMapEnabled = el.checked; return; }
   if (field === 'sysex') { setTypeFlag(route, DATA_TYPE_BITS.sysex, el.checked); return; }
+  if (field === 'common') { route.commonEnabled = el.checked; return; }
+  if (field === 'realtime') { route.realtimeEnabled = el.checked; return; }
+  if (field === 'clock') { route.clockEnabled = el.checked; return; }
+  if (field === 'monoRetrig') { route.monoRetrig = el.checked; return; }
+  if (field === 'roundRobin') { route.roundRobin = el.checked; return; }
+  if (field === 'roundRobinRandom') { route.roundRobinRandom = el.checked; return; }
   if (field === 'ccMapEnabled') {
     route._ccMapEnabled = el.checked;
     if (!el.checked) route.ccMapStart = route.ccStart; // switching off: snap back to "no remap"
     return;
   }
-  if (['noteStart', 'noteEnd', 'ccStart', 'ccEnd', 'transpose', 'ccMapStart', 'atMapCC', 'cpMapCC'].includes(field)) {
+  if (field === 'allInputTypes') {
+    // Flips every top-level input data-type switch at once — Note Range, CC Range, Program Change,
+    // Pitch Bend, Clock, Ch Pressure Aftertouch, Poly Aftertouch, Sysex, Common, Realtime.
+    // Deliberately leaves the sub-switches (AT to CC, Map, and the actual note/cc range values)
+    // untouched, and leaves Mono Retrig/Round Robin alone too, since those are Output-side, not Input.
+    const on = el.checked;
+    route.typeFlags = on ? (route.typeFlags | 0x7F) : (route.typeFlags & ~0x7F);
+    route.commonEnabled = on;
+    route.realtimeEnabled = on;
+    route.clockEnabled = on;
+    return;
+  }
+  if (field === 'allInputChannels') {
+    route.inputChannels = el.checked ? 0xFFFF : 0;
+    return;
+  }
+  if (['noteStart', 'noteEnd', 'ccStart', 'ccEnd', 'transpose', 'velocityScale', 'ccMapStart', 'atMapCC', 'cpMapCC'].includes(field)) {
     const raw = el.value.trim();
     // "-" (and "") are valid in-progress states while typing a negative transpose value — bail
     // without touching state or the field so the next keystroke can complete the number. Clamping
@@ -791,9 +875,10 @@ function applyRouteFieldChange(route, field, el) {
     if (raw === '' || raw === '-') return;
     let value = parseInt(raw, 10);
     if (Number.isNaN(value)) return;
-    // Clamp to the field's own min/max (transpose is -64..63, everything else is 0..127) instead
-    // of just storing whatever was typed — a value outside the wire format's range would either
-    // get silently truncated on the device or corrupt the byte, so clamp here where it's visible.
+    // Clamp to the field's own min/max (transpose is -64..63, velocityScale is 10..200, everything
+    // else is 0..127) instead of just storing whatever was typed — a value outside the wire
+    // format's range would either get silently truncated on the device or corrupt the byte, so
+    // clamp here where it's visible.
     const min = el.min !== '' ? parseInt(el.min, 10) : -Infinity;
     const max = el.max !== '' ? parseInt(el.max, 10) : Infinity;
     value = Math.min(max, Math.max(min, value));
@@ -846,6 +931,7 @@ attachDragReorder(routesContainer, { itemSelector: '.route-card', onReorder: reo
 // Toolbar: preset file + device bulk sync
 // ============================================================================================
 document.getElementById('addRouteBtn').addEventListener('click', addRoute);
+document.getElementById('addRouteBtnTop').addEventListener('click', addRoute);
 document.getElementById('emptyHintAddRoute').addEventListener('click', (e) => { e.preventDefault(); addRoute(); });
 
 document.getElementById('downloadPresetBtn').addEventListener('click', () => {

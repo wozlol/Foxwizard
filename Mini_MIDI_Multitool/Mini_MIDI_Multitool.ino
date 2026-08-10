@@ -75,7 +75,7 @@ const char USB_DESCRIPTOR_NAME[] = "FoxWizard"; // short name shown by the OS/DA
 
 constexpr uint16_t MAX_ROUTES = 256;
 constexpr uint8_t ROUTE_NAME_MAX_LEN = 24; // ASCII characters, enforced web-side too
-constexpr uint8_t ROUTE_RAW_BYTES = 15 + ROUTE_NAME_MAX_LEN;
+constexpr uint8_t ROUTE_RAW_BYTES = 17 + ROUTE_NAME_MAX_LEN;
 constexpr uint8_t MAX_PENDING = 64;
 
 // ============================================================================================
@@ -131,7 +131,10 @@ enum MsgKind : uint8_t {
   MK_PITCH = 3,
   MK_POLY_AT = 4,
   MK_CHAN_PRESSURE = 5,
-  MK_SYSEX = 6
+  MK_SYSEX = 6,
+  MK_COMMON = 7,    // System Common: MTC Quarter Frame 0xF1, Song Position 0xF2, Song Select 0xF3, Tune Request 0xF6
+  MK_CLOCK = 8,     // System Realtime: Clock 0xF8 only — split from the rest since it's continuous chatter (24/quarter note during playback) rather than a rare one-off event
+  MK_REALTIME = 9   // System Realtime, everything else: Start 0xFA, Continue 0xFB, Stop 0xFC, Active Sensing 0xFE, Reset 0xFF
 };
 
 #pragma pack(push, 1)
@@ -148,9 +151,11 @@ struct RouteData {
   uint8_t outChLow;
   uint8_t outChHigh;
   uint8_t transpose;  // semitone + 64
+  uint8_t velocityScale; // percent, 10-200, applied to outgoing Note On velocity (100 = unchanged)
   uint8_t ccMapStart;
   uint8_t atMapCC;    // destination CC number when typeFlags bit7 is set (poly aftertouch remapped to CC)
   uint8_t cpMapCC;    // bit7=channel pressure remapped to CC, bits6-0=destination CC number
+  uint8_t flags2;     // bit0=Mono Retrig, bit1=Round Robin, bit2=System Common, bit3=System Realtime (Transport, everything but Clock), bit4=MIDI Clock, bit5=Round Robin Random (true random channel pick instead of cycling; only meaningful with bit1 set)
   char name[ROUTE_NAME_MAX_LEN]; // ASCII, zero-padded, not necessarily NUL-terminated if it fills the buffer
 };
 
@@ -194,7 +199,7 @@ struct PendingMsg {
 
 struct SysexState {
   enum Phase { IDLE, PEEK1, PEEK2, OURS, FORWARDING } phase = IDLE;
-  uint8_t cmdBuf[64]; // cmd(1) + index(2) + pack7(ROUTE_RAW_BYTES=39) which packs to 45 bytes = 48 needed
+  uint8_t cmdBuf[64]; // cmd(1) + index(2) + pack7(ROUTE_RAW_BYTES=41) which packs to 47 bytes = 50 needed
   uint8_t cmdLen = 0;
   uint8_t fwdDevice = OUT_NONE;
 };
@@ -278,6 +283,39 @@ struct NoteHoldStack {
 };
 NoteHoldStack noteStacks[2][16]; // [DEV_TRS/DEV_USB][channel]
 
+// Mono Retrig / Round Robin — per-route note tracking.
+// One shared small table per route serves both features, keyed by the input note number:
+//   - Mono Retrig (flags2 bit0): poly->mono conversion. Every held note is tracked with its own
+//     velocity and a "how recently was this pressed" order counter; only the most-recently-pressed
+//     held note is ever actually sounding, and releasing it recalls whichever remaining held note
+//     has the highest order value (falls back through the "next oldest" held note, goes silent once
+//     none are left) — same idea as the poly-aftertouch note-priority stack above, applied to notes
+//     themselves instead of a mapped CC value.
+//   - Round Robin (flags2 bit1): each new Note On cycles to the next of the route's selected output
+//     channels rather than fanning out to all of them; the channel actually used is remembered per
+//     note so that note's own Note Off is sent back to that same channel, not wherever the cursor
+//     has since rotated to.
+// Depth 16 (not one slot per possible note number) is a deliberate size/cost tradeoff — both
+// features are fundamentally about melodic, mostly-monophonic playing, not dense chords, so this is
+// generous headroom rather than a tight cap. If it's ever exceeded, the overflow note simply isn't
+// tracked (never silently stuck: it never got an on sent for tracking purposes, so it never needs an
+// off either) — same graceful-degradation approach as the poly aftertouch note stack.
+constexpr uint8_t ROUTE_NOTE_TRACK_DEPTH = 16;
+struct RouteNoteSlot {
+  uint8_t note = 0xFF;  // input note number this slot is tracking; 0xFF = empty/free
+  uint8_t velocity = 0; // last velocity this note was pressed with (Mono Retrig recall)
+  uint16_t order = 0;   // Mono Retrig priority — higher means more recently pressed
+  uint8_t channel = 0xFF; // 0-15, output channel this note's Note On actually went to (Round Robin); 0xFF = none yet
+};
+struct RouteNoteTrack {
+  RouteNoteSlot slots[ROUTE_NOTE_TRACK_DEPTH];
+  uint16_t orderCounter = 0;
+  uint8_t rrCursor = 0;        // Round Robin rotating cursor, this route's own
+  bool monoRetrigActive = false;   // is a note currently sounding through Mono Retrig for this route
+  uint8_t monoRetrigActiveNote = 0xFF;
+};
+RouteNoteTrack routeNoteTracks[MAX_ROUTES];
+
 // This whole note-hold-stack machinery only matters to routes with poly aftertouch mapped to CC —
 // a rare, minor feature. Rather than paying its (small but nonzero) per-Note-On/Off/aftertouch-
 // message bookkeeping cost on every single MIDI event regardless of whether anything actually uses
@@ -289,6 +327,184 @@ void recomputeAnyAftertouchMapRoutes() {
   anyAftertouchMapRoutes = false;
   for (uint16_t i = 0; i < routeCount; ++i) {
     if (routes[i].typeFlags & 0x80) { anyAftertouchMapRoutes = true; return; }
+  }
+}
+
+// routeNoteTracks is indexed by route position, but ADD/DELETE/MOVE_ROUTE shift routes around in
+// the array — without this, Mono Retrig/Round Robin state left over at an index could end up
+// misattributed to a completely different route after a reorder. Route mutations only ever happen
+// in an infrequent bulk Save-to-Device/Load-from-Device operation (never live per-keystroke editing,
+// see the local-only architecture elsewhere in this file), and that operation already rebuilds the
+// whole route table from scratch, so resetting every route's tracking state on any structural change
+// is both correct and cheap relative to how rarely it actually runs.
+void resetAllRouteNoteTracks() {
+  for (uint16_t i = 0; i < MAX_ROUTES; ++i) routeNoteTracks[i] = RouteNoteTrack();
+}
+
+RouteNoteSlot *routeNoteFindSlot(RouteNoteTrack &t, uint8_t note) {
+  for (uint8_t i = 0; i < ROUTE_NOTE_TRACK_DEPTH; ++i) if (t.slots[i].note == note) return &t.slots[i];
+  return nullptr;
+}
+RouteNoteSlot *routeNoteFindOrAllocSlot(RouteNoteTrack &t, uint8_t note) {
+  RouteNoteSlot *existing = routeNoteFindSlot(t, note);
+  if (existing) return existing;
+  for (uint8_t i = 0; i < ROUTE_NOTE_TRACK_DEPTH; ++i) {
+    if (t.slots[i].note == 0xFF) { t.slots[i].note = note; return &t.slots[i]; }
+  }
+  return nullptr; // table full for this route — note goes untracked, see comment above
+}
+void routeNoteFreeSlot(RouteNoteTrack &t, uint8_t note) {
+  RouteNoteSlot *s = routeNoteFindSlot(t, note);
+  if (s) *s = RouteNoteSlot();
+}
+
+// Advances the route's Round Robin cursor and returns the next 0-15 output channel with its bit set
+// in outMask, wrapping around. Returns 0xFF if outMask is empty (nothing selected).
+uint8_t nextRoundRobinChannel(uint8_t &cursor, uint16_t outMask) {
+  if (outMask == 0) return 0xFF;
+  for (uint8_t attempts = 0; attempts < 16; ++attempts) {
+    uint8_t idx = cursor++ & 0x0F;
+    if (outMask & (1u << idx)) return idx;
+  }
+  return 0xFF;
+}
+
+// Round Robin's "Random" mode: true uniform pick (rp2040's actual hardware RNG, not a seeded
+// random() — no anti-repeat logic, the same channel can legitimately come up twice in a row).
+// Returns 0xFF if outMask is empty.
+uint8_t randomChannelInMask(uint16_t outMask) {
+  if (outMask == 0) return 0xFF;
+  uint8_t candidates[16];
+  uint8_t count = 0;
+  for (uint8_t c = 0; c < 16; ++c) {
+    if (outMask & (1u << c)) candidates[count++] = c;
+  }
+  return candidates[rp2040.hwrand32() % count];
+}
+
+// The single place that actually transmits a Note On/Off for a route (transpose applied), used by
+// both plain passthrough and Mono Retrig's recall logic. Round Robin (flags2 bit1) is handled
+// here so it applies uniformly regardless of which caller is sending the note. Deliberately never
+// frees a route's note-tracking slot itself — this function has no way to know whether an "off" is
+// a real key release or Mono Retrig silencing a superseded-but-still-held note (which needs its
+// slot's velocity/order to survive for a possible later recall) — freeing is the caller's job, once
+// the caller knows which case it actually is. See call sites for where that happens.
+void sendRouteNote(uint16_t routeIndex, const RouteData &r, bool on, uint8_t note, uint8_t velocity) {
+  if (r.outDevice == OUT_NONE) return;
+  int16_t transpose = (int16_t)r.transpose - 64;
+  int16_t outNote = (int16_t)note + transpose;
+  if (outNote < 0 || outNote > 127) return; // out-of-range after transpose: does not pass
+
+  uint16_t outMask = r.outChLow | ((uint16_t)r.outChHigh << 8);
+  uint8_t data2;
+  if (on) {
+    // velocityScale is a percent (10-200, 100 = unchanged) applied before the existing "never send
+    // velocity 0 as a Note On" floor — scaling down a soft hit could otherwise round to 0, which
+    // would be read as a Note Off by running-status-aware receivers.
+    uint16_t scaled = ((uint16_t)velocity * r.velocityScale) / 100;
+    if (scaled > 127) scaled = 127;
+    data2 = max<uint8_t>(1, (uint8_t)scaled);
+  } else {
+    data2 = 0;
+  }
+
+  if (!(r.flags2 & 0x02)) {
+    // Normal fan-out to every selected output channel (existing behavior).
+    for (uint8_t c = 0; c < 16; ++c) {
+      if (!(outMask & (1u << c))) continue;
+      PendingMsg msg;
+      msg.used = true;
+      msg.channel = c;
+      msg.kind = MK_NOTE;
+      msg.statusHi = on ? 0x90 : 0x80;
+      msg.number = (uint8_t)outNote;
+      msg.data1 = (uint8_t)outNote;
+      msg.data2 = data2;
+      msg.len = 3;
+      if (r.outDevice == OUT_TRS || r.outDevice == OUT_BOTH) upsertPending(pendingTrs, pendingTrsCount, msg);
+      if (r.outDevice == OUT_USB || r.outDevice == OUT_BOTH) upsertPending(pendingUsb, pendingUsbCount, msg);
+    }
+    return;
+  }
+
+  // Round Robin: exactly one channel, remembered per note so its own Note Off lands on the same
+  // channel its Note On went to, regardless of where the cursor has rotated to (or what the random
+  // pick lands on next) since. flags2 bit5 ("Random") swaps the cycling cursor for a true uniform
+  // pick — only meaningful while Round Robin itself is on, same as the web UI only showing it then.
+  RouteNoteTrack &t = routeNoteTracks[routeIndex];
+  RouteNoteSlot *slot = on ? routeNoteFindOrAllocSlot(t, note) : routeNoteFindSlot(t, note);
+  bool randomMode = r.flags2 & 0x20;
+  uint8_t channel;
+  if (on) {
+    channel = randomMode ? randomChannelInMask(outMask) : nextRoundRobinChannel(t.rrCursor, outMask);
+    if (slot) slot->channel = channel;
+  } else if (slot && slot->channel != 0xFF) {
+    channel = slot->channel;
+  } else {
+    channel = randomMode ? randomChannelInMask(outMask) : nextRoundRobinChannel(t.rrCursor, outMask);
+  }
+  if (channel == 0xFF) return; // nothing selected
+
+  PendingMsg msg;
+  msg.used = true;
+  msg.channel = channel;
+  msg.kind = MK_NOTE;
+  msg.statusHi = on ? 0x90 : 0x80;
+  msg.number = (uint8_t)outNote;
+  msg.data1 = (uint8_t)outNote;
+  msg.data2 = data2;
+  msg.len = 3;
+  if (r.outDevice == OUT_TRS || r.outDevice == OUT_BOTH) upsertPending(pendingTrs, pendingTrsCount, msg);
+  if (r.outDevice == OUT_USB || r.outDevice == OUT_BOTH) upsertPending(pendingUsb, pendingUsbCount, msg);
+}
+
+// Mono Retrig (flags2 bit0): converts this route's note stream to mono with last-note priority.
+// Mirrors the proven design from the ARPnMIDI project — track every held note's own velocity and
+// press order, only the newest is ever actually sounding, and releasing it sends that note's own
+// Note Off followed by a fresh Note On "recalling" whichever held note is now newest (or nothing, if
+// none remain). Off-then-on (not overlapped) matches ARPnMIDI's own working implementation.
+void handleMonoRetrigNote(uint16_t routeIndex, const RouteData &r, uint8_t note, uint8_t velocity, bool on) {
+  RouteNoteTrack &t = routeNoteTracks[routeIndex];
+
+  if (on) {
+    RouteNoteSlot *slot = routeNoteFindOrAllocSlot(t, note);
+    if (slot) { slot->velocity = velocity; slot->order = ++t.orderCounter; }
+
+    if (t.monoRetrigActive && t.monoRetrigActiveNote == note) {
+      // Re-trigger of the already-sounding note (no other note intervened) — nothing to change.
+      return;
+    }
+    if (t.monoRetrigActive) sendRouteNote(routeIndex, r, false, t.monoRetrigActiveNote, 0);
+    sendRouteNote(routeIndex, r, true, note, velocity);
+    t.monoRetrigActive = true;
+    t.monoRetrigActiveNote = note;
+    return;
+  }
+
+  // Note Off. Freeing this note's slot is deferred until after sendRouteNote(false, ...) below —
+  // if Round Robin is also on for this route, that call needs the slot's remembered `channel` still
+  // present to target this note's own Note Off correctly (see sendRouteNote's Round Robin branch).
+  if (!t.monoRetrigActive || t.monoRetrigActiveNote != note) {
+    routeNoteFreeSlot(t, note); // background note (already silent on the wire) — sounding note unaffected
+    return;
+  }
+
+  uint8_t winnerNote = 0xFF, winnerVelocity = 0;
+  uint16_t newestOrder = 0;
+  for (uint8_t i = 0; i < ROUTE_NOTE_TRACK_DEPTH; ++i) {
+    RouteNoteSlot &s = t.slots[i];
+    if (s.note == 0xFF || s.note == note) continue; // skip empty slots and the note being released itself
+    if (winnerNote == 0xFF || s.order >= newestOrder) { winnerNote = s.note; winnerVelocity = s.velocity; newestOrder = s.order; }
+  }
+
+  sendRouteNote(routeIndex, r, false, note, 0);
+  routeNoteFreeSlot(t, note); // now safe — Round Robin's channel lookup above already happened
+  if (winnerNote == 0xFF) {
+    t.monoRetrigActive = false;
+    t.monoRetrigActiveNote = 0xFF;
+  } else {
+    sendRouteNote(routeIndex, r, true, winnerNote, winnerVelocity);
+    t.monoRetrigActiveNote = winnerNote;
   }
 }
 
@@ -304,6 +520,7 @@ void setFactoryDefaults() {
   globalSettings.ledBrightnessStep = 10; // 100% (scale is 0..10, step 0 = fully off)
   routeCount = 0;
   anyAftertouchMapRoutes = false; // no routes left, so trivially true without needing a scan
+  resetAllRouteNoteTracks();
 }
 
 constexpr uint32_t EEPROM_MAGIC = 0x464F5831; // "FOX1"
@@ -329,6 +546,7 @@ void loadFromFlash() {
     addr += ROUTE_RAW_BYTES;
   }
   recomputeAnyAftertouchMapRoutes();
+  resetAllRouteNoteTracks();
 }
 
 void saveToFlash() {
@@ -570,7 +788,12 @@ void sendUsbBytes(uint8_t statusHi, uint8_t channel, uint8_t data1, uint8_t data
     case 0xC0: cin = 0x0C; break;
     case 0xD0: cin = 0x0D; break;
     case 0xE0: cin = 0x0E; break;
-    default: cin = (len == 1) ? 0x05 : ((len == 2) ? 0x06 : 0x04); break;
+    // Falls through for System Common/Realtime (statusHi >= 0xF0, no channel nibble to speak of).
+    // 0x05 = Single Byte (realtime, or a 1-byte common message like Tune Request). 0x02/0x03 = 2/3-
+    // byte System Common (MTC Quarter Frame, Song Select, Song Position Pointer) per the USB-MIDI
+    // spec — NOT 0x06/0x04, which are Sysex-continuation CINs and would missort these into whatever
+    // sysex stream happens to be in flight on the receiving end.
+    default: cin = (len == 1) ? 0x05 : ((len == 2) ? 0x02 : 0x03); break;
   }
   uint8_t packet[4] = {cin, status, data1, data2};
   usb_midi.writePacket(packet);
@@ -595,7 +818,10 @@ bool routeMatches(const RouteData &r, uint8_t inputDevice, uint8_t channel, MsgK
   uint8_t rd = r.flags & 0x03;
   if (rd != DEV_BOTH && rd != inputDevice) return false;
 
-  if (kind != MK_SYSEX) {
+  // Sysex and System Common/Realtime carry no channel nibble at all, so the input channel bitmask
+  // simply doesn't apply to them (unlike every other kind, which is always addressed to one of the
+  // 16 channels).
+  if (kind != MK_SYSEX && kind != MK_COMMON && kind != MK_REALTIME && kind != MK_CLOCK) {
     uint16_t mask = r.inChLow | ((uint16_t)r.inChHigh << 8);
     if (!(mask & (1u << channel))) return false;
   }
@@ -614,6 +840,9 @@ bool routeMatches(const RouteData &r, uint8_t inputDevice, uint8_t channel, MsgK
     case MK_POLY_AT: if (!(r.typeFlags & 0x10)) return false; break;
     case MK_CHAN_PRESSURE: if (!(r.typeFlags & 0x20)) return false; break;
     case MK_SYSEX: if (!(r.typeFlags & 0x40)) return false; break;
+    case MK_COMMON: if (!(r.flags2 & 0x04)) return false; break;
+    case MK_REALTIME: if (!(r.flags2 & 0x08)) return false; break;
+    case MK_CLOCK: if (!(r.flags2 & 0x10)) return false; break;
   }
   return true;
 }
@@ -670,14 +899,7 @@ void applyRouteOutput(const RouteData &r, uint8_t inputDevice, uint8_t channel, 
     msg.statusHi = statusHi;
     msg.len = 3;
 
-    if (kind == MK_NOTE) {
-      int16_t transpose = (int16_t)r.transpose - 64;
-      int16_t outNote = (int16_t)number + transpose;
-      if (outNote < 0 || outNote > 127) continue; // out-of-range after transpose: does not pass
-      msg.number = (uint8_t)outNote;
-      msg.data1 = (uint8_t)outNote;
-      msg.data2 = data2;
-    } else if (kind == MK_CC) {
+    if (kind == MK_CC) {
       int16_t shift = (int16_t)r.ccMapStart - (int16_t)r.ccStart;
       int16_t outCc = (int16_t)number + shift;
       if (outCc < 0 || outCc > 127) continue;
@@ -806,11 +1028,28 @@ void processIncomingEvent(uint8_t inputDevice, uint8_t statusHi, uint8_t channel
     }
   }
 
+  bool isNoteOn = (kind == MK_NOTE) && (statusHi == 0x90 && data2 > 0);
+
   bool matchedAny = false;
   for (uint16_t i = 0; i < routeCount; ++i) {
     if (routeMatches(routes[i], inputDevice, channel, kind, number)) {
       matchedAny = true;
-      applyRouteOutput(routes[i], inputDevice, channel, kind, number, statusHi, data1, data2);
+      if (kind == MK_NOTE) {
+        // Mono Retrig/Round Robin (flags2) need their own note-level state machine instead of the
+        // generic per-channel fan-out in applyRouteOutput, so Note events are dispatched here
+        // rather than ever reaching applyRouteOutput (which no longer handles MK_NOTE at all).
+        if (routes[i].flags2 & 0x01) {
+          handleMonoRetrigNote(i, routes[i], number, data2, isNoteOn);
+        } else {
+          sendRouteNote(i, routes[i], isNoteOn, number, data2);
+          // Without Mono Retrig there's no "silenced but still held" concept — every Note Off
+          // here is a genuine release, so it's always correct (and necessary, to avoid leaking a
+          // slot per distinct note ever played) to free the Round Robin channel-memory slot now.
+          if (!isNoteOn) routeNoteFreeSlot(routeNoteTracks[i], number);
+        }
+      } else {
+        applyRouteOutput(routes[i], inputDevice, channel, kind, number, statusHi, data1, data2);
+      }
     }
   }
   flushPending();
@@ -823,11 +1062,15 @@ void processIncomingEvent(uint8_t inputDevice, uint8_t statusHi, uint8_t channel
   }
 }
 
-uint8_t resolveSysexDestination(uint8_t inputDevice) {
+// Shared by Sysex, System Common, and System Realtime — none of them are channel-addressed, so
+// there's no per-channel dedup table the way Note/CC/etc get; the last matching route's outDevice
+// simply wins as the destination, same idea as route-order priority elsewhere, just resolved once
+// up front instead of per-message via upsertPending.
+uint8_t resolveDestination(uint8_t inputDevice, MsgKind kind) {
   bool matchedAny = false;
   uint8_t chosen = OUT_NONE;
   for (uint16_t i = 0; i < routeCount; ++i) {
-    if (routeMatches(routes[i], inputDevice, 0, MK_SYSEX, 0)) {
+    if (routeMatches(routes[i], inputDevice, 0, kind, 0)) {
       matchedAny = true;
       chosen = routes[i].outDevice;
     }
@@ -838,6 +1081,22 @@ uint8_t resolveSysexDestination(uint8_t inputDevice) {
     return (inputDevice == DEV_USB) ? OUT_TRS : OUT_USB;
   }
   return OUT_BOTH;
+}
+
+// System Common (0xF1-0xF7 minus sysex framing) and System Realtime (0xF8-0xFF, split into Clock
+// vs. everything else) carry no channel nibble and no note/cc number, so — unlike Note/CC/etc —
+// they never go through applyRouteOutput's per-channel PendingMsg/dedup machinery, just straight to
+// whichever physical port(s) resolveDestination() lands on, mirroring exactly how Sysex is already
+// handled. The message kind is inferred from the status byte itself so every call site can just
+// pass the raw byte through without also having to classify it themselves.
+void forwardCommonOrRealtime(uint8_t inputDevice, uint8_t statusByte, uint8_t data1, uint8_t data2, uint8_t len) {
+  MsgKind kind;
+  if (statusByte == 0xF8) kind = MK_CLOCK;
+  else if (statusByte >= 0xF8) kind = MK_REALTIME;
+  else kind = MK_COMMON;
+  uint8_t dest = resolveDestination(inputDevice, kind);
+  if (dest == OUT_TRS || dest == OUT_BOTH) sendDinBytes(statusByte, 0, data1, data2, len);
+  if (dest == OUT_USB || dest == OUT_BOTH) sendUsbBytes(statusByte, 0, data1, data2, len);
 }
 
 // ============================================================================================
@@ -890,11 +1149,11 @@ void feedSysexByte(uint8_t inputDevice, SysexState &s, uint8_t b) {
       forwardSysexByte(inputDevice, s.fwdDevice, b);
     } else if (s.phase == SysexState::PEEK1) {
       // F0 F7 — empty/malformed message, still forward transparently
-      s.fwdDevice = resolveSysexDestination(inputDevice);
+      s.fwdDevice = resolveDestination(inputDevice, MK_SYSEX);
       forwardSysexByte(inputDevice, s.fwdDevice, 0xF0);
       forwardSysexByte(inputDevice, s.fwdDevice, b);
     } else if (s.phase == SysexState::PEEK2) {
-      s.fwdDevice = resolveSysexDestination(inputDevice);
+      s.fwdDevice = resolveDestination(inputDevice, MK_SYSEX);
       forwardSysexByte(inputDevice, s.fwdDevice, 0xF0);
       forwardSysexByte(inputDevice, s.fwdDevice, 0x7D);
       forwardSysexByte(inputDevice, s.fwdDevice, b);
@@ -914,7 +1173,7 @@ void feedSysexByte(uint8_t inputDevice, SysexState &s, uint8_t b) {
       if (b == SYSEX_MFR_ID) {
         s.phase = SysexState::PEEK2;
       } else {
-        s.fwdDevice = resolveSysexDestination(inputDevice);
+        s.fwdDevice = resolveDestination(inputDevice, MK_SYSEX);
         forwardSysexByte(inputDevice, s.fwdDevice, 0xF0);
         forwardSysexByte(inputDevice, s.fwdDevice, b);
         s.phase = SysexState::FORWARDING;
@@ -925,7 +1184,7 @@ void feedSysexByte(uint8_t inputDevice, SysexState &s, uint8_t b) {
         s.phase = SysexState::OURS;
         s.cmdLen = 0;
       } else {
-        s.fwdDevice = resolveSysexDestination(inputDevice);
+        s.fwdDevice = resolveDestination(inputDevice, MK_SYSEX);
         forwardSysexByte(inputDevice, s.fwdDevice, 0xF0);
         forwardSysexByte(inputDevice, s.fwdDevice, SYSEX_MFR_ID);
         forwardSysexByte(inputDevice, s.fwdDevice, b);
@@ -1041,7 +1300,7 @@ void handleSysexCommand(uint8_t sourcePort, const uint8_t *cmdBuf, uint8_t cmdLe
       beginReply(CMD_ROUTE_DATA);
       appendReply(idx & 0x7F);
       appendReply((idx >> 7) & 0x7F);
-      uint8_t packed[48]; // pack7(39 raw bytes) = 45 packed bytes
+      uint8_t packed[48]; // pack7(41 raw bytes) = 47 packed bytes
       uint8_t packedLen = pack7((const uint8_t *)&routes[idx], ROUTE_RAW_BYTES, packed);
       for (uint8_t i = 0; i < packedLen; ++i) appendReply(packed[i]);
       sendReply(sourcePort);
@@ -1056,6 +1315,7 @@ void handleSysexCommand(uint8_t sourcePort, const uint8_t *cmdBuf, uint8_t cmdLe
       uint16_t newIndex = routeCount;
       routeCount++;
       recomputeAnyAftertouchMapRoutes();
+      resetAllRouteNoteTracks();
       sendAck(sourcePort, cmd, ACK_OK, checksum7((const uint8_t *)&r, ROUTE_RAW_BYTES), newIndex);
       break;
     }
@@ -1068,6 +1328,7 @@ void handleSysexCommand(uint8_t sourcePort, const uint8_t *cmdBuf, uint8_t cmdLe
       unpack7(payload + 2, payloadLen - 2, (uint8_t *)&r);
       routes[idx] = r;
       recomputeAnyAftertouchMapRoutes();
+      resetAllRouteNoteTracks();
       sendAck(sourcePort, cmd, ACK_OK, checksum7((const uint8_t *)&r, ROUTE_RAW_BYTES), idx);
       break;
     }
@@ -1079,6 +1340,7 @@ void handleSysexCommand(uint8_t sourcePort, const uint8_t *cmdBuf, uint8_t cmdLe
       for (uint16_t i = idx; i + 1 < routeCount; ++i) routes[i] = routes[i + 1];
       routeCount--;
       recomputeAnyAftertouchMapRoutes();
+      resetAllRouteNoteTracks();
       sendAck(sourcePort, cmd, ACK_OK, 0, idx);
       break;
     }
@@ -1095,6 +1357,7 @@ void handleSysexCommand(uint8_t sourcePort, const uint8_t *cmdBuf, uint8_t cmdLe
         for (uint16_t i = from; i > to; --i) routes[i] = routes[i - 1];
       }
       routes[to] = moved;
+      resetAllRouteNoteTracks(); // route order changed, so per-index tracking state would be misattributed otherwise
       sendAck(sourcePort, cmd, ACK_OK, 0, to);
       break;
     }
@@ -1102,6 +1365,7 @@ void handleSysexCommand(uint8_t sourcePort, const uint8_t *cmdBuf, uint8_t cmdLe
     case CMD_CLEAR_ALL_ROUTES: {
       routeCount = 0;
       recomputeAnyAftertouchMapRoutes();
+      resetAllRouteNoteTracks();
       sendAck(sourcePort, cmd, ACK_OK, 0, 0);
       break;
     }
@@ -1156,9 +1420,11 @@ uint8_t midiDataLength(uint8_t status) {
 
 void processDinByte(uint8_t b) {
   if (b >= 0xF8) {
-    // realtime: passes straight through per current Mode, never buffered, never blocks sysex
+    // realtime: never buffered, never blocks sysex — but now goes through the same route-matching
+    // (and Mode fallthrough) as everything else, instead of always auto-passing regardless of route
+    // config.
     noteActivity(ledIn);
-    applyModeDefault(DEV_TRS, b, 0, 0, 0, 1);
+    forwardCommonOrRealtime(DEV_TRS, b, 0, 0, 1);
     return;
   }
 
@@ -1177,8 +1443,11 @@ void processDinByte(uint8_t b) {
     dinParser.needed = midiDataLength(b);
     dinParser.have = 0;
     if (dinParser.needed == 0) {
-      if (b < 0xF0) processIncomingEvent(DEV_TRS, b & 0xF0, b & 0x0F, 0, 0, 1);
-      if (b >= 0xF0) dinParser.runningStatus = 0;
+      // Only reachable for a System Common status with no data bytes (Tune Request 0xF6) — every
+      // real channel status (0x80-0xE0) always needs at least 1 data byte per midiDataLength(), and
+      // Realtime (0xF8+) is already intercepted above before ever reaching here.
+      forwardCommonOrRealtime(DEV_TRS, b, 0, 0, 1);
+      dinParser.runningStatus = 0;
     }
     return;
   }
@@ -1190,7 +1459,15 @@ void processDinByte(uint8_t b) {
   const uint8_t status = dinParser.runningStatus;
   const uint8_t data1 = dinParser.data[0];
   const uint8_t data2 = (dinParser.needed > 1) ? dinParser.data[1] : 0;
-  processIncomingEvent(DEV_TRS, status & 0xF0, status & 0x0F, data1, data2, dinParser.needed + 1);
+  if (status >= 0xF0) {
+    // System Common with data bytes: MTC Quarter Frame (0xF1), Song Position Pointer (0xF2), Song
+    // Select (0xF3). Previously this fell into processIncomingEvent with `status & 0xF0`, which
+    // collapses all three to 0xF0 and silently drops them (0xF0 isn't a case processIncomingEvent
+    // handles) — routed through forwardCommonOrRealtime now so they're no longer dropped.
+    forwardCommonOrRealtime(DEV_TRS, status, data1, data2, dinParser.needed + 1);
+  } else {
+    processIncomingEvent(DEV_TRS, status & 0xF0, status & 0x0F, data1, data2, dinParser.needed + 1);
+  }
   dinParser.have = 0;
   if (status >= 0xF0) dinParser.runningStatus = 0;
 }
@@ -1230,9 +1507,19 @@ void pumpUsbIn() {
     if (cin == 0x05) {
       if (usbSysex.phase != SysexState::IDLE) {
         feedSysexByte(DEV_USB, usbSysex, packet[1]); // lone 0xF7 closing a sysex
-      } else if (packet[1] >= 0xF8) {
-        applyModeDefault(DEV_USB, packet[1], 0, 0, 0, 1); // realtime
+      } else {
+        // Realtime (>=0xF8) or a 1-byte System Common message (Tune Request 0xF6) — both route
+        // through forwardCommonOrRealtime, which tells them apart by the status byte itself.
+        forwardCommonOrRealtime(DEV_USB, packet[1], 0, 0, 1);
       }
+      continue;
+    }
+    if (cin == 0x02) { // 2-byte System Common: MTC Quarter Frame (0xF1) or Song Select (0xF3)
+      forwardCommonOrRealtime(DEV_USB, packet[1], packet[2], 0, 2);
+      continue;
+    }
+    if (cin == 0x03) { // 3-byte System Common: Song Position Pointer (0xF2)
+      forwardCommonOrRealtime(DEV_USB, packet[1], packet[2], packet[3], 3);
       continue;
     }
 
@@ -1246,7 +1533,9 @@ void pumpUsbIn() {
         processIncomingEvent(DEV_USB, statusHi, channel, packet[2], 0, 2);
         break;
       case 0x0F:
-        applyModeDefault(DEV_USB, packet[1], 0, 0, 0, 1);
+        // Same "Single Byte" convention as CIN 0x05 above — some hosts use 0x0F instead of 0x05 for
+        // realtime/single-byte-common; forwardCommonOrRealtime handles either the same way.
+        forwardCommonOrRealtime(DEV_USB, packet[1], 0, 0, 1);
         break;
       default:
         break;

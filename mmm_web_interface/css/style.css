@@ -28,7 +28,7 @@
   --radius-sm: 10px;
 }
 
-* { box-sizing: border-box; }
+* { box-sizing: border-box; -webkit-tap-highlight-color: transparent; }
 
 html, body {
   margin: 0;
@@ -137,6 +137,11 @@ a { color: var(--accent); }
 
 .install-row { display: flex; justify-content: center; margin-top: 8px; }
 
+/* Second "+ Add Route" entry point — sits after #routesContainer in the HTML, so it naturally lands
+   right under the Main Mode card (before the empty-routes placeholder) when there are no routes
+   yet, since the empty container takes up no space, and under every route card once there are some. */
+.add-route-row-top { display: flex; justify-content: center; margin: 14px 0; }
+
 .connection-pill {
   display: inline-flex;
   align-items: center;
@@ -225,11 +230,11 @@ a { color: var(--accent); }
 }
 .btn-primary:hover { background: #3b82f6; }
 .btn-accent { background: linear-gradient(135deg, #f59e0b, #ea580c); border-color: transparent; color: #1a0f00; }
-.toolbar .btn-accent {
+.toolbar .btn-accent, .add-route-row-top .btn-accent {
   box-shadow: 0 0 16px -5px rgba(245, 158, 11, 0.5);
   transition: transform 0.15s ease, background 0.15s ease, border-color 0.15s ease, box-shadow 0.2s ease;
 }
-.toolbar .btn-accent:hover { box-shadow: 0 0 22px -3px rgba(245, 158, 11, 0.7); }
+.toolbar .btn-accent:hover, .add-route-row-top .btn-accent:hover { box-shadow: 0 0 22px -3px rgba(245, 158, 11, 0.7); }
 .btn-ghost { background: transparent; }
 .btn-danger { background: transparent; border-color: rgba(239, 68, 68, 0.4); color: #fca5a5; }
 .btn-danger:hover { background: rgba(239, 68, 68, 0.1); }
@@ -313,8 +318,11 @@ a { color: var(--accent); }
   .app-main { padding: 16px 14px 70px; }
 }
 
-/* Below 500px the toolbar's 5 buttons no longer just clump to the left: Load/Save/Download/Upload
-   fill a 2x2 grid together, Add Route becomes its own full-width row underneath. */
+/* Below 500px the toolbar's buttons no longer just clump to the left: Load/Save/Download/Upload
+   fill a 2x2 grid. Add Route is dropped here rather than becoming its own full-width third row —
+   the .add-route-row-top button (right under Main Mode, or under the route list once any exist)
+   already covers that need on mobile, so this just keeps the toolbar to two rows instead of three.
+   Desktop/tablet is untouched — Add Route stays in the toolbar there. */
 @media (max-width: 500px) {
   .toolbar {
     display: grid;
@@ -322,7 +330,7 @@ a { color: var(--accent); }
     gap: 8px;
   }
   .toolbar-group { display: contents; }
-  .toolbar-group:last-of-type .btn { grid-column: 1 / -1; }
+  .toolbar-group:last-of-type { display: none; }
   .toolbar .btn, .toolbar .file-btn { width: 100%; justify-content: center; }
 }
 
@@ -351,6 +359,10 @@ a { color: var(--accent); }
 .switch input:checked + .switch-track { background: var(--accent-strong); }
 .switch input:checked + .switch-track .switch-thumb { transform: translateX(18px); }
 .switch-label { font-size: 0.82rem; color: var(--text); }
+/* "All Channels" / "All Data" master toggles — same purple as the big Main Mode switch's Router
+   side, standing apart from the ordinary blue switches since these two act on everything below
+   them at once rather than a single setting. */
+.switch-purple input:checked + .switch-track { background: var(--purple); }
 
 /* Channel picker: 16 tiny toggle chips laid out in a wrapping row */
 .channel-grid {
@@ -361,8 +373,6 @@ a { color: var(--accent); }
 @media (max-width: 420px) {
   .channel-grid { grid-template-columns: repeat(4, 1fr); }
 }
-.channel-grid-actions { display: grid; grid-template-columns: 1fr 1fr; gap: 6px; margin-top: 6px; }
-.channel-grid-actions .btn { width: 100%; justify-content: center; }
 .channel-chip {
   position: relative;
   text-align: center;
@@ -436,7 +446,6 @@ a { color: var(--accent); }
   cursor: pointer;
   padding: 0;
   overflow: visible;
-  -webkit-tap-highlight-color: transparent; /* kills the default mobile-Chrome gray flash box on tap */
   user-select: none;
 }
 .mode-toggle:focus { outline: none; } /* :focus-visible below still shows a ring for keyboard use */
@@ -593,8 +602,8 @@ a { color: var(--accent); }
 .staple-toggle {
   cursor: pointer;
   display: block;
-  -webkit-tap-highlight-color: transparent;
   user-select: none;
+  margin: 0 -8px;
 }
 .staple-toggle svg { width: 56px; height: 32px; display: block; }
 .staple-toggle:hover { opacity: 0.85; }
@@ -657,9 +666,27 @@ a { color: var(--accent); }
   color: var(--text-dim);
   flex-shrink: 0;
 }
+/* Card body spacing (20px card padding) is fine on mobile — it's specifically the header row that
+   reads as too padded on a narrow screen, so only that row gets pulled outward past the card's
+   normal padding, independent of everything below it. The order badge is dropped entirely rather
+   than shrunk, since route order is already conveyed by position in the list. */
+@media (max-width: 640px) {
+  .route-order-badge { display: none; }
+  .route-card-header {
+    gap: 6px;
+    margin-left: -16px;
+    margin-right: -14px;
+    padding-left: 0;
+    padding-right: 2px;
+  }
+  /* The handle's own left padding is on top of the header's own inset above — trimmed too so the
+     grip glyph itself, not just its hit-box, actually reads as moved left. */
+  .route-drag-handle { padding: 4px 0 4px 2px; }
+}
 .route-drag-handle {
   cursor: grab;
   color: var(--text-faint);
+  margin: 3px 0 0 0;
   padding: 4px 6px;
   flex-shrink: 0;
   touch-action: none;
@@ -706,8 +733,36 @@ a { color: var(--accent); }
   letter-spacing: 0.06em;
   color: var(--text-dim);
 }
+/* Shared by both the Input and Output column headers — the h3 sits at the left, the device
+   dropdown at the right, replacing what used to be a separate "Input Device"/"Output Device"
+   field-row underneath. */
+.col-header-row { display: flex; align-items: center; gap: 10px; margin-bottom: 10px; }
+.col-header-row h3 { margin-bottom: 0; flex-shrink: 0; }
+.col-header-row select {
+  /* Fills the row right after the title instead of shrink-wrapping to its own text and getting
+     stranded off at the far right edge, easy to miss entirely. */
+  flex: 1;
+  min-width: 0;
+  background: var(--card);
+  border: 1px solid var(--box-border);
+  color: var(--text);
+  border-radius: 8px;
+  padding: 6px 8px;
+  font-size: 0.8rem;
+}
 
 .field-row-cols { display: grid; grid-template-columns: 1fr 1fr; gap: 12px; }
+/* Transpose and Velocity share one outer field-row-cols cell (a nested field-row-cols of their
+   own) instead of each claiming a whole top-level cell — the label+input pair alone left a lot of
+   unused width in that cell, so this fills it instead of growing the grid to a third row. */
+.field-subrow { display: flex; flex-direction: column; gap: 5px; }
+
+/* All Channels / All Data live in their own row, separate from .switches-cols below, specifically
+   so they can stay side by side on narrow/mobile-portrait widths even once .switches-cols itself
+   stacks to one column there — a plain child of .switches-cols would stack right along with
+   everything else instead of staying paired with its counterpart. */
+.switches-master-row { display: flex; gap: 20px; margin-bottom: 10px; }
+.switches-master-row > * { flex: 1; min-width: 0; }
 
 /* Note/CC Range and Aftertouch's Map-to-CC block grow taller than a plain switch row, so this is
    two independent flex columns (not a grid tying the two sides' row heights together) — a switch
@@ -718,16 +773,30 @@ a { color: var(--accent); }
   .switches-cols { flex-direction: column; gap: 0; }
 }
 .cc-map-row { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; }
-.cc-map-row input[type="number"] { flex: 1; min-width: 0; }
+/* min-width:0 on a flex item lets it shrink toward zero instead of ever actually wrapping — with
+   flex-wrap:wrap that meant the box just got squeezed down to an unusable sliver on narrow/mobile
+   widths rather than dropping to its own line. A real minimum forces the wrap to kick in instead. */
+.cc-map-row input[type="number"] { flex: 1; min-width: 56px; }
 .cc-map-row .switch-label { font-size: 0.68rem; }
 .cc-map-row input:disabled { opacity: 0.5; }
 /* The little "↳" branch mark on the switch label already reads as a sub-item, this indent just
-   reinforces it visually as nested under the switch directly above. */
-.cc-map-row-indent { margin-left: 14px; margin-top: 4px; }
+   reinforces it visually as nested under the switch directly above. No margin-top here — the
+   parent .field-row's own gap already spaces it from the switch above, same as .range-row in the
+   left column, so adding one on top of that gap would throw the two columns' row rhythm out of
+   sync with each other. */
+.cc-map-row-indent { margin-left: 14px; }
+
+/* Round Robin + its "Rand" sub-switch: unlike the cc-map-row sub-switches (always their own row),
+   Rand tries to share Round Robin's own row first — .cc-map-row-indent's margin-left reads as just
+   a bit of extra breathing room while they're on the same line, and only becomes a visual "indent"
+   once flex-wrap actually drops Rand to its own line on a narrower screen. No font-size override
+   here (unlike .cc-map-row) since Round Robin itself is a top-level switch, not a sub-item — only
+   Rand is, and it doesn't need shrinking to read as one, the wrap+indent already does that. */
+.round-robin-row { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; }
 
 .field-row { display: flex; flex-direction: column; gap: 5px; margin-bottom: 10px; }
-.field-row label { font-size: 0.72rem; color: var(--text-dim); }
-.field-row select, .field-row input[type="number"] {
+.field-row label, .field-subrow label { font-size: 0.72rem; color: var(--text-dim); }
+.field-row select, .field-row input[type="number"], .field-subrow input[type="number"] {
   background: var(--card);
   border: 1px solid var(--box-border);
   color: var(--text);

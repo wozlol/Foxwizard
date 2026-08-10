@@ -1,0 +1,64 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1200 630">
+  <defs>
+    <linearGradient id="bg" x1="0" y1="0" x2="1" y2="1">
+      <stop offset="0" stop-color="#1a2540"/>
+      <stop offset="0.55" stop-color="#141b32"/>
+      <stop offset="1" stop-color="#0f172a"/>
+    </linearGradient>
+    <linearGradient id="fox" x1="0" y1="0" x2="0" y2="1">
+      <stop offset="0" stop-color="#ff9a52"/>
+      <stop offset="1" stop-color="#e8763a"/>
+    </linearGradient>
+    <linearGradient id="hat" x1="0" y1="0" x2="1" y2="1">
+      <stop offset="0" stop-color="#a78bfa"/>
+      <stop offset="1" stop-color="#7c3aed"/>
+    </linearGradient>
+    <linearGradient id="headline" x1="0" y1="0" x2="1" y2="0">
+      <stop offset="0" stop-color="#ffb26b"/>
+      <stop offset="1" stop-color="#a78bfa"/>
+    </linearGradient>
+    <linearGradient id="ctaFill" x1="0" y1="0" x2="1" y2="0">
+      <stop offset="0" stop-color="#f59e0b"/>
+      <stop offset="1" stop-color="#ea580c"/>
+    </linearGradient>
+    <radialGradient id="glow" cx="0.82" cy="0.18" r="0.6">
+      <stop offset="0" stop-color="#7c3aed" stop-opacity="0.35"/>
+      <stop offset="1" stop-color="#7c3aed" stop-opacity="0"/>
+    </radialGradient>
+  </defs>
+
+  <rect width="1200" height="630" fill="url(#bg)"/>
+  <rect width="1200" height="630" fill="url(#glow)"/>
+
+  <!-- fox wizard mark, scaled + translated from icons/icon.svg's 512x512 viewBox -->
+  <g transform="translate(64,105) scale(0.86)">
+    <path d="M154 242 L120 136 L232 216 Z" fill="url(#fox)"/>
+    <path d="M358 242 L392 136 L280 216 Z" fill="url(#fox)"/>
+    <path d="M168 228 L148 160 L216 216 Z" fill="#3a2a22"/>
+    <path d="M344 228 L364 160 L296 216 Z" fill="#3a2a22"/>
+    <path d="M256 180 C 190 180 146 232 146 302 C 146 366 196 412 256 412 C 316 412 366 366 366 302 C 366 232 322 180 256 180 Z" fill="url(#fox)"/>
+    <path d="M256 268 C 218 268 196 300 196 330 C 196 360 224 380 256 380 C 288 380 316 360 316 330 C 316 300 294 268 256 268 Z" fill="#fff3e6"/>
+    <path d="M256 320 L240 336 L272 336 Z" fill="#2b1c15"/>
+    <ellipse cx="212" cy="286" rx="12" ry="15" fill="#241a14"/>
+    <ellipse cx="300" cy="286" rx="12" ry="15" fill="#241a14"/>
+    <path d="M256 66 L332 210 C 296 194 216 194 180 210 Z" fill="url(#hat)"/>
+    <rect x="176" y="194" width="160" height="22" rx="11" fill="#5b21b6"/>
+    <circle cx="256" cy="66" r="12" fill="#fde68a"/>
+    <path d="M256 44 L262 58 L276 58 L265 67 L269 82 L256 73 L243 82 L247 67 L236 58 L250 58 Z" fill="#fde68a"/>
+  </g>
+
+  <!-- headline -->
+  <text x="470" y="248" font-family="Arial Black, Arial, sans-serif" font-weight="900" font-size="70" fill="url(#headline)" letter-spacing="1">FOXWIZARD</text>
+  <text x="470" y="322" font-family="Arial Black, Arial, sans-serif" font-weight="900" font-size="70" fill="url(#headline)" letter-spacing="1">PATCHLING</text>
+
+  <!-- tagline -->
+  <text x="472" y="372" font-family="Arial, sans-serif" font-weight="600" font-size="27" fill="#c7d0e0">Programming Software for the</text>
+  <text x="472" y="406" font-family="Arial, sans-serif" font-weight="600" font-size="27" fill="#c7d0e0">Foxwizard Mini MIDI Multitool</text>
+
+  <!-- CTA pill -->
+  <rect x="472" y="445" width="330" height="66" rx="33" fill="url(#ctaFill)"/>
+  <text x="637" y="487" font-family="Arial, sans-serif" font-weight="800" font-size="27" fill="#1a0f00" text-anchor="middle">Configure Online &#8594;</text>
+
+  <!-- source line -->
+  <text x="472" y="555" font-family="Arial, sans-serif" font-weight="600" font-size="22" fill="#7f8db0">woz.lol/fox</text>
+</svg>

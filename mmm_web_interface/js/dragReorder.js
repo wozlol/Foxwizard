@@ -1,8 +1,12 @@
 // Route-card reorder drag-and-drop, ported from Regime Radar's useDragAndDropSimple.js "lift and
 // drag" feel: a floating clone follows the cursor while the original card fades to 30% opacity,
-// dropping bounces the card, and touch uses a 300ms long-press (with a vibrate) before it starts
-// dragging so normal scrolling/tapping still works. Listeners are delegated onto `container` once
-// so this survives the container's innerHTML being rebuilt on every route-list re-render.
+// dropping bounces the card. Touch starts dragging immediately on touchdown, no long-press delay —
+// that delay used to exist to disambiguate "scroll" from "drag" back when more of the card itself
+// was the drag surface, but now that dragging is confined to the small dedicated .route-drag-handle
+// icon, touching it is already unambiguous (scrolling still works fine from touching literally
+// anywhere else on the card), so there's nothing left to disambiguate. Listeners are delegated onto
+// `container` once so this survives the container's innerHTML being rebuilt on every route-list
+// re-render.
 const transparentImage = new Image();
 transparentImage.src = 'data:image/gif;base64,R0lGODlhAQABAIAAAAAAAP///yH5BAEAAAAALAAAAAABAAEAAAIBRAA7';
 
@@ -15,7 +19,6 @@ export function attachDragReorder(container, { itemSelector, onReorder }) {
     startY: 0,
     dragElement: null,
     clone: null,
-    isLongPressing: false,
     lastOverIndex: null,
     scrollY: 0
   };
@@ -137,44 +140,20 @@ export function attachDragReorder(container, { itemSelector, onReorder }) {
     const touch = e.touches[0];
     state.startX = touch.clientX;
     state.startY = touch.clientY;
-    state.isLongPressing = true;
 
-    const longPressTimer = setTimeout(() => {
-      if (!state.isLongPressing) return;
-      state.isLongPressing = false;
-      state.isDragging = true;
-      state.draggedIndex = idx;
-      state.dragElement = elementFor(idx);
-      if (navigator.vibrate) { try { navigator.vibrate(50); } catch (err) {} }
-      state.scrollY = window.scrollY;
-      document.body.classList.add('dragging-active');
-      document.body.style.overflow = 'hidden';
-      document.body.style.position = 'fixed';
-      document.body.style.top = `-${state.scrollY}px`;
-      document.body.style.width = '100%';
-      const rect = state.dragElement.getBoundingClientRect();
-      state.clone = makeClone(rect);
-      state.dragElement.classList.add('drag-fading');
-    }, 300);
-
-    const cancelIfMoved = (ev) => {
-      if (!state.isLongPressing) return;
-      const t = ev.touches[0];
-      if (Math.abs(t.clientX - state.startX) > 10 || Math.abs(t.clientY - state.startY) > 10) {
-        clearTimeout(longPressTimer);
-        state.isLongPressing = false;
-        document.removeEventListener('touchmove', cancelIfMoved);
-        document.removeEventListener('touchend', cancelOnEnd);
-      }
-    };
-    const cancelOnEnd = () => {
-      clearTimeout(longPressTimer);
-      state.isLongPressing = false;
-      document.removeEventListener('touchmove', cancelIfMoved);
-      document.removeEventListener('touchend', cancelOnEnd);
-    };
-    document.addEventListener('touchmove', cancelIfMoved, { passive: true });
-    document.addEventListener('touchend', cancelOnEnd, { passive: true });
+    state.isDragging = true;
+    state.draggedIndex = idx;
+    state.dragElement = elementFor(idx);
+    if (navigator.vibrate) { try { navigator.vibrate(50); } catch (err) {} }
+    state.scrollY = window.scrollY;
+    document.body.classList.add('dragging-active');
+    document.body.style.overflow = 'hidden';
+    document.body.style.position = 'fixed';
+    document.body.style.top = `-${state.scrollY}px`;
+    document.body.style.width = '100%';
+    const rect = state.dragElement.getBoundingClientRect();
+    state.clone = makeClone(rect);
+    state.dragElement.classList.add('drag-fading');
   }, { passive: true });
 
   document.addEventListener('touchmove', (e) => {
