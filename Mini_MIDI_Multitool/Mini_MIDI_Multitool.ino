@@ -259,11 +259,27 @@ int8_t currentOctaveShift = 0; // 0 or +12/-12 semitones, applied to routed+defa
 bool rampActive = false;
 bool rampRising = false;
 int16_t rampValue = 0;
-uint32_t lastRampStepMs = 0;
+int16_t rampStartValue = 0;
+uint32_t rampStartMs = 0;
+uint32_t rampDurationMs = 0;
 
-// notes currently sounding that we've applied an octave shift to, so we can force-off the old
-// octave when the shift changes (per channel, 128-bit bitmask each)
-uint32_t shiftedNoteMask[16][4];
+// buttonParamA (0-127) is the pitch/mod ramp's speed: 127 is a true instant jump to the target
+// value, 0 is the slowest ramp, taking RAMP_MAX_SECONDS to sweep the full range. Squared (not
+// linear) so raw values near the fast/instant end cover a lot less time each than values near the
+// slow end. The web UI shows and accepts this as a plain seconds value using the exact same
+// formula, so keep both in sync.
+static const float RAMP_MAX_SECONDS = 4.0f;
+
+// Per (channel, original note): while Octave Up/Down is the active button action and this channel
+// is affected (see octaveShiftMatchesChannel), tracks what a currently-held note is ACTUALLY
+// sounding as right now — which port it arrived on, its shifted output note, and its velocity —
+// so that (a) the eventual real Note Off releases the exact pitch that's sounding even if the
+// shift changed since the press, and (b) a shift change can kill + immediately retrigger every
+// currently-held note at the new pitch instead of just cutting it off and leaving it silent until
+// the key is released and pressed again. 0xFF in octaveHeldShiftedNote means "not currently held".
+uint8_t octaveHeldShiftedNote[16][128];
+uint8_t octaveHeldVelocity[16][128];
+uint8_t octaveHeldInputDevice[16][128];
 
 // Poly aftertouch -> CC mapping needs to know which currently-held note should "own" the mapped CC
 // when more than one note is held, otherwise independently-varying finger pressure on different
@@ -998,6 +1014,37 @@ void applyModeDefault(uint8_t inputDevice, uint8_t statusHi, uint8_t channel, ui
   }
 }
 
+// The single place that actually matches routes and transmits a Note On/Off (Mono Retrig/Round
+// Robin included), used both for real incoming note events and for the synthetic kill+retrigger
+// pair a mid-note octave shift change sends (see retriggerHeldNotesForShiftChange) — those need to
+// go through exactly the same route matching/transpose/velocity-scale/fan-out as a real note would,
+// not a simplified copy of it.
+void dispatchNoteEvent(uint8_t inputDevice, uint8_t channel, bool isNoteOn, uint8_t note, uint8_t velocity) {
+  bool matchedAny = false;
+  for (uint16_t i = 0; i < routeCount; ++i) {
+    if (routeMatches(routes[i], inputDevice, channel, MK_NOTE, note)) {
+      matchedAny = true;
+      if (routes[i].flags2 & 0x01) {
+        handleMonoRetrigNote(i, routes[i], note, velocity, isNoteOn);
+      } else {
+        sendRouteNote(i, routes[i], isNoteOn, note, velocity);
+        // Without Mono Retrig there's no "silenced but still held" concept — every Note Off here
+        // is a genuine release, so it's always correct (and necessary, to avoid leaking a slot per
+        // distinct note ever played) to free the Round Robin channel-memory slot now.
+        if (!isNoteOn) routeNoteFreeSlot(routeNoteTracks[i], note);
+      }
+    }
+  }
+  flushPending();
+
+  if (!matchedAny) {
+    applyModeDefault(inputDevice, isNoteOn ? 0x90 : 0x80, channel, note, velocity, 3);
+  } else {
+    // still count as "seen" on the input side for the IN LED even if fully consumed by routes
+    if (inputDevice == DEV_TRS) noteActivity(ledIn); else noteActivity(ledUsb);
+  }
+}
+
 void processIncomingEvent(uint8_t inputDevice, uint8_t statusHi, uint8_t channel, uint8_t data1, uint8_t data2, uint8_t len) {
   MsgKind kind;
   uint8_t number = 0;
@@ -1011,6 +1058,37 @@ void processIncomingEvent(uint8_t inputDevice, uint8_t statusHi, uint8_t channel
     default: return; // system common/realtime bytes never reach here
   }
 
+  bool isNoteOn = (kind == MK_NOTE) && (statusHi == 0x90 && data2 > 0);
+
+  // Octave Up/Down (front button): substitute the shifted note number before anything else sees
+  // it, so route matching/aftertouch tracking/dispatch all agree on the same (possibly transposed)
+  // note. Gated on the button action itself, not just currentOctaveShift != 0 — a note held from
+  // before the shift engages still needs to be tracked here, so a later shift change can find and
+  // retrigger it (see retriggerHeldNotesForShiftChange).
+  if (kind == MK_NOTE && octaveShiftActionActive() && octaveShiftMatchesChannel(channel)) {
+    if (isNoteOn) {
+      int16_t shifted = (int16_t)number + currentOctaveShift;
+      if (shifted < 0 || shifted > 127) {
+        octaveHeldShiftedNote[channel][number] = 0xFF; // out of range: not sounding
+        return; // doesn't pass, same as route transpose
+      }
+      octaveHeldShiftedNote[channel][number] = (uint8_t)shifted;
+      octaveHeldVelocity[channel][number] = data2;
+      octaveHeldInputDevice[channel][number] = inputDevice;
+      number = (uint8_t)shifted;
+      data1 = (uint8_t)shifted;
+    } else {
+      // Release whatever shifted pitch this original note is CURRENTLY sounding as, not whatever
+      // the live shift would recompute to — those can differ if the shift changed while the note
+      // was held (retriggerHeldNotesForShiftChange already re-pointed this entry at that pitch).
+      uint8_t shiftedNote = octaveHeldShiftedNote[channel][number];
+      octaveHeldShiftedNote[channel][number] = 0xFF;
+      if (shiftedNote == 0xFF) return; // wasn't actually sounding (e.g. was out of range when pressed) — nothing to release
+      number = shiftedNote;
+      data1 = shiftedNote;
+    }
+  }
+
   // Keep the note-hold stack (used for poly aftertouch -> CC priority, see noteStacks above) in
   // sync with real Note On/Off and poly aftertouch traffic — but only when some route actually
   // needs it (see anyAftertouchMapRoutes above), so this rare feature costs nothing on every
@@ -1018,9 +1096,8 @@ void processIncomingEvent(uint8_t inputDevice, uint8_t statusHi, uint8_t channel
   if (anyAftertouchMapRoutes && (kind == MK_NOTE || kind == MK_POLY_AT)) {
     NoteHoldStack &stack = noteStacks[inputDevice == DEV_TRS ? 0 : 1][channel];
     if (kind == MK_NOTE) {
-      bool isOn = (statusHi == 0x90 && data2 > 0);
       uint8_t before = stack.count ? stack.notes[stack.count - 1] : 0xFF;
-      if (isOn) noteStackOn(stack, number); else noteStackOff(stack, number);
+      if (isNoteOn) noteStackOn(stack, number); else noteStackOff(stack, number);
       uint8_t after = stack.count ? stack.notes[stack.count - 1] : 0xFF;
       if (after != before) emitAftertouchMapUpdate(inputDevice, channel, stack);
     } else {
@@ -1028,28 +1105,16 @@ void processIncomingEvent(uint8_t inputDevice, uint8_t statusHi, uint8_t channel
     }
   }
 
-  bool isNoteOn = (kind == MK_NOTE) && (statusHi == 0x90 && data2 > 0);
+  if (kind == MK_NOTE) {
+    dispatchNoteEvent(inputDevice, channel, isNoteOn, number, data2);
+    return;
+  }
 
   bool matchedAny = false;
   for (uint16_t i = 0; i < routeCount; ++i) {
     if (routeMatches(routes[i], inputDevice, channel, kind, number)) {
       matchedAny = true;
-      if (kind == MK_NOTE) {
-        // Mono Retrig/Round Robin (flags2) need their own note-level state machine instead of the
-        // generic per-channel fan-out in applyRouteOutput, so Note events are dispatched here
-        // rather than ever reaching applyRouteOutput (which no longer handles MK_NOTE at all).
-        if (routes[i].flags2 & 0x01) {
-          handleMonoRetrigNote(i, routes[i], number, data2, isNoteOn);
-        } else {
-          sendRouteNote(i, routes[i], isNoteOn, number, data2);
-          // Without Mono Retrig there's no "silenced but still held" concept — every Note Off
-          // here is a genuine release, so it's always correct (and necessary, to avoid leaking a
-          // slot per distinct note ever played) to free the Round Robin channel-memory slot now.
-          if (!isNoteOn) routeNoteFreeSlot(routeNoteTracks[i], number);
-        }
-      } else {
-        applyRouteOutput(routes[i], inputDevice, channel, kind, number, statusHi, data1, data2);
-      }
+      applyRouteOutput(routes[i], inputDevice, channel, kind, number, statusHi, data1, data2);
     }
   }
   flushPending();
@@ -1546,16 +1611,40 @@ void pumpUsbIn() {
 // ============================================================================================
 // Front button: panic / pitch ramp / mod ramp / cc momentary / cc toggle / octave shift
 // ============================================================================================
-void trackShiftedNoteOn(uint8_t channel, uint8_t note) { shiftedNoteMask[channel][note / 32] |= (1UL << (note % 32)); }
-void trackShiftedNoteOff(uint8_t channel, uint8_t note) { shiftedNoteMask[channel][note / 32] &= ~(1UL << (note % 32)); }
+bool octaveShiftActionActive() {
+  return globalSettings.buttonAction == BTN_OCTAVE_UP || globalSettings.buttonAction == BTN_OCTAVE_DOWN;
+}
 
-void allNotesOffForShift(uint8_t channel) {
-  for (uint8_t note = 0; note < 128; ++note) {
-    if (shiftedNoteMask[channel][note / 32] & (1UL << (note % 32))) {
-      applyModeDefault(DEV_USB, 0x80, channel, note, 0, 3); // best-effort silence on both ports
-      applyModeDefault(DEV_TRS, 0x80, channel, note, 0, 3);
-      trackShiftedNoteOff(channel, note);
+// buttonParamB is the channel Octave Up/Down affects (unlike resolveButtonChannel(), "All" here
+// genuinely means every channel rather than collapsing to channel 1 — there's no single message
+// being sent that needs one specific channel, this just gates which passing notes get shifted).
+bool octaveShiftMatchesChannel(uint8_t ch) {
+  return globalSettings.buttonParamB > 15 || globalSettings.buttonParamB == ch;
+}
+
+// Kills and immediately retriggers (at the new shift) every note this channel currently has held,
+// so a mid-note octave change is heard as a pitch jump on the sustained note rather than a dropout
+// that needs the key released and re-pressed to resume. Called before currentOctaveShift is
+// actually updated, so octaveHeldShiftedNote's old values are still the currently-sounding pitch.
+void retriggerHeldNotesForShiftChange(uint8_t channel, int8_t newShift) {
+  for (uint16_t note = 0; note < 128; ++note) {
+    uint8_t oldShifted = octaveHeldShiftedNote[channel][note];
+    if (oldShifted == 0xFF) continue; // nothing currently held for this original note
+    uint8_t inputDevice = octaveHeldInputDevice[channel][note];
+    uint8_t velocity = octaveHeldVelocity[channel][note];
+
+    dispatchNoteEvent(inputDevice, channel, false, oldShifted, 0); // kill the old pitch
+
+    int16_t newShiftedI = (int16_t)note + newShift;
+    if (newShiftedI < 0 || newShiftedI > 127) {
+      // Out of range at the new shift: stays silent (matching route transpose's own out-of-range
+      // behavior) until the key is released and pressed again.
+      octaveHeldShiftedNote[channel][note] = 0xFF;
+      continue;
     }
+    uint8_t newShifted = (uint8_t)newShiftedI;
+    octaveHeldShiftedNote[channel][note] = newShifted;
+    dispatchNoteEvent(inputDevice, channel, true, newShifted, velocity); // start the new pitch
   }
 }
 
@@ -1567,7 +1656,7 @@ void resetButtonRuntimeState() {
   currentOctaveShift = 0;
   rampActive = false;
   rampValue = 0;
-  memset(shiftedNoteMask, 0, sizeof(shiftedNoteMask));
+  memset(octaveHeldShiftedNote, 0xFF, sizeof(octaveHeldShiftedNote));
 }
 
 uint8_t resolveButtonChannel() {
@@ -1597,39 +1686,59 @@ void sendPanic() {
 void startRamp(bool rising) {
   rampActive = true;
   rampRising = rising;
-  lastRampStepMs = millis();
+  rampStartValue = rampValue;
+  rampStartMs = millis();
+
+  bool isPitch = (globalSettings.buttonAction == BTN_PITCH_UP || globalSettings.buttonAction == BTN_PITCH_DOWN);
+  int16_t maxVal = isPitch ? 8191 : 127;
+  int16_t target = rising ? maxVal : 0;
+
+  // buttonParamA sets how long a FULL 0<->maxVal sweep takes. If this leg only has to cover part
+  // of that distance — e.g. the button was released partway through the rise — scale the duration
+  // down proportionally so the ramp's actual rate stays constant, instead of a short partial leg
+  // taking just as long as a full sweep would.
+  float x = (127.0f - globalSettings.buttonParamA) / 127.0f;
+  float fullSweepSeconds = RAMP_MAX_SECONDS * x * x;
+  uint32_t fullSweepMs = (uint32_t)(fullSweepSeconds * 1000.0f + 0.5f);
+  int32_t remainingDistance = abs((int32_t)target - (int32_t)rampStartValue);
+  rampDurationMs = (uint32_t)((int64_t)remainingDistance * fullSweepMs / maxVal);
 }
 
 void serviceRamp() {
   if (!rampActive) return;
   const uint32_t now = millis();
-  uint32_t interval = map(globalSettings.buttonParamA, 0, 127, 60, 4); // higher speed = faster steps
-  if (now - lastRampStepMs < interval) return;
-  lastRampStepMs = now;
 
   bool isPitch = (globalSettings.buttonAction == BTN_PITCH_UP || globalSettings.buttonAction == BTN_PITCH_DOWN);
   int16_t maxVal = isPitch ? 8191 : 127;
-  int16_t step = isPitch ? 128 : 4;
-  uint8_t channel = resolveButtonChannel();
+  int16_t target = rampRising ? maxVal : 0;
 
-  if (rampRising) {
-    rampValue += step;
-    if (rampValue > maxVal) rampValue = maxVal;
-  } else {
-    rampValue -= step;
-    if (rampValue < 0) { rampValue = 0; rampActive = false; }
+  // Interpolate directly from elapsed time rather than pre-dividing the sweep into a fixed number
+  // of steps at a fixed interval: at short durations (well under a second), a handful of coarse
+  // steps quantized to whole milliseconds collapses many different speed settings down to the same
+  // 0ms or 1ms-per-step timing, making them sound identical. Recomputing the target value fresh
+  // from now - rampStartMs every tick uses the device's full time resolution instead, and only
+  // actually sends a MIDI message when that recomputed value has changed.
+  uint32_t elapsed = now - rampStartMs;
+  bool done = (rampDurationMs == 0 || elapsed >= rampDurationMs);
+  int16_t newValue = done ? target
+    : (int16_t)(rampStartValue + (int32_t)(target - rampStartValue) * (int32_t)elapsed / (int32_t)rampDurationMs);
+
+  if (newValue != rampValue) {
+    rampValue = newValue;
+    uint8_t channel = resolveButtonChannel();
+    if (isPitch) {
+      bool down = (globalSettings.buttonAction == BTN_PITCH_DOWN);
+      int16_t bend = down ? -rampValue : rampValue;
+      uint16_t centered = (uint16_t)(8192 + bend);
+      applyModeDefault(DEV_USB, 0xE0, channel, centered & 0x7F, (centered >> 7) & 0x7F, 3);
+      applyModeDefault(DEV_TRS, 0xE0, channel, centered & 0x7F, (centered >> 7) & 0x7F, 3);
+    } else {
+      applyModeDefault(DEV_USB, 0xB0, channel, 1, (uint8_t)rampValue, 3);
+      applyModeDefault(DEV_TRS, 0xB0, channel, 1, (uint8_t)rampValue, 3);
+    }
   }
 
-  if (isPitch) {
-    bool down = (globalSettings.buttonAction == BTN_PITCH_DOWN);
-    int16_t bend = down ? -rampValue : rampValue;
-    uint16_t centered = (uint16_t)(8192 + bend);
-    applyModeDefault(DEV_USB, 0xE0, channel, centered & 0x7F, (centered >> 7) & 0x7F, 3);
-    applyModeDefault(DEV_TRS, 0xE0, channel, centered & 0x7F, (centered >> 7) & 0x7F, 3);
-  } else {
-    applyModeDefault(DEV_USB, 0xB0, channel, 1, (uint8_t)rampValue, 3);
-    applyModeDefault(DEV_TRS, 0xB0, channel, 1, (uint8_t)rampValue, 3);
-  }
+  if (done && !rampRising) rampActive = false;
 }
 
 void sendCc(uint8_t value) {
@@ -1650,8 +1759,16 @@ void sendNote(bool on) {
 }
 
 void setOctaveShift(int8_t newShift) {
-  uint8_t channel = resolveButtonChannel();
-  if (newShift != currentOctaveShift) allNotesOffForShift(channel);
+  // Unlike resolveButtonChannel()'s single-channel collapse, "All" here needs every channel
+  // retriggered, not just channel 1 — octaveShiftMatchesChannel() treats "All" the same way when
+  // deciding which passing notes to shift in the first place.
+  if (newShift != currentOctaveShift) {
+    if (globalSettings.buttonParamB > 15) {
+      for (uint8_t ch = 0; ch < 16; ++ch) retriggerHeldNotesForShiftChange(ch, newShift);
+    } else {
+      retriggerHeldNotesForShiftChange(globalSettings.buttonParamB, newShift);
+    }
+  }
   currentOctaveShift = newShift;
 }
 

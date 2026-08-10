@@ -227,6 +227,29 @@ function noteSelectOptions(selected) {
   return opts;
 }
 
+// Pitch/mod ramp speed (buttonParamA, 0-127): 127 is an instant jump to the target value, 0 is
+// the slowest ramp. Curved (squared) rather than linear so slider steps near the fast/instant end
+// cover a lot less time per step than steps near the slow end — more usable resolution right where
+// it matters most. Must match RAMP_MAX_SECONDS/RAMP_GAMMA and the seconds formula in the
+// firmware's serviceRamp() exactly, since this is what makes the typed/displayed seconds value real.
+const RAMP_MAX_SECONDS = 4.0;
+const RAMP_GAMMA = 2;
+function rampSpeedToSeconds(speed) {
+  const x = (127 - speed) / 127;
+  return RAMP_MAX_SECONDS * Math.pow(x, RAMP_GAMMA);
+}
+function rampSecondsToSpeed(seconds) {
+  const clamped = Math.max(0, Math.min(RAMP_MAX_SECONDS, seconds));
+  const x = Math.pow(clamped / RAMP_MAX_SECONDS, 1 / RAMP_GAMMA);
+  return Math.round(127 - x * 127);
+}
+// Below a second, tenths alone can't tell 0.02s from 0.08s apart — hundredths matter there.
+// At/above a second, tenths are already fine enough and hundredths would just be visual noise.
+function formatRampSeconds(speed) {
+  const seconds = rampSpeedToSeconds(speed);
+  return seconds < 1 ? seconds.toFixed(2) : seconds.toFixed(1);
+}
+
 function channelSelectOptions(selected) {
   let opts = '';
   for (let c = 1; c <= 16; c++) opts += `<option value="${c - 1}" ${selected === c - 1 ? 'selected' : ''}>${c}</option>`;
@@ -248,7 +271,15 @@ function renderGlobalCard() {
   let buttonExtraFields = '';
   if ([1, 2, 3].includes(g.buttonAction)) {
     buttonExtraFields = `
-      <div class="mini-box">${miniBoxMain('Speed', `<input type="range" min="0" max="127" value="${g.buttonParamA}" data-global-field="buttonParamA" style="width:100%">`)}</div>
+      <div class="mini-box">
+        <div class="mini-box-main">
+          <div class="speed-label-row">
+            <p class="mini-box-label">Speed</p>
+            <input type="number" step="0.01" min="0" max="${RAMP_MAX_SECONDS}" value="${formatRampSeconds(g.buttonParamA)}" id="speedSecondsInput" class="speed-seconds-input" aria-label="Ramp time in seconds">
+          </div>
+          <input type="range" min="0" max="127" value="${g.buttonParamA}" data-global-field="buttonParamA" id="speedSlider" style="width:100%">
+        </div>
+      </div>
       <div class="mini-box">${miniBoxMain('Channel', `<select data-global-field="buttonParamB">${channelSelectOptions(g.buttonParamB)}</select>`)}</div>`;
   } else if ([4, 5].includes(g.buttonAction)) {
     buttonExtraFields = `
@@ -317,6 +348,24 @@ function renderGlobalCard() {
   wireModeToggle();
   wireKnob();
   wireGlobalHeader();
+  wireSpeedSecondsInput();
+}
+
+// Only present for Pitch Up/Down/Mod (see buttonExtraFields above) — the seconds box is the
+// source of truth for typed input, the slider stays the source of truth for drag input, and each
+// side keeps the other in sync via rampSpeedToSeconds/rampSecondsToSpeed so both always agree.
+function wireSpeedSecondsInput() {
+  const input = document.getElementById('speedSecondsInput');
+  if (!input) return;
+  const slider = document.getElementById('speedSlider');
+  input.addEventListener('change', () => {
+    const seconds = parseFloat(input.value);
+    const speed = rampSecondsToSpeed(Number.isFinite(seconds) ? seconds : 0);
+    state.global.buttonParamA = speed;
+    slider.value = speed;
+    input.value = formatRampSeconds(speed);
+    syncGlobalLive();
+  });
 }
 
 // Mutates the toggle in place rather than re-rendering the whole card: a fresh element already
@@ -459,6 +508,10 @@ globalCard.addEventListener('input', (e) => {
   const field = e.target.dataset.globalField;
   if (!field || e.target.type !== 'range') return;
   state.global[field] = parseInt(e.target.value, 10);
+  if (field === 'buttonParamA') {
+    const secondsInput = document.getElementById('speedSecondsInput');
+    if (secondsInput) secondsInput.value = formatRampSeconds(state.global.buttonParamA);
+  }
   syncGlobalLive();
 });
 

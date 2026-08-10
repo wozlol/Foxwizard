@@ -242,7 +242,7 @@ without touching sub-switches, range values, or the Output-side switches.
 |------|------------------------|-------|
 | 0    | mode                   | 0=USB Adaptor Mode, 1=Router Mode |
 | 1    | buttonAction           | 0=panic, 1=pitchUp, 2=pitchDown, 3=mod, 4=ccMomentary, 5=ccToggle, 6=octaveUp, 7=octaveDown, 8=noteMomentary, 9=noteToggle |
-| 2    | buttonParamA           | pitch/mod: speed (0-127). cc momentary/toggle: cc number. note momentary/toggle: note number (0-127). octave up/down: unused (0) |
+| 2    | buttonParamA           | pitch/mod: ramp speed (0-127). 127 is an instant jump to the target value; 0 is the slowest ramp, taking 4.0s to sweep the full range, squared in between (seconds = 4.0 * ((127 - value) / 127)^2 — more resolution near the fast end). cc momentary/toggle: cc number. note momentary/toggle: note number (0-127). octave up/down: unused (0) |
 | 3    | buttonParamB           | channel, 0-15 = ch1-16, 16 = All. unused (0) for panic |
 | 4    | buttonToggleMomentary  | octave up/down only: 0=momentary, 1=toggle. unused elsewhere |
 | 5    | ledBrightnessStep      | 0-10, representing 0%-100% of the balanced max levels (LED_OUT_MAX/LED_USB_MAX/LED_IN_MAX) in 10% increments. 0 is fully off. |

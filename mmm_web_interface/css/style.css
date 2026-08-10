@@ -316,6 +316,11 @@ a { color: var(--accent); }
   .app-header-inner { padding: 12px 14px 4px; }
   .toolbar { padding: 10px 14px; }
   .app-main { padding: 16px 14px 70px; }
+  /* Once settings-grid drops to one column above, the Speed mini-box is full viewport width —
+     plenty of room to fit the seconds box right next to the label, so the organic flex-wrap
+     alone wouldn't drop it to its own line here. Forcing its basis to 100% is what makes it
+     "plop under" on mobile specifically, rather than only when a box genuinely runs out of room. */
+  .speed-seconds-input { flex-basis: 100%; }
 }
 
 /* Below 500px the toolbar's buttons no longer just clump to the left: Load/Save/Download/Upload
@@ -806,6 +811,22 @@ a { color: var(--accent); }
 }
 .range-row { display: flex; align-items: center; gap: 8px; }
 .range-row input[type="number"] { width: 70px; }
+
+/* Pitch/Mod "Speed" box: the seconds type-in sits right next to the label on desktop, same
+   share-the-row-then-wrap pattern as .round-robin-row above — gap+flex-wrap does the work, it
+   just drops to its own line once the box gets too narrow (mobile) rather than squeezing. */
+.speed-label-row { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; margin: 0 0 10px; }
+.speed-label-row .mini-box-label { margin: 0; }
+.speed-seconds-input {
+  width: 58px;
+  background: var(--card);
+  border: 1px solid var(--box-border);
+  color: var(--text);
+  border-radius: 8px;
+  padding: 5px 7px;
+  font-size: 0.84rem;
+  text-align: center;
+}
 
 .note-hint { font-size: 0.7rem; color: var(--text-faint); margin: 2px 0 0; }
 
