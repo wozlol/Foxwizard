@@ -1,4 +1,4 @@
-import { DeviceLink, DATA_TYPE_BITS, ROUTE_NAME_MAX_LEN } from './midi.js';
+import { DeviceLink, DATA_TYPE_BITS, ROUTE_NAME_MAX_LEN, PORTS, PORT_TRS, PORT_USB, SIDECAR_INPUT_PORTS, SIDECAR_OUTPUT_PORTS } from './midi.js';
 import { serializePreset, parsePreset, downloadPreset, readPresetFile, channelsToRangeString } from './presetXml.js';
 import { attachDragReorder } from './dragReorder.js';
 
@@ -92,7 +92,8 @@ function defaultRoute() {
     _ccMapEnabled: false, // UI-only — off means the CC Map Start field just mirrors ccStart (no remap)
     name: '',
     enabled: true,
-    inputDevice: 2, // both
+    // Every port this FoxWizard has right now, so a fresh route is a full passthrough.
+    inPorts: PORT_TRS | PORT_USB | (sidecarPresent ? SIDECAR_INPUT_PORTS : 0),
     inputChannels: 0x0001, // ch1 only
     // All top-level input data types on by default (every bit except bit7/aftertouchMap, which is
     // a sub-switch under Poly Aftertouch, not one of the top-level switches the master toggle
@@ -100,7 +101,7 @@ function defaultRoute() {
     typeFlags: 0x7F,
     noteStart: 0, noteEnd: 127,
     ccStart: 0, ccEnd: 127,
-    outputDevice: 3, // both
+    outPorts: PORT_TRS | PORT_USB | (sidecarPresent ? SIDECAR_OUTPUT_PORTS : 0),
     outputChannels: 0x0001, // ch1 only
     transpose: 0,
     velocityScale: 100,
@@ -149,12 +150,18 @@ if (!toastStack) {
   toastStack.className = 'toast-stack';
   document.body.appendChild(toastStack);
 }
-function toast(message, kind) {
+// sticky: stays until clicked, for things worth reading after the fact.
+function toast(message, kind, sticky) {
   const el = document.createElement('div');
-  el.className = 'toast' + (kind ? ` toast-${kind}` : '');
+  el.className = 'toast' + (kind ? ` toast-${kind}` : '') + (sticky ? ' toast-sticky' : '');
   el.textContent = message;
   toastStack.appendChild(el);
-  setTimeout(() => el.remove(), 3200);
+  if (sticky) {
+    el.title = 'Click to dismiss';
+    el.addEventListener('click', () => el.remove());
+  } else {
+    setTimeout(() => el.remove(), 3200);
+  }
 }
 
 const saveToDeviceBtn = document.getElementById('saveToDeviceBtn');
@@ -168,32 +175,291 @@ function clearDirty() {
 }
 
 // ============================================================================================
+// Dialog
+// ============================================================================================
+const dialogEl = document.getElementById('dialog');
+const dialogTitle = document.getElementById('dialogTitle');
+const dialogBody = document.getElementById('dialogBody');
+const dialogActions = document.getElementById('dialogActions');
+
+function closeDialog() { dialogEl.hidden = true; }
+
+/** actions: [{ label, kind: 'primary'|'accent'|'ghost', href?, onClick? }]. Every action closes the dialog. */
+function openDialog(title, bodyHtml, actions) {
+  dialogTitle.textContent = title;
+  dialogBody.innerHTML = bodyHtml;
+  dialogActions.innerHTML = '';
+  for (const a of actions) {
+    const el = document.createElement(a.href ? 'a' : 'button');
+    el.className = `btn btn-${a.kind || 'ghost'}`;
+    el.textContent = a.label;
+    if (a.href) { el.href = a.href; el.target = '_blank'; el.rel = 'noopener'; } else { el.type = 'button'; }
+    el.addEventListener('click', () => { closeDialog(); if (a.onClick) a.onClick(); });
+    dialogActions.appendChild(el);
+  }
+  dialogEl.hidden = false;
+  dialogActions.lastElementChild?.focus();
+}
+
+dialogEl.addEventListener('click', (e) => { if (e.target === dialogEl) closeDialog(); });
+document.addEventListener('keydown', (e) => { if (e.key === 'Escape' && !dialogEl.hidden) closeDialog(); });
+
+// ============================================================================================
+// Firmware check
+// firmware/firmware.json describes the newest firmware: { major, minor, bin, size, md5 }.
+// Firmware older than FW_UPDATE_MIN can't update over MIDI, so it's updated once by hand with the
+// FIRMWARE pads. Everything from FW_UPDATE_MIN on updates from the yellow pill.
+// ============================================================================================
+const FW_UPDATE_MIN = { major: 1, minor: 2 };
+const FIRMWARE_DOWNLOAD_URL = 'https://woz.lol/foxwizard-midi-multitool-firmware/';
+const FIRMWARE_DOWNLOAD_LABEL = 'woz.lol/foxwizard-midi-multitool-firmware';
+const RECONNECT_WAIT_MS = 30000;
+
+let latestFirmware = null; // false if firmware.json couldn't be loaded
+const latestFirmwareReady = fetch('firmware/firmware.json', { cache: 'no-store' })
+  .then((r) => (r.ok ? r.json() : Promise.reject(new Error('firmware.json'))))
+  .then((j) => { latestFirmware = j; })
+  .catch(() => { latestFirmware = false; });
+
+function compareVersion(a, b) { return a.major !== b.major ? a.major - b.major : a.minor - b.minor; }
+function versionText(v) { return `v${v.major}.${v.minor}`; }
+function deviceVersion() {
+  const d = device.deviceInfo;
+  return d ? { major: d.fwMajor, minor: d.fwMinor } : null;
+}
+
+/** 'current', 'updatable' (over MIDI), 'manual' (FIRMWARE pads), or 'unknown' (couldn't check). */
+function firmwareStatus() {
+  const v = deviceVersion();
+  if (!v || !latestFirmware) return 'unknown';
+  if (compareVersion(v, latestFirmware) >= 0) return 'current';
+  return compareVersion(v, FW_UPDATE_MIN) >= 0 ? 'updatable' : 'manual';
+}
+
+function openUpdateDialog() {
+  const unsavedWarning = dirty
+    ? `<p class="dialog-warn">You have changes that aren't saved to the FoxWizard. When it reconnects after the update, Patchling reloads its saved settings, which replaces them. Click Cancel, then Save to Device, to keep them.</p>`
+    : '';
+  openDialog('Firmware update', `
+    <p>This FoxWizard has firmware ${versionText(deviceVersion())}. Firmware ${versionText(latestFirmware)} is available.</p>
+    <p>The update takes a few seconds. Keep the FoxWizard plugged in until it restarts and reconnects. Saved settings and routes are kept.</p>
+    ${unsavedWarning}`,
+  [
+    { label: 'Cancel', kind: 'ghost' },
+    { label: 'Update Now', kind: 'accent', onClick: runFirmwareUpdate }
+  ]);
+}
+
+function openManualUpdateDialog() {
+  openDialog('Firmware update', `
+    <p>This FoxWizard has firmware ${versionText(deviceVersion())}, which did not yet have the easy-update ability. Firmware ${versionText(latestFirmware)} is available. If you would please update it manually this one time, it will update easily right here next time with just one click.</p>
+    <ol>
+      <li>Download the latest <code>.uf2</code> firmware file from <a href="${FIRMWARE_DOWNLOAD_URL}" target="_blank" rel="noopener">${FIRMWARE_DOWNLOAD_LABEL}</a>.</li>
+      <li>Unplug the FoxWizard.</li>
+      <li>Short the two pads labeled <strong>FIRMWARE</strong> on the circuit board together, with tweezers or a paperclip, and keep them shorted while you plug it into your computer.</li>
+      <li>A drive named <strong>RPI-RP2</strong> appears. Release the short.</li>
+      <li>Drag the <code>.uf2</code> file onto the RPI-RP2 drive. The FoxWizard restarts by itself when the copy finishes.</li>
+    </ol>
+    <p>Saved settings and routes are kept.</p>`,
+  [
+    { label: 'Close, Do This Later', kind: 'ghost' },
+    { label: 'Get Firmware', kind: 'accent', href: FIRMWARE_DOWNLOAD_URL }
+  ]);
+}
+
+function promptForFirmwareIfNeeded() {
+  const status = firmwareStatus();
+  if (status === 'updatable') openUpdateDialog();
+  else if (status === 'manual') openManualUpdateDialog();
+}
+
+// Counts connections, so the update can wait for the device to come back after it restarts.
+let connectionCount = 0;
+let updateInProgress = false;
+
+function waitForReconnect(fromCount, timeoutMs) {
+  return new Promise((resolve) => {
+    const started = Date.now();
+    const timer = setInterval(() => {
+      if (connectionCount > fromCount && device.connected) { clearInterval(timer); resolve(true); }
+      else if (Date.now() - started > timeoutMs) { clearInterval(timer); resolve(false); }
+    }, 200);
+  });
+}
+
+async function runFirmwareUpdate() {
+  if (!device.connected || !latestFirmware) return;
+  updateInProgress = true;
+  const countBefore = connectionCount;
+  showOverlay('Updating firmware. Keep the FoxWizard plugged in.');
+  try {
+    const res = await fetch(`firmware/${latestFirmware.bin}`, { cache: 'no-store' });
+    if (!res.ok) throw new Error('download');
+    const bin = new Uint8Array(await res.arrayBuffer());
+    if (bin.length !== latestFirmware.size) throw new Error('size');
+    await device.updateFirmware(bin, latestFirmware.md5, (sent, total) => {
+      overlayProgress.textContent = `${Math.floor((sent * 100) / total)}%`;
+    });
+  } catch (err) {
+    if (!err.fwEndUnconfirmed) {
+      updateInProgress = false;
+      hideOverlay();
+      toast('Firmware update failed. The FoxWizard kept its current firmware.', 'error');
+      return;
+    }
+    // The last step went unconfirmed, but the device may still be installing. Wait and see.
+  }
+
+  overlayText.textContent = 'Installing. The FoxWizard restarts by itself.';
+  overlayProgress.textContent = '';
+  const back = await waitForReconnect(countBefore, RECONNECT_WAIT_MS);
+  updateInProgress = false;
+  hideOverlay();
+  if (!back) {
+    toast("The FoxWizard didn't reconnect. Unplug it and plug it back in.", 'error');
+  } else if (firmwareStatus() === 'current') {
+    toast(`Firmware updated to ${versionText(deviceVersion())}`, 'success');
+  } else {
+    toast(`Update didn't install, the FoxWizard still has ${versionText(deviceVersion())}`, 'error');
+  }
+}
+
+// ============================================================================================
 // Connection handling
+// Green: connected, firmware up to date. Yellow: connected, firmware update available.
+// Red: not connected, click to try again.
 // ============================================================================================
 const connectionPill = document.getElementById('connectionPill');
 const connectionLabel = document.getElementById('connectionLabel');
+let connectionState = 'disconnected';
 
-device.addEventListener('status', async (e) => {
-  const { state: s, deviceInfo } = e.detail;
+// Sidecar state, from GET_STATUS (firmware 1.4 and later), checked every 2 s while connected.
+// Customers buy a FoxWizard or a FoxWizard Host Edition, so anything they see says "Host" or
+// "Host Edition", never "sidecar".
+const SIDECAR_POLL_MS = 2000;
+let sidecarPresent = false;
+let hostPortMask = 0; // bit 0 = a device on USB Host 1
+let hostRestartCount = null; // null until the first status after connecting, so only new restarts are announced
+let lastHostStatus = null;   // newest GET_STATUS reply, for the badge click
+
+function restartMessage(status) {
+  switch (status.restartReason) {
+    case 2: return `Host Edition restarted to recover: USB Host ${status.restartPort} stopped accepting data`;
+    case 3: return 'Host Edition restarted to recover: USB data sequence error';
+    case 4: return 'Host Edition reset its USB ports after a device change';
+    case 5: return 'Host Edition restarted to recover: a USB device stalled';
+    default: return 'Host Edition restarted to recover: its USB host stopped responding';
+  }
+}
+
+async function refreshSidecarStatus() {
+  if (!device.connected || updateInProgress || !overlay.hidden) return;
+  let status;
+  try { status = await device.getStatus(); } catch (err) { return; }
+  const sidecarChanged = status.sidecar !== sidecarPresent;
+  const portsChanged = status.hostPortMask !== hostPortMask;
+  sidecarPresent = status.sidecar;
+  hostPortMask = status.hostPortMask;
+  lastHostStatus = status;
+  if (status.sidecar) {
+    if (hostRestartCount !== null && status.restartCount > hostRestartCount) {
+      // A reset after plugging a device in or out (reason 4) recovers on its own: a brief yellow note.
+      // Every other reason stays up in red until clicked.
+      if (status.restartReason === 4) {
+        toast(restartMessage(status), 'warn');
+      } else {
+        const time = new Date().toLocaleTimeString();
+        toast(`${time} ${restartMessage(status)} (click to dismiss)`, 'error', true);
+      }
+    }
+    hostRestartCount = status.restartCount;
+  }
+  if (sidecarChanged) {
+    renderRoutes();
+    renderConnectionPill();
+    toast(sidecarPresent ? 'Host Edition ports connected' : 'Host Edition ports disconnected', sidecarPresent ? 'success' : 'error');
+  } else if (portsChanged) {
+    updatePortChipsLive();
+  }
+}
+setInterval(refreshSidecarStatus, SIDECAR_POLL_MS);
+
+function renderConnectionPill() {
   connectionPill.className = 'connection-pill';
+  const s = connectionState;
   if (s === 'connected') {
-    connectionPill.classList.add('connected');
-    connectionLabel.textContent = 'Connected';
-    toast('Device connected', 'success');
-    await loadFromDevice(true);
+    const status = firmwareStatus();
+    const version = versionText(deviceVersion());
+    if (status === 'updatable' || status === 'manual') {
+      connectionPill.classList.add('outdated');
+      connectionLabel.textContent = `Connected · Firmware ${version}${sidecarPresent ? ' · Host' : ''} · Update`;
+      connectionPill.title = `Click to update to firmware ${versionText(latestFirmware)}`;
+    } else {
+      connectionPill.classList.add('connected');
+      connectionLabel.textContent = `Connected · Firmware ${version}${sidecarPresent ? ' · Host' : ''}`;
+      connectionPill.title = status === 'current' ? 'Firmware is up to date' : "Couldn't check for firmware updates";
+    }
   } else if (s === 'connecting') {
     connectionPill.classList.add('connecting');
     connectionLabel.textContent = 'Connecting…';
+    connectionPill.title = '';
   } else if (s === 'unsupported') {
     connectionPill.classList.add('disconnected');
     connectionLabel.textContent = 'Web MIDI not supported — use Chrome';
+    connectionPill.title = '';
   } else if (s === 'denied') {
     connectionPill.classList.add('disconnected');
     connectionLabel.textContent = 'MIDI access denied';
+    connectionPill.title = 'Click to try again';
   } else {
     connectionPill.classList.add('disconnected');
     connectionLabel.textContent = 'Not connected';
+    connectionPill.title = 'Click to try connecting again';
   }
+}
+
+device.addEventListener('status', async (e) => {
+  connectionState = e.detail.state;
+  if (connectionState !== 'connected') {
+    hostRestartCount = null;
+    lastHostStatus = null;
+  }
+  if (connectionState !== 'connected' && sidecarPresent) {
+    sidecarPresent = false;
+    hostPortMask = 0;
+    renderRoutes();
+  }
+  renderConnectionPill();
+  if (connectionState !== 'connected') return;
+
+  connectionCount++;
+  if (!updateInProgress) toast('Device connected', 'success');
+  await refreshSidecarStatus();
+  await loadFromDevice(true);
+  await latestFirmwareReady;
+  renderConnectionPill();
+  if (!updateInProgress) promptForFirmwareIfNeeded();
+});
+
+connectionPill.addEventListener('click', async () => {
+  if (updateInProgress || connectionState === 'connecting') return;
+  if (connectionState === 'unsupported') {
+    toast('Web MIDI needs Chrome or another Chromium-based browser', 'error');
+    return;
+  }
+  if (connectionState !== 'connected') {
+    await device.retryConnect();
+    if (!device.connected) toast('No FoxWizard found. Check the USB cable.', 'error');
+    return;
+  }
+  await latestFirmwareReady;
+  if (sidecarPresent && lastHostStatus?.restartCount > 0) {
+    toast(`Last recovery: ${restartMessage(lastHostStatus)}. ${lastHostStatus.restartCount} since the Host Edition powered up. (click to dismiss)`, lastHostStatus.restartReason === 4 ? 'warn' : 'error', true);
+  }
+  const status = firmwareStatus();
+  if (status === 'current') toast(`Firmware ${versionText(deviceVersion())} is up to date`, 'success');
+  else if (status === 'unknown') toast("Couldn't check for firmware updates", 'error');
+  else promptForFirmwareIfNeeded();
 });
 
 // ============================================================================================
@@ -532,8 +798,52 @@ function syncGlobalLive() {
 const routesContainer = document.getElementById('routesContainer');
 const emptyHint = document.getElementById('emptyRoutesHint');
 
-const IN_DEVICE_OPTIONS = [{ v: 0, l: 'TRS/DIN' }, { v: 1, l: 'USB' }, { v: 2, l: 'Both' }];
-const OUT_DEVICE_OPTIONS = [{ v: 0, l: 'None' }, { v: 1, l: 'TRS/DIN' }, { v: 2, l: 'USB' }, { v: 3, l: 'Both' }];
+// Port switches. Each switch and its label sit inside one chip, so it's always clear which label
+// goes with which switch. Sidecar ports (USB Host 1-4, TRS 2-6) only show while a sidecar is
+// detected, or when the route already uses them.
+function visiblePorts(route, field) {
+  return PORTS.filter((p) => (field === 'outPorts' || p.input) && (!p.sidecar || sidecarPresent || (route[field] & (1 << p.bit))));
+}
+
+function visiblePortMask(route, field) {
+  return visiblePorts(route, field).reduce((mask, p) => mask | (1 << p.bit), 0);
+}
+
+function allPortsOn(route, field) {
+  const mask = visiblePortMask(route, field);
+  return (route[field] & mask) === mask;
+}
+
+// The Input/Output title leads the row of chips, followed by the purple All Ins/All Outs chip.
+function portSwitchesHtml(route, index, field, title) {
+  const allField = field === 'inPorts' ? 'allInPorts' : 'allOutPorts';
+  const allLabel = field === 'inPorts' ? 'All Ins' : 'All Outs';
+  const allChip = `<label class="switch switch-purple port-chip" title="${allLabel}">
+      <input type="checkbox" data-route-index="${index}" data-field="${allField}" ${allPortsOn(route, field) ? 'checked' : ''}>
+      <span class="switch-track"><span class="switch-thumb"></span></span>
+      <span class="switch-label">${allLabel}</span>
+    </label>`;
+  const chips = visiblePorts(route, field).map((p) => {
+    const live = p.key.startsWith('host') && sidecarPresent && (hostPortMask & (1 << (p.bit - 2)));
+    return `<label class="switch switch-port port-chip${live ? ' port-chip-live' : ''}" data-port-bit="${p.bit}" title="${p.label}${live ? ', device connected' : ''}">
+      <input type="checkbox" data-route-index="${index}" data-field="${field}" data-bit="${p.bit}" ${route[field] & (1 << p.bit) ? 'checked' : ''}>
+      <span class="switch-track"><span class="switch-thumb"></span></span>
+      <span class="switch-label">${p.label}</span>
+    </label>`;
+  }).join('');
+  return `<div class="port-switches"><h3>${title}</h3>${allChip}${chips}</div>`;
+}
+
+// Marks which USB Host chips have a device plugged in, without re-rendering the route list.
+function updatePortChipsLive() {
+  for (let i = 0; i < 4; i++) {
+    const live = sidecarPresent && !!(hostPortMask & (1 << i));
+    routesContainer.querySelectorAll(`.port-chip[data-port-bit="${i + 2}"]`).forEach((el) => {
+      el.classList.toggle('port-chip-live', live);
+      el.title = `USB Host ${i + 1}${live ? ', device connected' : ''}`;
+    });
+  }
+}
 
 function selectOptions(options, selected) {
   return options.map((o) => `<option value="${o.v}" ${o.v === selected ? 'selected' : ''}>${o.l}</option>`).join('');
@@ -561,8 +871,10 @@ function switchHtml(index, field, checked, label, extraClass) {
   </label>`;
 }
 
-const IN_DEVICE_SHORT = ['TRS', 'USB', 'Both'];
-const OUT_DEVICE_SHORT = ['None', 'TRS', 'USB', 'Both'];
+function portsShort(mask) {
+  const names = PORTS.filter((p) => mask & (1 << p.bit)).map((p) => p.short);
+  return names.length ? names.join('+') : 'None';
+}
 const TYPE_SHORT_LABELS = [
   [DATA_TYPE_BITS.note, 'Note'],
   [DATA_TYPE_BITS.cc, 'CC'],
@@ -606,7 +918,7 @@ function routeSummary(route) {
   if (route.monoRetrig) monoRobin.push('Mono');
   if (route.roundRobin) monoRobin.push(route.roundRobinRandom ? 'Rand Robin' : 'Round Robin');
   const monoRobinText = monoRobin.length ? `, ${monoRobin.join(', ')}` : '';
-  return `${IN_DEVICE_SHORT[route.inputDevice]} ${inCh} → ${OUT_DEVICE_SHORT[route.outputDevice]} ${outCh} · ${typesText}${transposeText}${velocityText}${monoRobinText}`;
+  return `${portsShort(route.inPorts)} ${inCh} → ${portsShort(route.outPorts)} ${outCh} · ${typesText}${transposeText}${velocityText}${monoRobinText}`;
 }
 
 function renderRouteCard(route, index, animateStaple) {
@@ -642,10 +954,7 @@ function renderRouteCard(route, index, animateStaple) {
     ${collapsed ? '' : `<div class="route-body">
       <div class="route-io-columns">
         <div class="route-input-col">
-          <div class="col-header-row">
-            <h3>Input</h3>
-            <select data-route-index="${index}" data-field="inputDevice">${selectOptions(IN_DEVICE_OPTIONS, route.inputDevice)}</select>
-          </div>
+          <div class="col-header-row">${portSwitchesHtml(route, index, 'inPorts', 'Input')}</div>
           <div class="field-row">
             <label>Input Channels</label>
             ${channelGrid(index, 'inputChannels', route.inputChannels)}
@@ -714,10 +1023,7 @@ function renderRouteCard(route, index, animateStaple) {
         </div>
 
         <div class="route-output-col">
-          <div class="col-header-row">
-            <h3>Output</h3>
-            <select data-route-index="${index}" data-field="outputDevice">${selectOptions(OUT_DEVICE_OPTIONS, route.outputDevice)}</select>
-          </div>
+          <div class="col-header-row">${portSwitchesHtml(route, index, 'outPorts', 'Output')}</div>
           <div class="field-row">
             <label>Output Channels <span class="channel-warning">${countBits(route.outputChannels) > 2 ? 'Caution: dense data may lag if cloned to too many channels.' : ''}</span></label>
             ${channelGrid(index, 'outputChannels', route.outputChannels)}
@@ -783,6 +1089,10 @@ function syncMasterSwitches(index) {
   if (allTypesEl) allTypesEl.checked = allInputTypesOn(route);
   const allChEl = card.querySelector('[data-field="allInputChannels"]');
   if (allChEl) allChEl.checked = allInputChannelsOn(route);
+  const allInEl = card.querySelector('[data-field="allInPorts"]');
+  if (allInEl) allInEl.checked = allPortsOn(route, 'inPorts');
+  const allOutEl = card.querySelector('[data-field="allOutPorts"]');
+  if (allOutEl) allOutEl.checked = allPortsOn(route, 'outPorts');
 }
 
 function countBits(mask) {
@@ -805,7 +1115,7 @@ function refreshRouteCard(index, animateStaple) {
 }
 
 // Structural changes (need a re-render): checkboxes that reveal/hide fields, staple toggle, delete
-const STRUCTURAL_FIELDS = new Set(['note', 'cc', 'ccMapEnabled', 'aftertouch', 'aftertouchMap', 'pressure', 'pressureMap', 'allInputTypes', 'allInputChannels', 'roundRobin', 'roundRobinRandom']);
+const STRUCTURAL_FIELDS = new Set(['note', 'cc', 'ccMapEnabled', 'aftertouch', 'aftertouchMap', 'pressure', 'pressureMap', 'allInputTypes', 'allInputChannels', 'allInPorts', 'allOutPorts', 'roundRobin', 'roundRobinRandom']);
 
 routesContainer.addEventListener('click', (e) => {
   const actionEl = e.target.closest('[data-action]');
@@ -878,8 +1188,7 @@ function applyRouteFieldChange(route, field, el) {
     if (clean !== el.value) el.value = clean;
     return;
   }
-  if (field === 'inputDevice' || field === 'outputDevice') { route[field] = parseInt(el.value, 10); return; }
-  if (field === 'inputChannels' || field === 'outputChannels') {
+  if (field === 'inputChannels' || field === 'outputChannels' || field === 'inPorts' || field === 'outPorts') {
     const bit = parseInt(el.dataset.bit, 10);
     if (el.checked) route[field] |= (1 << bit); else route[field] &= ~(1 << bit);
     return;
@@ -914,6 +1223,13 @@ function applyRouteFieldChange(route, field, el) {
     route.commonEnabled = on;
     route.realtimeEnabled = on;
     route.clockEnabled = on;
+    return;
+  }
+  if (field === 'allInPorts' || field === 'allOutPorts') {
+    // Flips every port switch shown in that row, leaving hidden sidecar ports alone.
+    const portField = field === 'allInPorts' ? 'inPorts' : 'outPorts';
+    const mask = visiblePortMask(route, portField);
+    route[portField] = el.checked ? (route[portField] | mask) : (route[portField] & ~mask);
     return;
   }
   if (field === 'allInputChannels') {
@@ -957,7 +1273,18 @@ function syncRouteLive(index) {
   markDirty();
 }
 
+// Firmware 1.2 and later hold 64 routes and report it in IDENTITY_REPLY. Firmware 1.0 reports 256
+// but only keeps 99 after a restart, so the limit never goes above 64.
+const ROUTE_LIMIT = 64;
+function routeLimit() {
+  return Math.min(ROUTE_LIMIT, device.deviceInfo?.maxRoutes || ROUTE_LIMIT);
+}
+
 function addRoute() {
+  if (state.routes.length >= routeLimit()) {
+    toast(`The FoxWizard holds up to ${routeLimit()} routes`, 'error');
+    return;
+  }
   state.routes.push(defaultRoute());
   renderRoutes();
   refreshMasterStaple();
@@ -1006,7 +1333,11 @@ document.getElementById('uploadPresetInput').addEventListener('change', async (e
     renderGlobalCard();
     renderRoutes();
     markDirty();
-    toast('Preset loaded — click "Save to Device" to push it', 'success');
+    if (state.routes.length > routeLimit()) {
+      toast(`This preset has ${state.routes.length} routes. The FoxWizard holds ${routeLimit()}, delete some before saving.`, 'error');
+    } else {
+      toast('Preset loaded — click "Save to Device" to push it', 'success');
+    }
   } catch (err) {
     toast('Could not read that preset file', 'error');
   }
@@ -1036,6 +1367,10 @@ async function loadFromDevice(silent) {
 
 saveToDeviceBtn.addEventListener('click', async () => {
   if (!device.connected) { toast('Not connected to a device', 'error'); return; }
+  if (state.routes.length > routeLimit()) {
+    toast(`The FoxWizard holds up to ${routeLimit()} routes. Delete ${state.routes.length - routeLimit()} before saving.`, 'error');
+    return;
+  }
   showOverlay('Sending settings to device…');
   try {
     await device.saveAll(state.global, state.routes, (done, total) => setOverlayProgress(done, total));

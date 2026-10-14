@@ -160,6 +160,11 @@ a { color: var(--accent); }
 .connection-pill.disconnected { color: #fecaca; border-color: rgba(239, 68, 68, 0.3); background: rgba(239, 68, 68, 0.08); }
 .connection-pill.disconnected .connection-dot { background: var(--red); }
 .connection-pill.connecting .connection-dot { background: var(--amber); animation: pulseDot 1s ease-in-out infinite; }
+.connection-pill.outdated { color: #fde68a; border-color: rgba(245, 158, 11, 0.4); background: rgba(245, 158, 11, 0.1); }
+.connection-pill.outdated .connection-dot { background: var(--amber); box-shadow: 0 0 8px rgba(245, 158, 11, 0.8); animation: pulseDot 2s ease-in-out infinite; }
+button.connection-pill { font-family: inherit; cursor: pointer; transition: transform 0.15s ease, border-color 0.15s ease; }
+button.connection-pill:hover { transform: translateY(-1px); }
+button.connection-pill.connecting { cursor: default; transform: none; }
 
 @keyframes pulseDot {
   0%, 100% { opacity: 1; }
@@ -368,6 +373,26 @@ a { color: var(--accent); }
    side, standing apart from the ordinary blue switches since these two act on everything below
    them at once rather than a single setting. */
 .switch-purple input:checked + .switch-track { background: var(--purple); }
+/* Port switches (route Input/Output): teal, set apart from the blue data-type switches. Each sits
+   in its own bordered chip with its label, so a label never floats between two switches. */
+.port-switches { display: flex; flex-wrap: wrap; align-items: center; gap: 6px; flex: 1; min-width: 0; }
+.port-switches h3 { margin: 0 4px 0 0; }
+.port-chip {
+  gap: 6px;
+  padding: 3px 10px 3px 4px;
+  border: 1px solid var(--box-border);
+  border-radius: 999px;
+  background: var(--box);
+}
+.port-chip .switch-track { width: 32px; height: 18px; }
+.port-chip .switch-thumb { width: 14px; height: 14px; }
+.port-chip input:checked + .switch-track .switch-thumb { transform: translateX(14px); }
+.port-chip .switch-label { font-size: 0.74rem; white-space: nowrap; }
+.switch-port input:checked + .switch-track { background: #14b8a6; }
+.port-chip:has(input:checked) { border-color: rgba(20, 184, 166, 0.55); }
+.port-chip.switch-purple:has(input:checked) { border-color: rgba(124, 58, 237, 0.6); }
+/* A device is plugged into this USB Host port right now. */
+.port-chip-live .switch-label::after { content: ""; display: inline-block; width: 6px; height: 6px; margin-left: 6px; border-radius: 50%; background: var(--green); box-shadow: 0 0 6px rgba(34, 197, 94, 0.8); vertical-align: middle; }
 
 /* Channel picker: 16 tiny toggle chips laid out in a wrapping row */
 .channel-grid {
@@ -599,6 +624,19 @@ a { color: var(--accent); }
 @keyframes pingMini { 0%, 50% { opacity: 1; } 100% { opacity: .3; } }
 .radar-overlay-text { margin: 16px 0 2px; font-size: 0.9rem; color: var(--text); }
 .radar-overlay-progress { margin: 0; font-size: 0.76rem; color: var(--text-dim); }
+
+/* Dialog: same backdrop and card as the radar overlay, left-aligned text and a button row. */
+.dialog-overlay { padding: 16px; }
+.dialog-card { text-align: left; max-width: 520px; width: 100%; padding: 26px 28px; max-height: calc(100vh - 32px); overflow-y: auto; }
+.dialog-title { margin: 0 0 12px; font-family: 'Russo One', sans-serif; font-size: 1.1rem; letter-spacing: 0.04em; }
+.dialog-body { font-size: 0.88rem; line-height: 1.5; color: var(--text); }
+.dialog-body p { margin: 0 0 10px; }
+.dialog-body ol { margin: 0 0 10px; padding-left: 22px; }
+.dialog-body li { margin-bottom: 6px; }
+.dialog-body code { font-size: 0.82rem; background: var(--box); border: 1px solid var(--box-border); border-radius: 6px; padding: 1px 5px; }
+.dialog-warn { color: #fde68a; border: 1px solid rgba(245, 158, 11, 0.35); background: rgba(245, 158, 11, 0.08); border-radius: var(--radius-sm); padding: 9px 12px; }
+.dialog-actions { display: flex; justify-content: flex-end; flex-wrap: wrap; gap: 10px; margin-top: 18px; }
+.dialog-actions a.btn { text-decoration: none; }
 
 /* ---------------------------------------------------------------------------------------------
    Staple toggle — reused as each route's enable/disable control. Bending shut = "stapling" the
@@ -887,3 +925,5 @@ body.dragging-active { overflow: hidden; }
 }
 .toast.toast-error { border-color: rgba(239, 68, 68, 0.4); color: #fecaca; }
 .toast.toast-success { border-color: rgba(34, 197, 94, 0.4); color: #bbf7d0; }
+.toast.toast-warn { border-color: rgba(245, 158, 11, 0.45); color: #fde68a; }
+.toast-sticky { cursor: pointer; border-radius: var(--radius-md); max-width: min(560px, calc(100vw - 32px)); }

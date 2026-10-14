@@ -1,4 +1,11 @@
-# Foxwizard Mini MIDI Multitool — SysEx Protocol v1
+# FoxWizard Mini MIDI Multitool, SysEx Protocol
+
+IDENTITY_REPLY's `protocolVersion` says which version a board speaks:
+
+- **1:** firmware 1.0-1.3. 41-byte routes.
+- **2:** firmware 1.4 (Host Edition). 45-byte routes with port masks, and GET_STATUS for the sidecar.
+
+Patchling picks the route size from it, so it talks to both.
 
 Shared contract between the firmware (`Mini_MIDI_Multitool/Mini_MIDI_Multitool.ino`) and the
 web app (`mmm_web_interface/js/midi.js`). If you change something here, change it in both places.
@@ -43,6 +50,8 @@ The route struct is 41 bytes → five groups of 7 + one group of 6 → packed to
 | 0x01   | IDENTITY_REQUEST      | host→dev  | (none)                                                        |
 | 0x02   | IDENTITY_REPLY        | dev→host  | protocolVersion, fwMajor, fwMinor, maxRoutes(2), name (ASCII, remainder of message) |
 | 0x10   | GET_GLOBAL            | host→dev  | (none)                                                         |
+| 0x13   | GET_STATUS            | host→dev  | (none). Protocol 2 |
+| 0x14   | STATUS_DATA           | dev→host  | sidecarPresent (0/1), hostPortMask (bit0 = USB Host 1 has a USB MIDI device), sidecarDrops (saturates at 127), restartReason (0 none, 1 hang, 2 USB Host port stalled, 3 USB data sequence error, 4 USB buffer armed twice, 5 USB device stalled), restartPort (1-4, for reason 2), restartCount (recovery restarts since the sidecar powered up, saturates at 127). Protocol 2 |
 | 0x11   | GLOBAL_DATA           | dev→host  | mode, buttonAction, buttonParamA, buttonParamB, buttonToggleMomentary, ledBrightnessStep |
 | 0x12   | SET_GLOBAL            | host→dev  | same 6 bytes as GLOBAL_DATA                                   |
 | 0x20   | GET_ROUTE_COUNT       | host→dev  | (none)                                                         |
@@ -57,13 +66,16 @@ The route struct is 41 bytes → five groups of 7 + one group of 6 → packed to
 | 0x30   | PREVIEW_BRIGHTNESS    | host→dev  | step(1, 0–9) — temporary, not persisted, LEDs flash then fade   |
 | 0x31   | COMMIT                | host→dev  | (none) — writes current RAM state (global + all routes) to flash |
 | 0x32   | FACTORY_RESET         | host→dev  | (none) — software-triggered equivalent of the boot-time button hold |
-| 0x7E   | ACK                   | dev→host  | originalCmd(1), status(1: 0=OK,1=ERR_BAD_INDEX,2=ERR_BAD_DATA,3=ERR_FULL), checksum(1), extra(2, e.g. assigned index for ADD_ROUTE) |
+| 0x40   | FW_BEGIN              | host→dev  | size(3) + md5 (32 lowercase hex ASCII characters). Firmware 1.2+ |
+| 0x41   | FW_DATA               | host→dev  | index(2) + pack7(up to 128 firmware bytes → up to 147 bytes). Firmware 1.2+ |
+| 0x42   | FW_END                | host→dev  | (none). Checks size and MD5, stages the install, ACKs, then reboots. Firmware 1.2+ |
+| 0x7E   | ACK                   | dev→host  | originalCmd(1), status(1: 0=OK,1=ERR_BAD_INDEX,2=ERR_BAD_DATA,3=ERR_FULL,4=ERR_UPDATE), checksum(1), extra(2, e.g. assigned index for ADD_ROUTE) |
 
 16-bit values (`index`, `count`, `maxRoutes`) are sent as two 7-bit bytes: `low = v & 0x7F`,
-`high = (v >> 7) & 0x7F`. Since routes max out at 256, `high` never exceeds 2.
+`high = (v >> 7) & 0x7F`. Routes max out at 64 (firmware 1.0 reported 256).
 
 Every host→device command other than GET_*/IDENTITY_REQUEST gets an ACK. The web app waits for the
-matching ACK (with a timeout + one retry) before sending the next message, since 256-route bulk
+matching ACK (with a timeout + one retry) before sending the next message, since bulk
 operations are sequential round trips.
 
 **Confirmation, not just "OK."** `checksum` is `(sum of the raw, unpacked payload bytes the device
@@ -74,6 +86,29 @@ bytes just stored (post-unpack7, i.e. what's actually sitting in the route slot 
 compares it against the ACK's checksum. A mismatch (or a timeout) means the device's state doesn't
 provably match what was sent, and the web app retries that message before moving on — this is what
 gives the UI real certainty that the device has the new settings, not just that a command arrived.
+
+## Firmware update (FW_BEGIN / FW_DATA / FW_END)
+
+Firmware 1.2 and later. Patchling decides by the version in IDENTITY_REPLY, so 1.0 units never
+receive these commands. Firmware 1.0 ignores them anyway.
+
+- `size(3)` is three 7-bit bytes, low first: `size & 0x7F`, `(size >> 7) & 0x7F`, `(size >> 14) & 0x7F`.
+- **FW_BEGIN** starts a new update, discarding any half-sent one. ACK checksum is `checksum7` of the
+  35 payload bytes.
+- **FW_DATA** carries chunk `index` (0, 1, 2, ...), 128 raw bytes each, the last one shorter.
+  Chunks must arrive in order. ACK checksum is `checksum7` of the raw chunk, ACK `extra` is the
+  index. A repeat of the last accepted chunk (its ACK was lost) is ACKed again without being
+  written twice. A wrong index gets ERR_BAD_INDEX with the expected index in `extra`.
+- **FW_END** checks that every byte arrived and the MD5 matches, stages the file for the OTA
+  bootloader, ACKs, and reboots 300 ms later. The bootloader installs the new firmware during that
+  reboot and the device re-enumerates. FW_END is never retried by the host, since a staged update
+  refuses a second FW_END but still installs.
+- ERR_UPDATE carries the Arduino `Updater` error code in `extra`.
+- Nothing is installed until FW_END succeeds, so a failed or abandoned transfer leaves the running
+  firmware untouched. Saved settings live in the EEPROM area, which the update never touches.
+- The file is the sketch `.bin`, staged in the LittleFS partition, so the firmware must be built
+  with Flash Size `2MB (Sketch: 1792KB, FS: 256KB)`. `mmm_web_interface/firmware/build_firmware.sh`
+  does this.
 
 ## Terminology: Poly Aftertouch vs. Channel Pressure
 
@@ -90,11 +125,11 @@ web UI) is careful to distinguish them:
 The web UI labels these "Poly Aftertouch" and "Ch Pressure Aftertouch" respectively to keep them
 from being confused with each other.
 
-## Route struct (41 raw bytes, before pack7)
+## Route struct (41 raw bytes in protocol 1, 45 in protocol 2, before pack7)
 
 | byte  | field                    | notes |
 |-------|--------------------------|-------|
-| 0     | flags: bit7=enabled, bits1-0=inputDevice | inputDevice: 0=TRS, 1=USB, 2=Both |
+| 0     | flags: bit7=enabled, bit6=port masks in use (protocol 2), bits1-0=inputDevice | inputDevice: 0=TRS, 1=USB, 2=Both. Used when bit6 is clear. Protocol 2 hosts still fill it in for older readers |
 | 1     | inputChannelBitmask low 8   | bit0=ch1 … bit7=ch8 |
 | 2     | inputChannelBitmask high 8  | bit0=ch9 … bit7=ch16 |
 | 3     | dataType enable flags    | bit0=note, bit1=cc, bit2=programChange, bit3=pitchBend, bit4=poly aftertouch, bit5=channel pressure, bit6=sysex, bit7=poly aftertouch remapped to CC (see below) |
@@ -102,7 +137,7 @@ from being confused with each other.
 | 5     | noteRangeEnd (0–127)     | |
 | 6     | ccRangeStart (0–127)     | only meaningful if bit1 of byte3 set |
 | 7     | ccRangeEnd (0–127)       | |
-| 8     | outputDevice             | 0=None, 1=TRS, 2=USB, 3=Both |
+| 8     | outputDevice             | 0=None, 1=TRS, 2=USB, 3=Both. Used when byte0 bit6 is clear |
 | 9     | outputChannelBitmask low 8  | |
 | 10    | outputChannelBitmask high 8 | |
 | 11    | transpose                | encoded as `semitone + 64`, range -64..+63 |
@@ -112,6 +147,18 @@ from being confused with each other.
 | 15    | cpMapCC: bit7=channel pressure remapped to CC, bits6-0=destination CC number | same remap idea as byte14, but self-contained (its own enable bit) since channel pressure isn't one of the byte3 dataType flags' bit-per-flag scheme |
 | 16    | flags2: bit0=Mono Retrig, bit1=Round Robin, bit2=System Common, bit3=System Realtime (Transport, everything but Clock), bit4=MIDI Clock | see "Mono Retrig / Round Robin" and "System Common / Realtime / Clock" below |
 | 17-40 | name (24 bytes)          | ASCII, zero-padded (not necessarily NUL-terminated if it fills all 24 bytes). The device stores and returns this verbatim but never interprets it — it's purely a label. The web UI enforces the 24-character limit and restricts input to printable ASCII before ever building the wire bytes. |
+| 41-42 | inPorts, little endian (protocol 2) | port mask, used when byte0 bit6 is set. Inputs are bits 0-6 |
+| 43-44 | outPorts, little endian (protocol 2) | port mask, used when byte0 bit6 is set |
+
+**Port masks** (protocol 2): bit0 TRS/DIN, bit1 USB Device, bits 2-5 USB Host 1-4 (sidecar hub
+ports), bit6 TRS 2 (sidecar DIN IN and DIN OUT 1), bits 7-10 TRS 3-6 (sidecar DIN OUT 2-5, outputs
+only). Bits 0-1 match the old inputDevice/outputDevice meaning, so a route with byte0 bit6 clear
+(saved or sent by protocol 1) keeps working unchanged. A protocol 1 host sends 41 bytes, and the
+firmware fills the missing port masks with zero.
+
+Without a matching route, USB Adaptor Mode sends every input to every port except the one it came in
+on, and Router Mode sends every input to every port. Sidecar ports count only while the sidecar is
+present.
 
 **Aftertouch → CC remap.** Normally a route with poly aftertouch enabled (byte3 bit4) passes it
 through unmodified (same note number, pressure value becomes the CC-equivalent data byte). If byte3
@@ -288,8 +335,21 @@ routing/fallthrough purposes and are never inspected/mutated, just forwarded who
 
 Global struct + full route list live in RAM during operation (routes are looked at on every MIDI
 event, so RAM residency matters for speed). `COMMIT` writes the current RAM state to EEPROM-backed
-flash (rp2040 core's `EEPROM.h`, ~10.1KB reserved: 6 bytes global + up to 256×41 raw bytes ≈ 10KB +
-a small header/magic-number/count). The web app now edits entirely locally and only talks to the
+flash (rp2040 core's `EEPROM.h`, 4 KB maximum).
+
+Saved layout `FOX2` (firmware 1.2 and later): magic(4), globalBytes(1), routeBytes(1), global,
+routeCount(2), routes. The stored sizes let a later firmware with bigger structs read an older save.
+It copies the bytes that were saved and leaves the rest zero, so new fields go at the end of their
+struct and zero must mean off. `FOX1` (firmware 1.0) has no size bytes, a 6-byte global, and 41-byte
+routes, and loads the same way. The first COMMIT rewrites it as `FOX2`.
+
+64 routes leave each route room to grow from 41 to 63 bytes within 4 KB. The firmware's static_assert
+fails the build if MAX_ROUTES times the route size stops fitting. Growing the route struct also
+changes the wire format, which needs a PROTOCOL_VERSION bump. Patchling doesn't check
+PROTOCOL_VERSION yet, so that change has to add the check.
+
+Firmware 1.0 asked for more than 4 KB, which the core silently caps, so it only kept the first 99
+routes after a restart. The web app now edits entirely locally and only talks to the
 device when you explicitly click "Load from Device" or "Save to Device" — earlier revisions pushed
 every field edit live, but that could race with itself (see the SET_GLOBAL/SET_ROUTE section above)
 and made "have I actually saved this?" unclear. "Save to Device" pushes the full local state

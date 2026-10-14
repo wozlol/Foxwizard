@@ -1,4 +1,4 @@
-// Web MIDI + SysEx transport for the Foxwizard Mini MIDI Multitool.
+// Web MIDI + SysEx transport for the FoxWizard Mini MIDI Multitool.
 // Wire format: see ../SYSEX_PROTOCOL.md — keep this file and the firmware's command table in sync.
 // The device talks the same protocol over USB or DIN; Chrome's Web MIDI only ever exposes it via
 // USB, so that's the only path this file actually drives, but nothing here assumes USB-only.
@@ -7,6 +7,8 @@ export const CMD = {
   IDENTITY_REQUEST: 0x01,
   IDENTITY_REPLY: 0x02,
   GET_GLOBAL: 0x10,
+  GET_STATUS: 0x13,
+  STATUS_DATA: 0x14,
   GLOBAL_DATA: 0x11,
   SET_GLOBAL: 0x12,
   GET_ROUTE_COUNT: 0x20,
@@ -21,14 +23,47 @@ export const CMD = {
   PREVIEW_BRIGHTNESS: 0x30,
   COMMIT: 0x31,
   FACTORY_RESET: 0x32,
+  FW_BEGIN: 0x40,
+  FW_DATA: 0x41,
+  FW_END: 0x42,
   ACK: 0x7E
 };
 
 const MFR_ID = 0x7D;
 const DEVICE_ID = 0x4D;
 export const ROUTE_NAME_MAX_LEN = 24; // must match ROUTE_NAME_MAX_LEN in the firmware
-const ROUTE_RAW_BYTES = 17 + ROUTE_NAME_MAX_LEN;
+
+// Ports, one bit each, same as PORT_* in the firmware. Inputs are bits 0-6, TRS 3-6 are outputs only.
+// Routes carry them as inPorts/outPorts. Protocol 1 firmware (1.0-1.3) only has TRS/DIN and USB Device.
+export const PORTS = [
+  { bit: 0, key: 'trs', label: 'TRS/DIN', short: 'TRS', input: true, sidecar: false },
+  { bit: 1, key: 'usb', label: 'USB Device', short: 'USB', input: true, sidecar: false },
+  { bit: 2, key: 'host1', label: 'USB Host 1', short: 'Host1', input: true, sidecar: true },
+  { bit: 3, key: 'host2', label: 'USB Host 2', short: 'Host2', input: true, sidecar: true },
+  { bit: 4, key: 'host3', label: 'USB Host 3', short: 'Host3', input: true, sidecar: true },
+  { bit: 5, key: 'host4', label: 'USB Host 4', short: 'Host4', input: true, sidecar: true },
+  { bit: 6, key: 'trs2', label: 'TRS 2', short: 'TRS2', input: true, sidecar: true },
+  { bit: 7, key: 'trs3', label: 'TRS 3', short: 'TRS3', input: false, sidecar: true },
+  { bit: 8, key: 'trs4', label: 'TRS 4', short: 'TRS4', input: false, sidecar: true },
+  { bit: 9, key: 'trs5', label: 'TRS 5', short: 'TRS5', input: false, sidecar: true },
+  { bit: 10, key: 'trs6', label: 'TRS 6', short: 'TRS6', input: false, sidecar: true }
+];
+export const PORT_TRS = 1 << 0;
+export const PORT_USB = 1 << 1;
+export const SIDECAR_INPUT_PORTS = 0x007C;
+export const SIDECAR_OUTPUT_PORTS = 0x07FC;
+
+// Protocol 1 routes are 41 raw bytes. Protocol 2 adds inPorts and outPorts (2 bytes each, little
+// endian) at the end, used when flags bit6 is set.
+const ROUTE_BYTES_V1 = 17 + ROUTE_NAME_MAX_LEN;
 const DEFAULT_TIMEOUT_MS = 1500;
+
+// Firmware update over SysEx (FW_BEGIN/FW_DATA/FW_END). Must match FW_CHUNK_BYTES in the firmware.
+export const FW_CHUNK_BYTES = 128;
+const FW_BEGIN_TIMEOUT_MS = 10000; // first use may have to format the device's update partition
+const FW_DATA_TIMEOUT_MS = 3000;   // a chunk can land on a 4 KB flash write
+const FW_END_TIMEOUT_MS = 10000;   // device re-reads the whole file to check its MD5
+const FW_DATA_ATTEMPTS = 4;
 
 // Fixed-length, zero-padded ASCII — matches the firmware's raw char[ROUTE_NAME_MAX_LEN] field
 // exactly, so there's no separate length byte to keep in sync.
@@ -93,10 +128,17 @@ function write16(v) {
   return [v & 0x7F, (v >> 7) & 0x7F];
 }
 
-/** Route field object <-> 41 raw wire bytes (17 fixed fields + 24-byte name). */
-export function routeToBytes(r) {
-  return [
-    (r.enabled ? 0x80 : 0) | (r.inputDevice & 0x03),
+// Legacy input value (0 TRS/DIN, 1 USB Device, 2 both) for protocol 1 firmware and old Patchlings.
+function legacyInput(inPorts) {
+  const trs = !!(inPorts & PORT_TRS), usb = !!(inPorts & PORT_USB);
+  return trs && !usb ? 0 : usb && !trs ? 1 : 2;
+}
+
+/** Route field object <-> raw wire bytes: 41 for protocol 1, 45 for protocol 2. */
+export function routeToBytes(r, protocolVersion = 2) {
+  const v2 = protocolVersion >= 2;
+  const bytes = [
+    (r.enabled ? 0x80 : 0) | (v2 ? 0x40 : 0) | legacyInput(r.inPorts),
     // Full 8-bit low/high bytes, not 7-bit masked — inChLow/inChHigh each carry 8 channel bits
     // (ch1-8, ch9-16) on the firmware side, and pack7 (applied after this array is built) is what
     // actually makes every byte MIDI-safe, so masking to 7 bits here would silently drop channel
@@ -110,7 +152,7 @@ export function routeToBytes(r) {
     r.noteEnd & 0x7F,
     r.ccStart & 0x7F,
     r.ccEnd & 0x7F,
-    r.outputDevice & 0x03,
+    r.outPorts & (PORT_TRS | PORT_USB), // legacy outDevice
     r.outputChannels & 0xFF,
     (r.outputChannels >> 8) & 0xFF,
     (r.transpose + 64) & 0x7F,
@@ -131,19 +173,23 @@ export function routeToBytes(r) {
       (r.realtimeEnabled ? 0x08 : 0) | (r.clockEnabled ? 0x10 : 0) | (r.roundRobinRandom ? 0x20 : 0),
     ...encodeName(r.name)
   ];
+  if (v2) bytes.push(r.inPorts & 0xFF, (r.inPorts >> 8) & 0xFF, r.outPorts & 0xFF, (r.outPorts >> 8) & 0xFF);
+  return bytes;
 }
 
 export function bytesToRoute(b) {
+  const hasPorts = (b[0] & 0x40) && b.length >= ROUTE_BYTES_V1 + 4;
+  const legacyIn = [PORT_TRS, PORT_USB, PORT_TRS | PORT_USB][b[0] & 0x03] ?? (PORT_TRS | PORT_USB);
   return {
     enabled: !!(b[0] & 0x80),
-    inputDevice: b[0] & 0x03,
+    inPorts: hasPorts ? b[ROUTE_BYTES_V1] | (b[ROUTE_BYTES_V1 + 1] << 8) : legacyIn,
+    outPorts: hasPorts ? b[ROUTE_BYTES_V1 + 2] | (b[ROUTE_BYTES_V1 + 3] << 8) : (b[8] & (PORT_TRS | PORT_USB)),
     inputChannels: b[1] | (b[2] << 8),
     typeFlags: b[3],
     noteStart: b[4],
     noteEnd: b[5],
     ccStart: b[6],
     ccEnd: b[7],
-    outputDevice: b[8],
     outputChannels: b[9] | (b[10] << 8),
     transpose: b[11] - 64,
     velocityScale: b[12],
@@ -157,7 +203,7 @@ export function bytesToRoute(b) {
     realtimeEnabled: !!(b[16] & 0x08),
     clockEnabled: !!(b[16] & 0x10),
     roundRobinRandom: !!(b[16] & 0x20),
-    name: decodeName(b.slice(17, 17 + ROUTE_NAME_MAX_LEN))
+    name: decodeName(b.slice(17, ROUTE_BYTES_V1))
   };
 }
 
@@ -174,6 +220,7 @@ export class DeviceLink extends EventTarget {
     this.output = null;
     this.connected = false;
     this.deviceInfo = null;
+    this._connecting = false;
     this._pending = null; // { resolve, reject, matchCmd, timer }
   }
 
@@ -190,12 +237,25 @@ export class DeviceLink extends EventTarget {
       this.emit('status', { state: 'denied' });
       return;
     }
-    this.access.onstatechange = () => this._tryAutoConnect();
+    this.access.onstatechange = (e) => {
+      // Our port going away (unplugged, or rebooting after a firmware update) ends the connection,
+      // so the replugged or rebooted device connects fresh instead of being treated as still open.
+      if (this.connected && e.port.state === 'disconnected' && (e.port === this.input || e.port === this.output)) {
+        this.disconnectManually();
+      }
+      this._tryAutoConnect();
+    };
+    await this._tryAutoConnect();
+  }
+
+  /** Tries again after a failed or lost connection, asking for MIDI access again if it was never granted. */
+  async retryConnect() {
+    if (!this.access) { await this.init(); return; }
     await this._tryAutoConnect();
   }
 
   async _tryAutoConnect() {
-    if (this.connected) return;
+    if (this.connected || this._connecting) return;
     let foundInput = null, foundOutput = null;
     for (const input of this.access.inputs.values()) {
       if (/foxwizard/i.test(input.name || '')) { foundInput = input; break; }
@@ -207,6 +267,7 @@ export class DeviceLink extends EventTarget {
       this.emit('status', { state: 'disconnected' });
       return;
     }
+    this._connecting = true;
     this.emit('status', { state: 'connecting' });
     this.input = foundInput;
     this.output = foundOutput;
@@ -229,6 +290,8 @@ export class DeviceLink extends EventTarget {
     } catch (err) {
       this.connected = false;
       this.emit('status', { state: 'disconnected' });
+    } finally {
+      this._connecting = false;
     }
   }
 
@@ -258,9 +321,11 @@ export class DeviceLink extends EventTarget {
     this.output.send(bytes);
   }
 
-  _sendAndWait(cmdAndPayload, expectCmd, timeoutMs) {
+  // One request at a time. A request made while another is waiting queues behind it, so background
+  // status checks never collide with Load or Save.
+  async _sendAndWait(cmdAndPayload, expectCmd, timeoutMs) {
+    while (this._pending) await new Promise((r) => setTimeout(r, 5));
     return new Promise((resolve, reject) => {
-      if (this._pending) { reject(new Error('busy')); return; }
       const cmd = cmdAndPayload[0];
       const payload = cmdAndPayload.slice(1);
       const timer = setTimeout(() => {
@@ -272,18 +337,18 @@ export class DeviceLink extends EventTarget {
     });
   }
 
-  /** Sends a mutating command, waits for ACK, retries once on timeout/checksum mismatch. */
-  async _sendMutating(cmd, payload, expectedChecksum) {
-    for (let attempt = 0; attempt < 2; attempt++) {
+  /** Sends a mutating command, waits for ACK, retries on timeout/checksum mismatch (once by default). */
+  async _sendMutating(cmd, payload, expectedChecksum, timeoutMs = DEFAULT_TIMEOUT_MS, attempts = 2) {
+    for (let attempt = 0; attempt < attempts; attempt++) {
       try {
-        const ack = await this._sendAndWait([cmd, ...payload], CMD.ACK, DEFAULT_TIMEOUT_MS);
+        const ack = await this._sendAndWait([cmd, ...payload], CMD.ACK, timeoutMs);
         const [originalCmd, status, checksum, extraLo, extraHi] = ack;
         const extra = extraLo | (extraHi << 7);
         if (status !== 0) throw new Error('device-error-' + status);
         if (expectedChecksum !== undefined && checksum !== expectedChecksum) throw new Error('checksum-mismatch');
         return { status, checksum, extra };
       } catch (err) {
-        if (attempt === 1) throw err;
+        if (attempt === attempts - 1) throw err;
       }
     }
   }
@@ -310,6 +375,22 @@ export class DeviceLink extends EventTarget {
     return read16(reply, 0);
   }
 
+  get protocolVersion() { return this.deviceInfo?.protocolVersion ?? 1; }
+
+  /**
+   * Sidecar state, protocol 2 only: { sidecar, hostPortMask (bit 0 = USB Host 1), drops,
+   * restartReason (0 none, 1 hang, 2 USB Host port stalled, 3-5 USB driver faults), restartPort,
+   * restartCount }.
+   */
+  async getStatus() {
+    if (this.protocolVersion < 2) return { sidecar: false, hostPortMask: 0, drops: 0, restartReason: 0, restartPort: 0, restartCount: 0 };
+    const reply = await this._sendAndWait([CMD.GET_STATUS], CMD.STATUS_DATA, DEFAULT_TIMEOUT_MS);
+    return {
+      sidecar: reply[0] === 1, hostPortMask: reply[1], drops: reply[2],
+      restartReason: reply[3] ?? 0, restartPort: reply[4] ?? 0, restartCount: reply[5] ?? 0
+    };
+  }
+
   async getRoute(index) {
     const reply = await this._sendAndWait([CMD.GET_ROUTE, ...write16(index)], CMD.ROUTE_DATA, DEFAULT_TIMEOUT_MS);
     const packed = reply.slice(2);
@@ -317,13 +398,13 @@ export class DeviceLink extends EventTarget {
   }
 
   async addRoute(route) {
-    const raw = routeToBytes(route);
+    const raw = routeToBytes(route, this.protocolVersion);
     const result = await this._sendMutating(CMD.ADD_ROUTE, pack7(raw), checksum7(raw));
     return result.extra; // assigned index
   }
 
   async setRoute(index, route) {
-    const raw = routeToBytes(route);
+    const raw = routeToBytes(route, this.protocolVersion);
     return this._sendMutating(CMD.SET_ROUTE, [...write16(index), ...pack7(raw)], checksum7(raw));
   }
 
@@ -349,6 +430,32 @@ export class DeviceLink extends EventTarget {
 
   async factoryReset() {
     return this._sendMutating(CMD.FACTORY_RESET, []);
+  }
+
+  /**
+   * Sends a firmware .bin to the device. Each 128-byte chunk is confirmed by checksum before the
+   * next is sent. Nothing is installed until FW_END, where the device checks the size and MD5 of
+   * the whole file, then reboots to install it. progressCb(bytesSent, totalBytes).
+   */
+  async updateFirmware(bin, md5Hex, progressCb) {
+    const size = bin.length;
+    const md5 = Array.from(md5Hex.toLowerCase(), (c) => c.charCodeAt(0));
+    const begin = [size & 0x7F, (size >> 7) & 0x7F, (size >> 14) & 0x7F, ...md5];
+    await this._sendMutating(CMD.FW_BEGIN, begin, checksum7(begin), FW_BEGIN_TIMEOUT_MS);
+    const chunks = Math.ceil(size / FW_CHUNK_BYTES);
+    for (let i = 0; i < chunks; i++) {
+      const raw = Array.from(bin.subarray(i * FW_CHUNK_BYTES, (i + 1) * FW_CHUNK_BYTES));
+      await this._sendMutating(CMD.FW_DATA, [...write16(i), ...pack7(raw)], checksum7(raw), FW_DATA_TIMEOUT_MS, FW_DATA_ATTEMPTS);
+      if (progressCb) progressCb(Math.min(size, (i + 1) * FW_CHUNK_BYTES), size);
+    }
+    try {
+      // Never retried: if the device staged the update but its ACK was lost, a retry would be
+      // refused, yet the device still reboots into the new firmware.
+      await this._sendMutating(CMD.FW_END, [], undefined, FW_END_TIMEOUT_MS, 1);
+    } catch (err) {
+      err.fwEndUnconfirmed = true;
+      throw err;
+    }
   }
 
   /** Pulls global settings + every route from the device. progressCb(done, total). */

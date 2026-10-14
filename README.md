@@ -1,4 +1,4 @@
-# Foxwizard Mini MIDI Multitool
+# FoxWizard Mini MIDI Multitool
 
 The smallest complete USB MIDI adapter you can buy. USB-C + TRS A&B + DIN
 adapter and router.
@@ -6,15 +6,16 @@ adapter and router.
 Remap MIDI with no computer. DAWless essential. Break off the sides and
 hide it inside old gear for an easy USB upgrade.
 
-![Foxwizard board](readme_images/foxwizard2.jpeg)
+![FoxWizard board](readme_images/foxwizard2.jpeg)
 
 ## Features
 
 - So small the board fits in a GBA game case. Break off the sides to make
   it even smaller. Add USB to old gear.
-- Super easy web interface to program it (Foxwizard Patchling). Route any
+- Super easy web interface to program it (FoxWizard Patchling). Route any
   channel to any other, pipe CCs, block messages, transpose, split, do
   mono/poly tricks, and more.
+- One-click firmware updates from Patchling (firmware 1.2 and later).
 - Configurable front button for on-the-fly panic, pitch bend, mod,
   octave, CC, or trigger note.
 - 3 adjustable-brightness indicator lights gently fade in and out, rather
@@ -47,6 +48,6 @@ What other adaptors can't do: route and remap MIDI without a computer.
 ## Links
 
 - Product page: https://woz.lol/foxwizard
-- Configurator (Foxwizard Patchling): [`mmm_web_interface/`](mmm_web_interface/)
+- Configurator (FoxWizard Patchling): [`mmm_web_interface/`](mmm_web_interface/)
 - Full manual: [`MANUAL.md`](MANUAL.md)
 - SysEx protocol: [`SYSEX_PROTOCOL.md`](SYSEX_PROTOCOL.md)

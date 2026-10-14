@@ -1,6 +1,6 @@
 /*
   Mini_MIDI_Multitool.ino by woz.lol
-  Foxwizard Mini MIDI Multitool — RP2040 USB-C MIDI <-> DIN/TRS MIDI router
+  FoxWizard Mini MIDI Multitool — RP2040 USB-C MIDI <-> DIN/TRS MIDI router
 
   Note: Activity Lights fade in over 1 sec and fade out over 1/2 sec so that the blinking is not
   distracting while playing. LED brightness is scaled by an 11-step knob (see ledBrightnessStep,
@@ -27,6 +27,8 @@
   Arduino setup:
   - Board: Waveshare RP2040-Zero
   - Tools -> USB Stack = Adafruit TinyUSB
+  - Tools -> Flash Size = 2MB (Sketch: 1792KB, FS: 256KB). Firmware updates over MIDI are staged in
+    that FS. Saved settings live in the EEPROM area, which sits at the same address in every layout.
 
   Factory reset: hold the button while power is applied / USB is plugged in (checked once at boot,
   same as the original simple adaptor sketch). This also works as a software command over SysEx.
@@ -41,6 +43,7 @@
 #include <Arduino.h>
 #include <Adafruit_TinyUSB.h>
 #include <EEPROM.h>
+#include <Updater.h>
 
 // ============================================================================================
 // Constants
@@ -69,11 +72,13 @@ constexpr uint8_t SYSEX_MFR_ID = 0x7D;   // reserved for non-commercial/educatio
 constexpr uint8_t SYSEX_DEVICE_ID = 0x4D; // 'M'
 constexpr uint8_t PROTOCOL_VERSION = 1;
 constexpr uint8_t FW_VERSION_MAJOR = 1;
-constexpr uint8_t FW_VERSION_MINOR = 0;
-const char DEVICE_NAME[] = "Foxwizard Mini MIDI Multitool"; // long name sent in the SysEx IDENTITY_REPLY
+constexpr uint8_t FW_VERSION_MINOR = 3;
+constexpr uint8_t FW_CHUNK_BYTES = 128;          // firmware bytes per FW_DATA message, 147 once packed
+constexpr uint32_t FW_REBOOT_DELAY_MS = 300;     // lets the FW_END ACK reach the host before rebooting
+const char DEVICE_NAME[] = "FoxWizard Mini MIDI Multitool"; // long name sent in the SysEx IDENTITY_REPLY
 const char USB_DESCRIPTOR_NAME[] = "FoxWizard"; // short name shown by the OS/DAW in the USB MIDI port list
 
-constexpr uint16_t MAX_ROUTES = 256;
+constexpr uint16_t MAX_ROUTES = 64; // leaves each saved route room to grow to 63 bytes, see the EEPROM layout below
 constexpr uint8_t ROUTE_NAME_MAX_LEN = 24; // ASCII characters, enforced web-side too
 constexpr uint8_t ROUTE_RAW_BYTES = 17 + ROUTE_NAME_MAX_LEN;
 constexpr uint8_t MAX_PENDING = 64;
@@ -99,6 +104,9 @@ enum SysexCmd : uint8_t {
   CMD_PREVIEW_BRIGHTNESS = 0x30,
   CMD_COMMIT = 0x31,
   CMD_FACTORY_RESET = 0x32,
+  CMD_FW_BEGIN = 0x40,
+  CMD_FW_DATA = 0x41,
+  CMD_FW_END = 0x42,
   CMD_ACK = 0x7E
 };
 
@@ -106,7 +114,8 @@ enum AckStatus : uint8_t {
   ACK_OK = 0,
   ACK_ERR_BAD_INDEX = 1,
   ACK_ERR_BAD_DATA = 2,
-  ACK_ERR_FULL = 3
+  ACK_ERR_FULL = 3,
+  ACK_ERR_UPDATE = 4
 };
 
 enum : uint8_t { DEV_TRS = 0, DEV_USB = 1, DEV_BOTH = 2 };
@@ -199,7 +208,7 @@ struct PendingMsg {
 
 struct SysexState {
   enum Phase { IDLE, PEEK1, PEEK2, OURS, FORWARDING } phase = IDLE;
-  uint8_t cmdBuf[64]; // cmd(1) + index(2) + pack7(ROUTE_RAW_BYTES=41) which packs to 47 bytes = 50 needed
+  uint8_t cmdBuf[160]; // largest is FW_DATA: cmd(1) + index(2) + pack7(FW_CHUNK_BYTES=128) which packs to 147 bytes = 150 needed
   uint8_t cmdLen = 0;
   uint8_t fwdDevice = OUT_NONE;
 };
@@ -244,6 +253,14 @@ UsbOutSysexAccum usbOutFromUsb;
 DinParser dinParser;
 
 uint8_t replyBuf[64];
+
+// Firmware update over SysEx, see ../SYSEX_PROTOCOL.md. fwNextChunk is the FW_DATA index expected
+// next. fwLastChecksum lets a repeated chunk (its ACK was lost and the host retried) be confirmed
+// again without writing it twice.
+uint16_t fwNextChunk = 0;
+uint8_t fwLastChecksum = 0;
+bool fwRebootPending = false;
+uint32_t fwRebootAtMs = 0;
 uint8_t replyLen;
 
 bool lastButtonReading = HIGH;
@@ -539,27 +556,60 @@ void setFactoryDefaults() {
   resetAllRouteNoteTracks();
 }
 
-constexpr uint32_t EEPROM_MAGIC = 0x464F5831; // "FOX1"
-constexpr size_t EEPROM_SIZE = 4 + 6 + 2 + (MAX_ROUTES * ROUTE_RAW_BYTES); // magic+global+count+routes
+// Saved settings layout "FOX2": magic(4), globalBytes(1), routeBytes(1), global, routeCount(2),
+// routes. The stored sizes let a later firmware with bigger structs read an older save: it copies
+// the bytes that were saved and leaves the rest zero. So new fields go at the end of their struct,
+// and zero must mean off. "FOX1" (firmware 1.0) is the same layout without the two size bytes,
+// with a 6-byte global and 41-byte routes.
+constexpr uint32_t EEPROM_MAGIC_V1 = 0x464F5831; // "FOX1"
+constexpr uint32_t EEPROM_MAGIC_V2 = 0x464F5832; // "FOX2"
+constexpr size_t EEPROM_SIZE = 4096;             // the core's EEPROM maximum
+static_assert(4 + 2 + sizeof(GlobalSettings) + 2 + MAX_ROUTES * sizeof(RouteData) <= EEPROM_SIZE,
+              "saved settings must fit the EEPROM area, lower MAX_ROUTES if routes grow");
+
+void eepromReadBytes(size_t addr, void *dst, size_t len) {
+  uint8_t *d = (uint8_t *)dst;
+  for (size_t i = 0; i < len; ++i) d[i] = EEPROM.read(addr + i);
+}
+
+void eepromWriteBytes(size_t addr, const void *src, size_t len) {
+  const uint8_t *s = (const uint8_t *)src;
+  for (size_t i = 0; i < len; ++i) EEPROM.write(addr + i, s[i]);
+}
 
 void loadFromFlash() {
   EEPROM.begin(EEPROM_SIZE);
   uint32_t magic = 0;
-  EEPROM.get(0, magic);
-  if (magic != EEPROM_MAGIC) {
+  eepromReadBytes(0, &magic, sizeof(magic));
+  size_t addr = 4;
+  uint8_t globalBytes = 6;
+  uint8_t routeBytes = 41;
+  if (magic == EEPROM_MAGIC_V2) {
+    globalBytes = EEPROM.read(4);
+    routeBytes = EEPROM.read(5);
+    addr = 6;
+  } else if (magic != EEPROM_MAGIC_V1) {
     setFactoryDefaults();
     return;
   }
-  size_t addr = 4;
-  EEPROM.get(addr, globalSettings);
-  addr += sizeof(GlobalSettings);
+  if (globalBytes == 0 || routeBytes == 0) {
+    setFactoryDefaults();
+    return;
+  }
+
+  memset(&globalSettings, 0, sizeof(globalSettings));
+  eepromReadBytes(addr, &globalSettings, min((size_t)globalBytes, sizeof(GlobalSettings)));
+  addr += globalBytes;
+
   uint16_t storedCount = 0;
-  EEPROM.get(addr, storedCount);
+  eepromReadBytes(addr, &storedCount, sizeof(storedCount));
   addr += sizeof(storedCount);
-  routeCount = (storedCount > MAX_ROUTES) ? MAX_ROUTES : storedCount;
+  uint16_t fits = (addr < EEPROM_SIZE) ? (uint16_t)((EEPROM_SIZE - addr) / routeBytes) : 0;
+  routeCount = min(storedCount, min(MAX_ROUTES, fits));
   for (uint16_t i = 0; i < routeCount; ++i) {
-    EEPROM.get(addr, routes[i]);
-    addr += ROUTE_RAW_BYTES;
+    memset(&routes[i], 0, sizeof(RouteData));
+    eepromReadBytes(addr, &routes[i], min((size_t)routeBytes, sizeof(RouteData)));
+    addr += routeBytes;
   }
   recomputeAnyAftertouchMapRoutes();
   resetAllRouteNoteTracks();
@@ -567,15 +617,18 @@ void loadFromFlash() {
 
 void saveToFlash() {
   size_t addr = 0;
-  EEPROM.put(addr, EEPROM_MAGIC);
-  addr += 4;
-  EEPROM.put(addr, globalSettings);
+  const uint32_t magic = EEPROM_MAGIC_V2;
+  eepromWriteBytes(addr, &magic, sizeof(magic));
+  addr += sizeof(magic);
+  EEPROM.write(addr++, (uint8_t)sizeof(GlobalSettings));
+  EEPROM.write(addr++, (uint8_t)sizeof(RouteData));
+  eepromWriteBytes(addr, &globalSettings, sizeof(GlobalSettings));
   addr += sizeof(GlobalSettings);
-  EEPROM.put(addr, routeCount);
+  eepromWriteBytes(addr, &routeCount, sizeof(routeCount));
   addr += sizeof(routeCount);
   for (uint16_t i = 0; i < routeCount; ++i) {
-    EEPROM.put(addr, routes[i]);
-    addr += ROUTE_RAW_BYTES;
+    eepromWriteBytes(addr, &routes[i], sizeof(RouteData));
+    addr += sizeof(RouteData);
   }
   EEPROM.commit();
 }
@@ -1305,6 +1358,15 @@ void resetButtonRuntimeState();
 
 uint16_t read16(const uint8_t *buf) { return (uint16_t)buf[0] | ((uint16_t)buf[1] << 7); }
 
+// Clears a half-sent update so a new one can start. One with every byte written but no FW_END
+// can't be cleared without staging it, so that case reports failure and needs a power cycle.
+bool fwResetUpdate() {
+  if (!Update.isRunning()) return true;
+  if (Update.isFinished()) return false;
+  Update.end(false);
+  return !Update.isRunning();
+}
+
 void handleSysexCommand(uint8_t sourcePort, const uint8_t *cmdBuf, uint8_t cmdLen) {
   if (cmdLen < 1) return;
   uint8_t cmd = cmdBuf[0];
@@ -1456,6 +1518,59 @@ void handleSysexCommand(uint8_t sourcePort, const uint8_t *cmdBuf, uint8_t cmdLe
       saveToFlash();
       sendAck(sourcePort, cmd, ACK_OK, 0, 0);
       allLedConfirmationFlashes();
+      break;
+    }
+
+    // Firmware update. Nothing is installed until FW_END checks the size and MD5 of the whole
+    // file, so a failed or abandoned transfer leaves the running firmware untouched.
+    case CMD_FW_BEGIN: {
+      if (payloadLen < 35) { sendAck(sourcePort, cmd, ACK_ERR_BAD_DATA, 0, 0); break; }
+      uint32_t size = (uint32_t)payload[0] | ((uint32_t)payload[1] << 7) | ((uint32_t)payload[2] << 14);
+      char md5[33];
+      memcpy(md5, payload + 3, 32);
+      md5[32] = '\0';
+      if (!fwResetUpdate() || !Update.begin(size) || !Update.setMD5(md5)) {
+        uint8_t error = Update.getError();
+        fwResetUpdate();
+        sendAck(sourcePort, cmd, ACK_ERR_UPDATE, 0, error);
+        break;
+      }
+      fwNextChunk = 0;
+      sendAck(sourcePort, cmd, ACK_OK, checksum7(payload, 35), 0);
+      break;
+    }
+
+    case CMD_FW_DATA: {
+      if (payloadLen < 3 || !Update.isRunning()) { sendAck(sourcePort, cmd, ACK_ERR_UPDATE, 0, 0); break; }
+      uint16_t idx = read16(payload);
+      if (fwNextChunk > 0 && idx == fwNextChunk - 1) {
+        sendAck(sourcePort, cmd, ACK_OK, fwLastChecksum, idx);
+        break;
+      }
+      if (idx != fwNextChunk) { sendAck(sourcePort, cmd, ACK_ERR_BAD_INDEX, 0, fwNextChunk); break; }
+      uint8_t packedLen = payloadLen - 2;
+      if (packedLen > 147) { sendAck(sourcePort, cmd, ACK_ERR_BAD_DATA, 0, idx); break; }
+      uint8_t raw[FW_CHUNK_BYTES];
+      uint8_t rawLen = unpack7(payload + 2, packedLen, raw);
+      if (rawLen == 0 || Update.write(raw, rawLen) != rawLen) {
+        sendAck(sourcePort, cmd, ACK_ERR_UPDATE, 0, Update.getError());
+        break;
+      }
+      fwLastChecksum = checksum7(raw, rawLen);
+      fwNextChunk++;
+      sendAck(sourcePort, cmd, ACK_OK, fwLastChecksum, idx);
+      break;
+    }
+
+    case CMD_FW_END: {
+      if (!Update.isRunning()) { sendAck(sourcePort, cmd, ACK_ERR_UPDATE, 0, 0); break; }
+      if (!Update.end()) { // checks size and MD5, then stages the file for the OTA bootloader
+        sendAck(sourcePort, cmd, ACK_ERR_UPDATE, 0, Update.getError());
+        break;
+      }
+      sendAck(sourcePort, cmd, ACK_OK, 0, 0);
+      fwRebootPending = true;
+      fwRebootAtMs = millis() + FW_REBOOT_DELAY_MS;
       break;
     }
 
@@ -1879,6 +1994,9 @@ void setup() {
 }
 
 void loop() {
+  // The OTA bootloader installs the staged firmware during this reboot, then starts it.
+  if (fwRebootPending && (int32_t)(millis() - fwRebootAtMs) >= 0) rp2040.reboot();
+
 #ifdef TINYUSB_NEED_POLLING_TASK
   TinyUSBDevice.task();
 #endif

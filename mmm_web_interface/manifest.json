@@ -1,7 +1,7 @@
 {
-  "name": "Foxwizard Patchling",
+  "name": "FoxWizard Patchling",
   "short_name": "Patchling",
-  "description": "Router configurator for the Foxwizard Mini MIDI Multitool",
+  "description": "Router configurator for the FoxWizard Mini MIDI Multitool",
   "start_url": "./index.html",
   "scope": "./",
   "display": "standalone",

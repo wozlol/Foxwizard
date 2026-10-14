@@ -1,9 +1,9 @@
-// Human-readable XML preset format for Foxwizard Patchling.
+// Human-readable XML preset format for FoxWizard Patchling.
 // A preset captures mode, button config, LED brightness, and the full route list — everything
 // the device's SysEx protocol can set. Numbers are kept human (channel lists as "1,2,4-6", device
 // names as words) rather than raw bitmasks/enums, so the file is meant to be hand-editable.
 
-import { DATA_TYPE_BITS } from './midi.js';
+import { DATA_TYPE_BITS, PORTS, PORT_TRS, PORT_USB } from './midi.js';
 
 const MODE_NAMES = ['usbAdaptor', 'router'];
 const BUTTON_ACTION_NAMES = ['panic', 'pitchUp', 'pitchDown', 'mod', 'ccMomentary', 'ccToggle', 'octaveUp', 'octaveDown', 'noteMomentary', 'noteToggle'];
@@ -16,8 +16,34 @@ function buttonValueAttrName(action) {
   if ([8, 9].includes(action)) return 'note';
   return null;
 }
+// Older presets (and older Patchlings) use device="trs|usb|both|none". New presets also write
+// ports="trs,usb,host1,...", which wins when present.
 const IN_DEVICE_NAMES = ['trs', 'usb', 'both'];
 const OUT_DEVICE_NAMES = ['none', 'trs', 'usb', 'both'];
+const LEGACY_DEVICE_PORTS = { none: 0, trs: PORT_TRS, usb: PORT_USB, both: PORT_TRS | PORT_USB };
+
+function portsToString(mask) {
+  return PORTS.filter((p) => mask & (1 << p.bit)).map((p) => p.key).join(',');
+}
+
+function stringToPorts(text) {
+  let mask = 0;
+  for (const key of text.split(',').map((k) => k.trim().toLowerCase())) {
+    const port = PORTS.find((p) => p.key === key);
+    if (port) mask |= 1 << port.bit;
+  }
+  return mask;
+}
+
+function legacyDeviceName(mask, names) {
+  const both = mask & PORT_TRS && mask & PORT_USB;
+  return both ? 'both' : mask & PORT_TRS ? 'trs' : mask & PORT_USB ? 'usb' : names.includes('none') ? 'none' : 'both';
+}
+
+function readPorts(el, fallbackDevice) {
+  if (el?.hasAttribute('ports')) return stringToPorts(el.getAttribute('ports'));
+  return LEGACY_DEVICE_PORTS[el?.getAttribute('device') || fallbackDevice] ?? LEGACY_DEVICE_PORTS[fallbackDevice];
+}
 
 export function channelsToRangeString(mask) {
   const set = [];
@@ -60,7 +86,7 @@ export function serializePreset(state) {
   const g = state.global;
   const lines = [];
   lines.push('<?xml version="1.0" encoding="UTF-8"?>');
-  lines.push(`<foxwizardPatchlingPreset version="1" device="Foxwizard Mini MIDI Multitool">`);
+  lines.push(`<foxwizardPatchlingPreset version="1" device="FoxWizard Mini MIDI Multitool">`);
   lines.push(`  <name>${esc(state.name || 'Untitled Preset')}</name>`);
   lines.push(`  <mode>${MODE_NAMES[g.mode] || 'usbAdaptor'}</mode>`);
   lines.push(`  <ledBrightness>${g.ledBrightnessStep * 10}</ledBrightness>`);
@@ -69,11 +95,11 @@ export function serializePreset(state) {
   lines.push('  <routes>');
   for (const r of state.routes) {
     lines.push(`    <route name="${esc(r.name || '')}">`);
-    lines.push(`      <input device="${IN_DEVICE_NAMES[r.inputDevice]}" channels="${channelsToRangeString(r.inputChannels)}"/>`);
+    lines.push(`      <input ports="${portsToString(r.inPorts)}" device="${legacyDeviceName(r.inPorts, IN_DEVICE_NAMES)}" channels="${channelsToRangeString(r.inputChannels)}"/>`);
     lines.push(`      <passthrough programChange="${!!(r.typeFlags & DATA_TYPE_BITS.programChange)}" pitchBend="${!!(r.typeFlags & DATA_TYPE_BITS.pitchBend)}" aftertouch="${!!(r.typeFlags & DATA_TYPE_BITS.aftertouch)}" aftertouchMapEnabled="${!!(r.typeFlags & DATA_TYPE_BITS.aftertouchMap)}" aftertouchMapCC="${r.atMapCC}" pressure="${!!(r.typeFlags & DATA_TYPE_BITS.pressure)}" pressureMapEnabled="${!!r.cpMapEnabled}" pressureMapCC="${r.cpMapCC}" sysex="${!!(r.typeFlags & DATA_TYPE_BITS.sysex)}" common="${!!r.commonEnabled}" realtime="${!!r.realtimeEnabled}" clock="${!!r.clockEnabled}"/>`);
     lines.push(`      <noteRange enabled="${!!(r.typeFlags & DATA_TYPE_BITS.note)}" start="${r.noteStart}" end="${r.noteEnd}"/>`);
     lines.push(`      <ccRange enabled="${!!(r.typeFlags & DATA_TYPE_BITS.cc)}" start="${r.ccStart}" end="${r.ccEnd}"/>`);
-    lines.push(`      <output device="${OUT_DEVICE_NAMES[r.outputDevice]}" channels="${channelsToRangeString(r.outputChannels)}" transpose="${r.transpose}" velocityScale="${r.velocityScale}" ccMapStart="${r.ccMapStart}" monoRetrig="${!!r.monoRetrig}" roundRobin="${!!r.roundRobin}" roundRobinRandom="${!!r.roundRobinRandom}"/>`);
+    lines.push(`      <output ports="${portsToString(r.outPorts)}" device="${legacyDeviceName(r.outPorts, OUT_DEVICE_NAMES)}" channels="${channelsToRangeString(r.outputChannels)}" transpose="${r.transpose}" velocityScale="${r.velocityScale}" ccMapStart="${r.ccMapStart}" monoRetrig="${!!r.monoRetrig}" roundRobin="${!!r.roundRobin}" roundRobinRandom="${!!r.roundRobinRandom}"/>`);
     lines.push('    </route>');
   }
   lines.push('  </routes>');
@@ -91,7 +117,7 @@ export function parsePreset(xmlText) {
   if (errorNode) throw new Error('Could not parse preset XML');
 
   const root = doc.querySelector('foxwizardPatchlingPreset');
-  if (!root) throw new Error('Not a Foxwizard Patchling preset file');
+  if (!root) throw new Error('Not a FoxWizard Patchling preset file');
 
   const name = root.querySelector('name')?.textContent?.trim() || 'Untitled Preset';
   const modeText = root.querySelector('mode')?.textContent?.trim() || 'usbAdaptor';
@@ -129,14 +155,14 @@ export function parsePreset(xmlText) {
     routes.push({
       name: routeEl.getAttribute('name') || '',
       enabled: true, // no disabled-but-kept-around concept — a route that exists is active; delete it otherwise
-      inputDevice: Math.max(0, IN_DEVICE_NAMES.indexOf(inputEl?.getAttribute('device') || 'both')),
+      inPorts: readPorts(inputEl, 'both'),
       inputChannels: rangeStringToChannels(inputEl?.getAttribute('channels') || 'all'),
       typeFlags,
       noteStart: parseInt(noteEl?.getAttribute('start') || '0', 10),
       noteEnd: parseInt(noteEl?.getAttribute('end') || '127', 10),
       ccStart: parseInt(ccEl?.getAttribute('start') || '0', 10),
       ccEnd: parseInt(ccEl?.getAttribute('end') || '127', 10),
-      outputDevice: Math.max(0, OUT_DEVICE_NAMES.indexOf(outputEl?.getAttribute('device') || 'none')),
+      outPorts: readPorts(outputEl, 'none'),
       outputChannels: rangeStringToChannels(outputEl?.getAttribute('channels') || 'all'),
       transpose: parseInt(outputEl?.getAttribute('transpose') || '0', 10),
       velocityScale: parseInt(outputEl?.getAttribute('velocityScale') || '100', 10),

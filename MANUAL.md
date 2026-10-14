@@ -1,9 +1,9 @@
-# Foxwizard Mini MIDI Multitool — User Manual
+# FoxWizard Mini MIDI Multitool — User Manual
 
 ## Overview
 
-USB-C to TRS MIDI adapter and router. Two operating modes, up to 256
-programmable routes, configured from a web app called Foxwizard Patchling.
+USB-C to TRS MIDI adapter and router. Two operating modes, up to 64
+programmable routes, configured from a web app called FoxWizard Patchling.
 
 ## Connections
 
@@ -87,10 +87,30 @@ defaults, and writes that to flash.
 
 ## Firmware Update
 
-1. Unplug the board from USB.
-2. Short the two `FIRMWARE` pads together.
-3. While still shorted, plug the board into your computer via USB-C.
-4. A drive named `RPI-RP2` appears.
-5. Release the short.
-6. Drag `Mini_MIDI_Multitool.ino.uf2` onto the `RPI-RP2` drive.
-7. The board reboots automatically once the copy finishes.
+When the FoxWizard connects, Patchling shows its firmware version in the
+badge at the top right.
+
+- Green: firmware is up to date. Click it to confirm.
+- Yellow: an update is available. Patchling also asks when it connects.
+- Red: not connected. Click it to try connecting again.
+
+Updates keep saved settings and routes.
+
+### Firmware 1.2 and later
+
+1. Click the yellow badge, then **Update Now**.
+2. Keep the board plugged in. It restarts by itself and reconnects.
+
+### Firmware 1.0 (once, by hand)
+
+1. Download the `.uf2` firmware file from
+   [woz.lol/foxwizard-midi-multitool-firmware](https://woz.lol/foxwizard-midi-multitool-firmware/).
+2. Unplug the board from USB.
+3. Short the two `FIRMWARE` pads together.
+4. While still shorted, plug the board into your computer via USB-C.
+5. A drive named `RPI-RP2` appears.
+6. Release the short.
+7. Drag the `.uf2` file onto the `RPI-RP2` drive.
+8. The board reboots automatically once the copy finishes.
+
+The same steps recover a board from any firmware.

@@ -53,7 +53,7 @@
 
   <!-- tagline -->
   <text x="472" y="372" font-family="Arial, sans-serif" font-weight="600" font-size="27" fill="#c7d0e0">Programming Software for the</text>
-  <text x="472" y="406" font-family="Arial, sans-serif" font-weight="600" font-size="27" fill="#c7d0e0">Foxwizard Mini MIDI Multitool</text>
+  <text x="472" y="406" font-family="Arial, sans-serif" font-weight="600" font-size="27" fill="#c7d0e0">FoxWizard Mini MIDI Multitool</text>
 
   <!-- CTA pill -->
   <rect x="472" y="445" width="330" height="66" rx="33" fill="url(#ctaFill)"/>

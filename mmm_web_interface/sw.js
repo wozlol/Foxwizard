@@ -1,6 +1,7 @@
-// Foxwizard Patchling — offline app shell cache.
-// Bump CACHE_NAME whenever any of the listed files change so clients pick up the new version.
-const CACHE_NAME = 'foxwizard-patchling-v2';
+// FoxWizard Patchling — offline app shell cache.
+// CACHE_NAME carries the Patchling version, which is always the firmware version.
+// firmware/build_firmware.sh checks it.
+const CACHE_NAME = 'foxwizard-patchling-1.3';
 const SHELL_FILES = [
   './',
   './index.html',
@@ -33,18 +34,17 @@ self.addEventListener('activate', (event) => {
   );
 });
 
+// Network first: online visitors always get the current Patchling and firmware right away. The
+// cache is only a fallback for offline use, refreshed by every successful fetch.
 self.addEventListener('fetch', (event) => {
   if (event.request.method !== 'GET') return;
   event.respondWith(
-    caches.match(event.request).then((cached) => {
-      if (cached) return cached;
-      return fetch(event.request).then((response) => {
-        if (response.ok && response.type === 'basic') {
-          const copy = response.clone();
-          caches.open(CACHE_NAME).then((cache) => cache.put(event.request, copy));
-        }
-        return response;
-      }).catch(() => cached);
-    })
+    fetch(event.request).then((response) => {
+      if (response.ok && response.type === 'basic') {
+        const copy = response.clone();
+        caches.open(CACHE_NAME).then((cache) => cache.put(event.request, copy));
+      }
+      return response;
+    }).catch(() => caches.match(event.request))
   );
 });
