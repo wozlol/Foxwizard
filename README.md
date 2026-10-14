@@ -1,5 +1,7 @@
 # FoxWizard Mini MIDI Multitool
 
+> **Development branch, not the live build.** This `host-edition` branch is work in progress: the Host Edition and features being tested before release. The live FoxWizard firmware and Patchling are on [`main`](https://github.com/wozlol/Foxwizard/tree/main).
+
 The smallest complete USB MIDI adapter you can buy. USB-C + TRS A&B + DIN
 adapter and router.
 
