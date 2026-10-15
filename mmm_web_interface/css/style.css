@@ -234,7 +234,8 @@ button.connection-pill.connecting { cursor: default; transform: none; }
   animation: pulseDot 2s ease-in-out infinite;
 }
 .btn-primary:hover { background: #3b82f6; }
-.btn-accent { background: linear-gradient(135deg, #f59e0b, #ea580c); border-color: transparent; color: #1a0f00; }
+.btn-accent { background: linear-gradient(135deg, #f59e0b, #ea580c) border-box; border-color: transparent; color: #1a0f00; }
+.btn-accent:hover { border-color: transparent; }
 .toolbar .btn-accent, .add-route-row-top .btn-accent {
   box-shadow: 0 0 16px -5px rgba(245, 158, 11, 0.5);
   transition: transform 0.15s ease, background 0.15s ease, border-color 0.15s ease, box-shadow 0.2s ease;
@@ -927,3 +928,76 @@ body.dragging-active { overflow: hidden; }
 .toast.toast-success { border-color: rgba(34, 197, 94, 0.4); color: #bbf7d0; }
 .toast.toast-warn { border-color: rgba(245, 158, 11, 0.45); color: #fde68a; }
 .toast-sticky { cursor: pointer; border-radius: var(--radius-md); max-width: min(560px, calc(100vw - 32px)); }
+
+/* ---------------------------------------------------------------------------------------------
+   Global clock row: red, same card style as a route, between Main Mode and the routes.
+   --------------------------------------------------------------------------------------------- */
+.clock-row[hidden] { display: none; }
+.clock-row { border-color: rgba(239, 68, 68, 0.45); background: linear-gradient(180deg, rgba(64, 26, 34, 0.9), rgba(26, 37, 64, 0.85)); }
+.clock-row-header { display: flex; align-items: baseline; flex-wrap: wrap; gap: 4px 14px; margin-bottom: 14px; }
+.clock-row-heading { font-family: 'Russo One', sans-serif; font-size: 1.25rem; color: #fca5a5; margin: 0; white-space: nowrap; }
+.clock-readout { font-size: 0.86rem; font-weight: 600; color: #fecaca; }
+.switch-red input:checked + .switch-track { background: var(--red); }
+.clock-send { margin-top: 10px; }
+.time-sig { display: flex; align-items: center; gap: 6px; }
+.time-sig select { flex: 1; min-width: 0; }
+.tap-trigger { display: flex; flex-wrap: wrap; align-items: center; gap: 6px; }
+.tap-trigger select, .tap-trigger input { flex: 1; min-width: 70px; }
+
+/* Shown when Patchling offers test firmware builds instead of the live firmware. */
+.test-tag[hidden] { display: none; }
+.test-tag { font-size: 0.7rem; font-weight: 700; letter-spacing: 0.06em; text-transform: uppercase; color: #fde68a; border: 1px dashed rgba(245, 158, 11, 0.6); border-radius: 999px; padding: 4px 10px; }
+
+/* Note to CC table, inside a route's output column. */
+.notecc-table { display: flex; flex-direction: column; gap: 6px; margin-top: 8px; align-items: flex-start; }
+.notecc-row { display: flex; flex-wrap: wrap; align-items: center; gap: 6px; width: 100%; }
+.notecc-row select, .notecc-row input { flex: 1; min-width: 70px; }
+.notecc-arrow { font-size: 0.78rem; color: var(--text-dim); white-space: nowrap; }
+/* A route output section that needs the whole column, not half of it. */
+.field-row-cols > .field-row-wide { grid-column: 1 / -1; }
+.field-row-cols { grid-auto-flow: row dense; } /* off feature switches pack two to a row */
+.chord-positions { margin-top: 8px; }
+
+/* Launchpad round buttons, inside a route's output column. */
+.lp-buttons { display: grid; grid-template-columns: repeat(auto-fill, minmax(230px, 1fr)); gap: 6px; margin-top: 8px; }
+.lp-button { display: flex; align-items: center; gap: 6px; }
+.lp-button select, .lp-button input { flex: 1; min-width: 60px; }
+.lp-button-label { font-size: 0.74rem; color: var(--text-dim); width: 46px; flex-shrink: 0; }
+
+/* ---------------------------------------------------------------------------------------------
+   Scale row: yellow, same card style as a route. The key, and the scale on a piano and a guitar.
+   --------------------------------------------------------------------------------------------- */
+.scale-row[hidden] { display: none; }
+.scale-row { border-color: rgba(234, 179, 8, 0.45); background: linear-gradient(180deg, rgba(66, 56, 18, 0.9), rgba(26, 37, 64, 0.85)); }
+.scale-row-header { display: flex; align-items: center; flex-wrap: wrap; gap: 8px 12px; margin-bottom: 14px; }
+.scale-row-heading { font-family: 'Russo One', sans-serif; font-size: 1.25rem; color: #fde047; margin: 0 6px 0 0; white-space: nowrap; }
+.scale-graphics { display: flex; flex-wrap: wrap; align-items: flex-start; gap: 18px; }
+/* Same height and same viewBox height, so the piano's top lines up with the guitar nut. */
+.scale-piano, .scale-guitar { height: 130px; width: auto; max-width: 100%; flex-shrink: 0; }
+@media (max-width: 640px) {
+  .scale-piano, .scale-guitar { height: auto; width: 100%; }
+}
+.scale-row-idle .scale-row-heading { color: rgba(253, 224, 71, 0.55); }
+.scale-layout { display: flex; align-items: center; gap: 8px; margin-top: 8px; }
+.scale-layout label { font-size: 0.78rem; color: var(--text-dim); }
+
+/* Arp settings, inside a route's output column. */
+.arp-fields { display: grid; grid-template-columns: repeat(auto-fill, minmax(150px, 1fr)); gap: 8px 12px; margin-top: 8px; }
+.arp-field { display: flex; flex-wrap: wrap; align-items: center; gap: 6px; }
+.arp-field label { width: 100%; font-size: 0.74rem; color: var(--text-dim); }
+.arp-field select, .arp-field input { flex: 1; min-width: 60px; }
+
+/* Phones draw a dropdown's option list at its own font size, and zoom in on fields under 16px. */
+@media (max-width: 640px) {
+  select, input[type="number"], input[type="text"] { font-size: 16px; }
+}
+
+/* Arp division table: the default square, then squares a held note or CC switches to. */
+.arp-table-label { display: block; margin-top: 10px; font-size: 0.74rem; color: var(--text-dim); }
+.arp-divisions { display: grid; grid-template-columns: repeat(auto-fill, minmax(130px, 1fr)); gap: 8px; margin-top: 4px; }
+.arp-square { display: flex; flex-direction: column; gap: 4px; padding: 8px; border: 1px solid var(--box-border); border-radius: var(--radius-sm); background: var(--box); font: inherit; }
+.arp-square-default { border-color: var(--accent); }
+.arp-trigger { font-size: 0.74rem; color: var(--text-dim); }
+.arp-square-actions { display: flex; gap: 4px; }
+.arp-square-add { align-items: center; justify-content: center; font-size: 1.4rem; color: var(--text-dim); cursor: pointer; }
+.arp-square-add:hover { color: var(--text); border-color: var(--text-dim); }

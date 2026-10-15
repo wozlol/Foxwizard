@@ -22,8 +22,14 @@ Untested on hardware. Both sketches compile.
 
 | Folder | Firmware |
 |---|---|
-| `Mini_MIDI_Multitool_Host_Edition` | Main brain. Fork of `../Mini_MIDI_Multitool` for testing. Includes the same firmware update over SysEx. Version 1.4. Once tested on hardware, it replaces `../Mini_MIDI_Multitool` as the only FoxWizard firmware, released as 1.4, for units with and without a host brain. Because 1.4 is newer than the released 1.3, Patchling never offers to replace it with the regular firmware. |
+| `Mini_MIDI_Multitool_Host_Edition` | Main brain. Fork of `../Mini_MIDI_Multitool` for testing. Includes the same firmware update over SysEx. Test builds from 1.5 up, one version per feature step, staying under 2.0. Once tested on hardware, it replaces `../Mini_MIDI_Multitool` as the only FoxWizard firmware, for units with and without a host brain. |
 | `Foxwizard_Host_Edition_Sidecar` | Host brain, on the RP2040-Zero or the Host Edition sidecar board. |
+
+## Test builds through Patchling
+
+`mmm_web_interface/firmware/build_firmware.sh --host-edition` builds the main brain into `mmm_web_interface/firmware/test/`. Patchling served from this computer (`serve.sh`) or opened with `?test` in its address shows a "Test builds" tag and offers those builds through its update button. The live site only ever offers the live firmware in `firmware/`. Patchling and the firmware share each version number.
+
+The sidecar can't be updated through Patchling. Flash it from the Arduino IDE.
 
 ## Arduino settings
 
@@ -200,6 +206,13 @@ Routes take over from the mode for whatever they match. Each route picks any com
 
 - SysEx replies to FoxWizard commands from the sidecar go back out the port they came in on.
 - USB devices with no MIDI OUT (input-only controllers) are never sent anything.
+
+## Output queues
+
+- **TRS/DIN:** 2 KB, so the loop never waits on the 31,250-baud UART. Timed features depend on that.
+- **USB Device:** 512 packets. TinyUSB's own USB MIDI buffer holds only 16 packets and drops the rest, which cut long SysEx replies (a 53-byte route is 23 packets) and bursts like a note cloned to 16 channels. Firmware 1.10.
+- Each has a realtime lane that goes first.
+- While either is nearly full (under 512 bytes or 128 packets free), the main brain stops reading its inputs: the computer and the host brain wait, and TRS/DIN input waits in a 256-byte receive buffer. Nothing is dropped, SysEx dumps included.
 
 ## Recovery
 

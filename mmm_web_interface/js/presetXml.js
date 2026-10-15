@@ -3,10 +3,12 @@
 // the device's SysEx protocol can set. Numbers are kept human (channel lists as "1,2,4-6", device
 // names as words) rather than raw bitmasks/enums, so the file is meant to be hand-editable.
 
-import { DATA_TYPE_BITS, PORTS, PORT_TRS, PORT_USB } from './midi.js';
+import { DATA_TYPE_BITS, PORTS, PORT_TRS, PORT_USB, FEATURE, NOTE_CC_ENTRIES, LAUNCHPAD_BUTTONS, defaultLaunchpadButtons, SCALES, LAYOUTS, defaultScale, ARP_SLOTS, ARP_MODES, ARP_SQUARES, DIVISIONS, defaultArp } from './midi.js';
+
+const NOTE_CC_MODE_NAMES = ['momentary', 'velocity', 'toggle'];
 
 const MODE_NAMES = ['usbAdaptor', 'router'];
-const BUTTON_ACTION_NAMES = ['panic', 'pitchUp', 'pitchDown', 'mod', 'ccMomentary', 'ccToggle', 'octaveUp', 'octaveDown', 'noteMomentary', 'noteToggle'];
+const BUTTON_ACTION_NAMES = ['panic', 'pitchUp', 'pitchDown', 'mod', 'ccMomentary', 'ccToggle', 'octaveUp', 'octaveDown', 'noteMomentary', 'noteToggle', 'tapTempo'];
 
 // buttonParamA means something different per action (ramp speed, cc number, or note number) — use
 // a matching attribute name in the XML rather than a generic one so a hand-edited file reads right.
@@ -43,6 +45,16 @@ function legacyDeviceName(mask, names) {
 function readPorts(el, fallbackDevice) {
   if (el?.hasAttribute('ports')) return stringToPorts(el.getAttribute('ports'));
   return LEGACY_DEVICE_PORTS[el?.getAttribute('device') || fallbackDevice] ?? LEGACY_DEVICE_PORTS[fallbackDevice];
+}
+
+// "1,3,5" (positions from 1) to a chord mask.
+function parseChord(text) {
+  let mask = 0;
+  for (const p of (text || '').split(',')) {
+    const k = parseInt(p, 10) - 1;
+    if (k >= 0 && k < 12) mask |= 1 << k;
+  }
+  return mask;
 }
 
 export function channelsToRangeString(mask) {
@@ -90,6 +102,8 @@ export function serializePreset(state) {
   lines.push(`  <name>${esc(state.name || 'Untitled Preset')}</name>`);
   lines.push(`  <mode>${MODE_NAMES[g.mode] || 'usbAdaptor'}</mode>`);
   lines.push(`  <ledBrightness>${g.ledBrightnessStep * 10}</ledBrightness>`);
+  const clockPort = PORTS.find((p) => p.bit + 1 === g.clockSource);
+  lines.push(`  <clock source="${clockPort ? clockPort.key : 'master'}" bpm="${g.bpm}" timeSignature="${g.beatsPerBar}/${g.beatUnit}" sendClock="${!!g.clockOut}" tap="${['none', 'note', 'cc'][g.tapType] || 'none'}" tapChannel="${g.tapChannel > 15 ? 'any' : g.tapChannel + 1}" tapNumber="${g.tapNumber}"/>`);
   const valueAttr = buttonValueAttrName(g.buttonAction);
   lines.push(`  <button action="${BUTTON_ACTION_NAMES[g.buttonAction] || 'panic'}"${valueAttr ? ` ${valueAttr}="${g.buttonParamA}"` : ''} channel="${g.buttonParamB === 16 ? 'all' : g.buttonParamB + 1}" toggle="${!!g.buttonToggleMomentary}"/>`);
   lines.push('  <routes>');
@@ -99,10 +113,30 @@ export function serializePreset(state) {
     lines.push(`      <passthrough programChange="${!!(r.typeFlags & DATA_TYPE_BITS.programChange)}" pitchBend="${!!(r.typeFlags & DATA_TYPE_BITS.pitchBend)}" aftertouch="${!!(r.typeFlags & DATA_TYPE_BITS.aftertouch)}" aftertouchMapEnabled="${!!(r.typeFlags & DATA_TYPE_BITS.aftertouchMap)}" aftertouchMapCC="${r.atMapCC}" pressure="${!!(r.typeFlags & DATA_TYPE_BITS.pressure)}" pressureMapEnabled="${!!r.cpMapEnabled}" pressureMapCC="${r.cpMapCC}" sysex="${!!(r.typeFlags & DATA_TYPE_BITS.sysex)}" common="${!!r.commonEnabled}" realtime="${!!r.realtimeEnabled}" clock="${!!r.clockEnabled}"/>`);
     lines.push(`      <noteRange enabled="${!!(r.typeFlags & DATA_TYPE_BITS.note)}" start="${r.noteStart}" end="${r.noteEnd}"/>`);
     lines.push(`      <ccRange enabled="${!!(r.typeFlags & DATA_TYPE_BITS.cc)}" start="${r.ccStart}" end="${r.ccEnd}"/>`);
-    lines.push(`      <output ports="${portsToString(r.outPorts)}" device="${legacyDeviceName(r.outPorts, OUT_DEVICE_NAMES)}" channels="${channelsToRangeString(r.outputChannels)}" transpose="${r.transpose}" velocityScale="${r.velocityScale}" ccMapStart="${r.ccMapStart}" monoRetrig="${!!r.monoRetrig}" roundRobin="${!!r.roundRobin}" roundRobinRandom="${!!r.roundRobinRandom}"/>`);
+    lines.push(`      <output ports="${portsToString(r.outPorts)}" device="${legacyDeviceName(r.outPorts, OUT_DEVICE_NAMES)}" channels="${channelsToRangeString(r.outputChannels)}" transpose="${r.transpose}" velocityScale="${r.velocityScale}" ccMapStart="${r.ccMapStart}" monoRetrig="${!!r.monoRetrig}" roundRobin="${!!r.roundRobin}" roundRobinRandom="${!!r.roundRobinRandom}" noteToCc="${!!(r.features & FEATURE.NOTE_TO_CC)}" launchpad="${!!(r.features & FEATURE.LAUNCHPAD)}" scale="${!!(r.features & FEATURE.SCALE)}" layout="${esc(LAYOUTS[r.scaleLayout || 0])}" autoChord="${!!(r.features & FEATURE.AUTO_CHORD)}" chord="${Array.from({ length: 12 }, (_, k) => k).filter((k) => (r.chordMask || 0) & (1 << k)).map((k) => k + 1).join(',')}" arp="${r.arpSlot || 0}"/>`);
     lines.push('    </route>');
   }
   lines.push('  </routes>');
+  lines.push('  <noteToCc>');
+  for (const e of state.noteCc || []) lines.push(`    <map note="${e.note}" cc="${e.cc}" value="${NOTE_CC_MODE_NAMES[e.mode] || 'momentary'}"/>`);
+  lines.push('  </noteToCc>');
+  const sc = state.scale || defaultScale();
+  lines.push(`  <scale root="${sc.root}" scale="${esc(SCALES[sc.scaleType]?.name || 'Major')}"/>`);
+  lines.push('  <arps>');
+  (state.arps || []).forEach((ar, s) => {
+    lines.push(`    <arp slot="${s + 1}" mode="${esc(ARP_MODES[ar.mode] || 'Up')}" division="${DIVISIONS[ar.division] || '1/16'}" octaves="${ar.octaves}" gate="${ar.gate}" velocity="${ar.aftertouch ? 'aftertouch' : (ar.velocity ? ar.velocity : 'played')}" hold="${ar.holdType ? 'cc' : 'none'}" holdChannel="${ar.holdChannel > 15 ? 'any' : ar.holdChannel + 1}" holdNumber="${ar.holdNumber}" bypass="${ar.bypassChannel || 'off'}" bass="${ar.bassChannel || 'off'}">`);
+    (ar.squares || []).forEach((sq) => {
+      if (!sq) return;
+      lines.push(`      <division value="${DIVISIONS[sq.division]}" trigger="${['none', 'note', 'cc'][sq.triggerType] || 'none'}" channel="${sq.triggerChannel > 15 ? 'any' : sq.triggerChannel + 1}" number="${sq.triggerNumber}"/>`);
+    });
+    lines.push('    </arp>');
+  });
+  lines.push('  </arps>');
+  lines.push('  <launchpad>');
+  (state.launchpad || []).forEach((b, i) => {
+    if (b.type) lines.push(`    <button index="${i}" sends="${b.type === 1 ? 'note' : 'cc'}" number="${b.number}"/>`);
+  });
+  lines.push('  </launchpad>');
   lines.push('</foxwizardPatchlingPreset>');
   return lines.join('\n');
 }
@@ -133,6 +167,26 @@ export function parsePreset(xmlText) {
   const chAttr = buttonEl?.getAttribute('channel') || '1';
   const buttonParamB = chAttr === 'all' ? 16 : (parseInt(chAttr, 10) - 1);
   const buttonToggleMomentary = boolAttr(buttonEl || doc.createElement('x'), 'toggle') ? 1 : 0;
+
+  // Global clock, missing in presets from before firmware 1.4: Patchling's defaults stand.
+  const clock = {};
+  const clockEl = root.querySelector('clock');
+  if (clockEl) {
+    const src = clockEl.getAttribute('source') || 'master';
+    const port = PORTS.find((p) => p.key === src && p.input);
+    const [beats, unit] = (clockEl.getAttribute('timeSignature') || '4/4').split('/').map((n) => parseInt(n, 10));
+    const tapCh = clockEl.getAttribute('tapChannel') || 'any';
+    Object.assign(clock, {
+      clockSource: port ? port.bit + 1 : 0,
+      bpm: Math.min(300, Math.max(20, parseInt(clockEl.getAttribute('bpm') || '120', 10) || 120)),
+      beatsPerBar: Math.min(16, Math.max(1, beats || 4)),
+      beatUnit: [2, 4, 8, 16].includes(unit) ? unit : 4,
+      clockOut: boolAttr(clockEl, 'sendClock') ? 1 : 0,
+      tapType: Math.max(0, ['none', 'note', 'cc'].indexOf(clockEl.getAttribute('tap') || 'none')),
+      tapChannel: tapCh === 'any' ? 16 : Math.min(15, Math.max(0, parseInt(tapCh, 10) - 1)),
+      tapNumber: Math.min(127, Math.max(0, parseInt(clockEl.getAttribute('tapNumber') || '0', 10) || 0))
+    });
+  }
 
   const routes = [];
   for (const routeEl of root.querySelectorAll('routes > route')) {
@@ -180,14 +234,87 @@ export function parsePreset(xmlText) {
       // false from a preset that was actually saved with this feature.
       commonEnabled: passEl && passEl.hasAttribute('common') ? boolAttr(passEl, 'common') : true,
       realtimeEnabled: passEl && passEl.hasAttribute('realtime') ? boolAttr(passEl, 'realtime') : true,
-      clockEnabled: passEl && passEl.hasAttribute('clock') ? boolAttr(passEl, 'clock') : true
+      clockEnabled: passEl && passEl.hasAttribute('clock') ? boolAttr(passEl, 'clock') : true,
+      chordMask: outputEl?.hasAttribute('chord') ? parseChord(outputEl.getAttribute('chord')) : undefined,
+      scaleLayout: outputEl?.hasAttribute('layout') ? Math.max(0, LAYOUTS.indexOf(outputEl.getAttribute('layout'))) : undefined,
+      arpSlot: Math.min(ARP_SLOTS, Math.max(0, parseInt(outputEl?.getAttribute('arp') || '0', 10) || 0)),
+      features: (boolAttr(outputEl || document.createElement('x'), 'noteToCc') ? FEATURE.NOTE_TO_CC : 0) |
+        (boolAttr(outputEl || document.createElement('x'), 'launchpad') ? FEATURE.LAUNCHPAD : 0) |
+        (boolAttr(outputEl || document.createElement('x'), 'scale') ? FEATURE.SCALE : 0) |
+        (boolAttr(outputEl || document.createElement('x'), 'autoChord') ? FEATURE.AUTO_CHORD : 0)
     });
   }
 
+  const arps = Array.from({ length: ARP_SLOTS }, defaultArp);
+  for (const el of root.querySelectorAll('arps > arp')) {
+    const s = parseInt(el.getAttribute('slot') || '0', 10) - 1;
+    if (s < 0 || s >= ARP_SLOTS) continue;
+    const vel = el.getAttribute('velocity') || 'played';
+    const ch = el.getAttribute('holdChannel') || 'any';
+    arps[s] = {
+      mode: Math.max(0, ARP_MODES.indexOf(el.getAttribute('mode') === 'Up 1-Oct' ? 'Up 4-Step' : el.getAttribute('mode'))), // renamed in 1.20
+      division: DIVISIONS.includes(el.getAttribute('division')) ? DIVISIONS.indexOf(el.getAttribute('division')) : arps[s].division,
+      octaves: Math.min(4, Math.max(1, parseInt(el.getAttribute('octaves') || '1', 10) || 1)),
+      gate: Math.min(100, Math.max(5, parseInt(el.getAttribute('gate') || '50', 10) || 50)),
+      velocity: vel === 'played' || vel === 'aftertouch' ? 0 : Math.min(127, Math.max(1, parseInt(vel, 10) || 100)),
+      aftertouch: vel === 'aftertouch',
+      bypassChannel: Math.min(16, Math.max(0, parseInt(el.getAttribute('bypass') || '0', 10) || 0)),
+      bassChannel: Math.min(16, Math.max(0, parseInt(el.getAttribute('bass') || '0', 10) || 0)),
+      squares: Array.from({ length: ARP_SQUARES }, (_, k) => {
+        const d = el.querySelectorAll('division')[k];
+        if (!d || !DIVISIONS.includes(d.getAttribute('value'))) return null;
+        const c = d.getAttribute('channel') || 'any';
+        return {
+          division: DIVISIONS.indexOf(d.getAttribute('value')),
+          triggerType: Math.max(0, ['none', 'note', 'cc'].indexOf(d.getAttribute('trigger'))),
+          triggerChannel: c === 'any' ? 16 : Math.min(15, Math.max(0, parseInt(c, 10) - 1)),
+          triggerNumber: Math.min(127, Math.max(0, parseInt(d.getAttribute('number') || '0', 10) || 0))
+        };
+      }),
+      holdType: el.getAttribute('hold') === 'cc' ? 2 : 0,
+      holdChannel: ch === 'any' ? 16 : Math.min(15, Math.max(0, parseInt(ch, 10) - 1)),
+      holdNumber: Math.min(127, Math.max(0, parseInt(el.getAttribute('holdNumber') || '64', 10) || 0))
+    };
+  }
+
+  const scale = defaultScale();
+  const scaleEl = root.querySelector('scale');
+  if (scaleEl) {
+    scale.root = Math.min(11, Math.max(0, parseInt(scaleEl.getAttribute('root') || '0', 10) || 0));
+    scale.scaleType = Math.max(0, SCALES.findIndex((s) => s.name === scaleEl.getAttribute('scale')));
+    scale.layout = Math.max(0, LAYOUTS.indexOf(scaleEl.getAttribute('layout')));
+    scale.chordMask = parseChord(scaleEl.getAttribute('chord'));
+  }
+
+  // Presets from 1.11-1.13 kept one Layout on <scale>, it goes to each Scale route without its own.
+  for (const r of routes) {
+    if (r.scaleLayout === undefined) r.scaleLayout = (r.features & FEATURE.SCALE) ? scale.layout : 0;
+    if (r.chordMask === undefined) r.chordMask = (r.features & FEATURE.AUTO_CHORD) ? scale.chordMask : 0; // presets from 1.12-1.14
+  }
+  scale.layout = 0;
+  scale.chordMask = 0;
+
+  const launchpad = defaultLaunchpadButtons();
+  for (const b of root.querySelectorAll('launchpad > button')) {
+    const i = parseInt(b.getAttribute('index') || '-1', 10);
+    if (i < 0 || i >= LAUNCHPAD_BUTTONS) continue;
+    launchpad[i] = { type: b.getAttribute('sends') === 'cc' ? 2 : 1, number: Math.min(127, Math.max(0, parseInt(b.getAttribute('number') || '0', 10) || 0)) };
+  }
+
+  const noteCc = [...root.querySelectorAll('noteToCc > map')].slice(0, NOTE_CC_ENTRIES).map((m) => ({
+    note: Math.min(127, Math.max(0, parseInt(m.getAttribute('note') || '0', 10) || 0)),
+    cc: Math.min(127, Math.max(0, parseInt(m.getAttribute('cc') || '0', 10) || 0)),
+    mode: Math.max(0, NOTE_CC_MODE_NAMES.indexOf(m.getAttribute('value') || 'momentary'))
+  }));
+
   return {
     name,
-    global: { mode, buttonAction, buttonParamA, buttonParamB, buttonToggleMomentary, ledBrightnessStep },
-    routes
+    global: { mode, buttonAction, buttonParamA, buttonParamB, buttonToggleMomentary, ledBrightnessStep, ...clock },
+    routes,
+    noteCc,
+    launchpad,
+    scale,
+    arps
   };
 }
 

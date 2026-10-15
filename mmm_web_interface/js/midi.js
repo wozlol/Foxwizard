@@ -9,6 +9,11 @@ export const CMD = {
   GET_GLOBAL: 0x10,
   GET_STATUS: 0x13,
   STATUS_DATA: 0x14,
+  LEARN: 0x15,
+  LEARN_DATA: 0x16,
+  GET_FEATURE: 0x17,
+  FEATURE_DATA: 0x18,
+  SET_FEATURE: 0x19,
   GLOBAL_DATA: 0x11,
   SET_GLOBAL: 0x12,
   GET_ROUTE_COUNT: 0x20,
@@ -54,8 +59,129 @@ export const SIDECAR_INPUT_PORTS = 0x007C;
 export const SIDECAR_OUTPUT_PORTS = 0x07FC;
 
 // Protocol 1 routes are 41 raw bytes. Protocol 2 adds inPorts and outPorts (2 bytes each, little
-// endian) at the end, used when flags bit6 is set.
+// endian) at the end, used when flags bit6 is set. Protocol 4 adds features (2 bytes, FEATURE_*
+// switches), arpSlot, and 5 spare bytes.
 const ROUTE_BYTES_V1 = 17 + ROUTE_NAME_MAX_LEN;
+const ROUTE_BYTES_V2 = ROUTE_BYTES_V1 + 4;
+const ROUTE_BYTES_V4 = ROUTE_BYTES_V2 + 8;
+
+// Route feature switches (route.features), same as FEATURE_* in the firmware.
+export const FEATURE = { NOTE_TO_CC: 1 << 0, LAUNCHPAD: 1 << 1, SCALE: 1 << 2, AUTO_CHORD: 1 << 3 };
+
+// Feature blocks, shared by the routes that switch a feature on. Same as FEATURE_TYPE_* in the firmware.
+export const FEATURE_TYPE = { NOTE_TO_CC: 1, LAUNCHPAD: 2, SCALE: 3, ARP_1: 4 }; // arp slots 1-4 are 4-7
+
+// Arp, firmware 1.13. Same order as the firmware's ARP_* modes and fw::MusicalDivision.
+export const ARP_SLOTS = 4;
+export const ARP_MODES = ['Up', 'Down', 'Up-Down 1', 'Up-Down 2', 'Drum Roll/Chord Pulse', 'Random',
+  'Up 4-Step', 'Rhythm', 'Ostinato', 'Octave Walk', 'Fifth', 'Bass+Chord', 'Chord+Run',
+  'As Played', 'Converge', 'Diverge', 'Thumb', 'Pinky']; // 1.20
+// The order modes are listed in: the note orders together, then ARPnMIDI's patterns.
+export const ARP_MODE_ORDER = [0, 1, 2, 3, 4, 5, 13, 14, 15, 16, 17, 6, 7, 8, 9, 10, 11, 12];
+export const ARP_SQUARES = 7; // division table squares besides the default
+export const DIVISIONS = ['1/1', '1/2D', '1/2', '1/4D', '1/2T', '1/4', '1/8D', '1/4T', '1/8', '1/16D', '1/8T', '1/16', '1/32D', '1/16T', '1/32', '1/64D', '1/32T', '1/64', '1/64T'];
+export const DEFAULT_DIVISION = 11; // 1/16
+export function defaultArp() {
+  return {
+    mode: 0, division: DEFAULT_DIVISION, octaves: 1, gate: 50, velocity: 0, aftertouch: false, bypassChannel: 0, bassChannel: 0, holdType: 0, holdChannel: 16, holdNumber: 64,
+    squares: Array.from({ length: ARP_SQUARES }, () => null) // { division, triggerType 0 none 1 note 2 CC, triggerChannel 0-15 16 any, triggerNumber }
+  };
+}
+// 48 bytes: mode, division + 1, octaves, gate %, velocity (0 = played), holdType (0 none, 2 CC), holdChannel,
+// holdNumber, aftertouch velocity, bypass channel (0 off, 1-16), bass channel (0 off, 1-16), 5 spare, then 7 division squares of (division + 1, 0 = unused, triggerType,
+// triggerChannel, triggerNumber), 4 spare.
+export function arpToBytes(a) {
+  const b = [a.mode, a.division + 1, a.octaves, a.gate, a.aftertouch ? 0 : a.velocity, a.holdType, a.holdChannel, a.holdNumber, a.aftertouch ? 1 : 0, a.bypassChannel || 0, a.bassChannel || 0, 0, 0, 0, 0, 0];
+  for (let k = 0; k < ARP_SQUARES; k++) {
+    const sq = a.squares?.[k];
+    b.push(...(sq ? [sq.division + 1, sq.triggerType, sq.triggerChannel, sq.triggerNumber] : [0, 0, 0, 0]));
+  }
+  return b.concat([0, 0, 0, 0]);
+}
+export function bytesToArp(b) {
+  const d = defaultArp();
+  return {
+    mode: b[0] < ARP_MODES.length ? b[0] : d.mode,
+    division: b[1] >= 1 && b[1] <= DIVISIONS.length ? b[1] - 1 : d.division,
+    octaves: b[2] >= 1 && b[2] <= 4 ? b[2] : d.octaves,
+    gate: b[3] >= 5 && b[3] <= 100 ? b[3] : d.gate,
+    velocity: b[4] || 0,
+    holdType: b[5] === 2 ? 2 : 0,
+    holdChannel: b[6] <= 16 ? b[6] : 16,
+    holdNumber: (b[7] || 0) & 0x7F,
+    aftertouch: b[8] === 1,
+    bypassChannel: b[9] <= 16 ? b[9] : 0,
+    bassChannel: b[10] <= 16 ? b[10] : 0,
+    squares: Array.from({ length: ARP_SQUARES }, (_, k) => {
+      const o = 16 + k * 4;
+      if (!(b[o] >= 1 && b[o] <= DIVISIONS.length)) return null;
+      return { division: b[o] - 1, triggerType: b[o + 1] <= 2 ? b[o + 1] : 0, triggerChannel: b[o + 2] <= 16 ? b[o + 2] : 16, triggerNumber: (b[o + 3] || 0) & 0x7F };
+    })
+  };
+}
+
+// Same order and steps as SCALES in the firmware. steps are semitones above the root.
+export const SCALES = [
+  { name: 'Major', steps: [0, 2, 4, 5, 7, 9, 11] },
+  { name: 'Minor', steps: [0, 2, 3, 5, 7, 8, 10] },
+  { name: 'Harmonic Major', steps: [0, 2, 4, 5, 7, 8, 11] },
+  { name: 'Harmonic Minor', steps: [0, 2, 3, 5, 7, 8, 11] },
+  { name: 'Melodic Major', steps: [0, 2, 4, 5, 7, 8, 10] },
+  { name: 'Melodic Minor', steps: [0, 2, 3, 5, 7, 9, 11] },
+  { name: 'Major Blues', steps: [0, 2, 3, 4, 7, 9] },
+  { name: 'Minor Blues', steps: [0, 3, 5, 6, 7, 10] },
+  { name: 'Major Pentatonic', steps: [0, 2, 4, 7, 9] },
+  { name: 'Minor Pentatonic', steps: [0, 3, 5, 7, 10] },
+  { name: 'Dorian', steps: [0, 2, 3, 5, 7, 9, 10] },
+  { name: 'Mixolydian', steps: [0, 2, 4, 5, 7, 9, 10] }
+];
+export const LAYOUTS = ['Next Note Up', 'White Keys', 'Drum Pad 5ths', 'Drum Pad 4ths', 'Drum Pad 3rds'];
+
+// Scale block: root (0-11), scaleType, layout (unused since 1.14) and chordMask (unused since 1.15), each route has its own, 3 spare.
+export function defaultScale() {
+  return { root: 0, scaleType: 0, layout: 0, chordMask: 0 };
+}
+export function scaleToBytes(sc) {
+  return [sc.root, sc.scaleType, 0, 0, 0, 0, 0, 0];
+}
+export function bytesToScale(b) {
+  return { root: (b[0] || 0) % 12, scaleType: b[1] < SCALES.length ? b[1] : 0, layout: b[2] < LAYOUTS.length ? b[2] : 0, chordMask: (b[3] || 0) | ((b[4] || 0) << 8) };
+}
+
+// Note to CC: 16 entries of 3 bytes, note stored +1 so 0 means unused. mode 0 momentary (127/0),
+// 1 velocity, 2 toggle.
+export const NOTE_CC_ENTRIES = 16;
+export function noteCcToBytes(list) {
+  const bytes = new Array(NOTE_CC_ENTRIES * 3).fill(0);
+  list.slice(0, NOTE_CC_ENTRIES).forEach((e, i) => {
+    bytes[i * 3] = e.note + 1;
+    bytes[i * 3 + 1] = e.cc & 0x7F;
+    bytes[i * 3 + 2] = e.mode;
+  });
+  return bytes;
+}
+// Launchpad: the 16 round buttons (top row left to right, then the side column top to bottom), each
+// (type 0 off / 1 note / 2 CC, number).
+export const LAUNCHPAD_BUTTONS = 16;
+export function defaultLaunchpadButtons() {
+  return Array.from({ length: LAUNCHPAD_BUTTONS }, () => ({ type: 0, number: 0 }));
+}
+export function launchpadToBytes(buttons) {
+  const bytes = [];
+  for (let i = 0; i < LAUNCHPAD_BUTTONS; i++) bytes.push(buttons[i]?.type || 0, (buttons[i]?.number || 0) & 0x7F);
+  return bytes;
+}
+export function bytesToLaunchpad(bytes) {
+  return Array.from({ length: LAUNCHPAD_BUTTONS }, (_, i) => ({ type: bytes[i * 2] || 0, number: bytes[i * 2 + 1] || 0 }));
+}
+
+export function bytesToNoteCc(bytes) {
+  const list = [];
+  for (let i = 0; i + 2 < bytes.length; i += 3) {
+    if (bytes[i]) list.push({ note: bytes[i] - 1, cc: bytes[i + 1], mode: bytes[i + 2] });
+  }
+  return list;
+}
 const DEFAULT_TIMEOUT_MS = 1500;
 
 // Firmware update over SysEx (FW_BEGIN/FW_DATA/FW_END). Must match FW_CHUNK_BYTES in the firmware.
@@ -64,6 +190,7 @@ const FW_BEGIN_TIMEOUT_MS = 10000; // first use may have to format the device's 
 const FW_DATA_TIMEOUT_MS = 3000;   // a chunk can land on a 4 KB flash write
 const FW_END_TIMEOUT_MS = 10000;   // device re-reads the whole file to check its MD5
 const FW_DATA_ATTEMPTS = 4;
+const LEARN_TIMEOUT_MS = 10500; // the device listens for 10 s
 
 // Fixed-length, zero-padded ASCII — matches the firmware's raw char[ROUTE_NAME_MAX_LEN] field
 // exactly, so there's no separate length byte to keep in sync.
@@ -174,6 +301,7 @@ export function routeToBytes(r, protocolVersion = 2) {
     ...encodeName(r.name)
   ];
   if (v2) bytes.push(r.inPorts & 0xFF, (r.inPorts >> 8) & 0xFF, r.outPorts & 0xFF, (r.outPorts >> 8) & 0xFF);
+  if (protocolVersion >= 4) bytes.push((r.features || 0) & 0xFF, ((r.features || 0) >> 8) & 0xFF, r.arpSlot || 0, r.scaleLayout || 0, (r.chordMask || 0) & 0xFF, ((r.chordMask || 0) >> 8) & 0xFF, 0, 0);
   return bytes;
 }
 
@@ -203,7 +331,11 @@ export function bytesToRoute(b) {
     realtimeEnabled: !!(b[16] & 0x08),
     clockEnabled: !!(b[16] & 0x10),
     roundRobinRandom: !!(b[16] & 0x20),
-    name: decodeName(b.slice(17, ROUTE_BYTES_V1))
+    name: decodeName(b.slice(17, ROUTE_BYTES_V1)),
+    features: b.length >= ROUTE_BYTES_V4 ? b[ROUTE_BYTES_V2] | (b[ROUTE_BYTES_V2 + 1] << 8) : 0,
+    arpSlot: b.length >= ROUTE_BYTES_V4 ? b[ROUTE_BYTES_V2 + 2] : 0,
+    scaleLayout: b.length >= ROUTE_BYTES_V4 && b[ROUTE_BYTES_V2 + 3] < LAYOUTS.length ? b[ROUTE_BYTES_V2 + 3] : 0,
+    chordMask: b.length >= ROUTE_BYTES_V4 ? (b[ROUTE_BYTES_V2 + 4] | (b[ROUTE_BYTES_V2 + 5] << 8)) & 0xFFF : 0
   };
 }
 
@@ -305,6 +437,12 @@ export class DeviceLink extends EventTarget {
 
   _onMessage(e) {
     const data = e.data;
+    // Notes the FoxWizard sends to the computer, on any channel, for Patchling's live displays.
+    const type = data[0] & 0xF0;
+    if ((type === 0x90 || type === 0x80) && data.length >= 3) {
+      this.emit('note', { note: data[1], on: type === 0x90 && data[2] > 0, channel: data[0] & 0x0F });
+      return;
+    }
     if (data[0] !== 0xF0 || data[1] !== MFR_ID || data[2] !== DEVICE_ID) return;
     const cmd = data[3];
     const payload = Array.from(data.slice(4, data.length - 1)); // strip F0 7D 4D cmd ... F7
@@ -353,9 +491,11 @@ export class DeviceLink extends EventTarget {
     }
   }
 
+  // Protocol 3 adds the global clock settings after the original 6 bytes. Fields an older device
+  // doesn't send are left out, so the caller's defaults stand.
   async getGlobal() {
     const reply = await this._sendAndWait([CMD.GET_GLOBAL], CMD.GLOBAL_DATA, DEFAULT_TIMEOUT_MS);
-    return {
+    const g = {
       mode: reply[0],
       buttonAction: reply[1],
       buttonParamA: reply[2],
@@ -363,11 +503,34 @@ export class DeviceLink extends EventTarget {
       buttonToggleMomentary: reply[4],
       ledBrightnessStep: reply[5]
     };
+    if (reply.length >= 15) {
+      Object.assign(g, {
+        clockSource: reply[6],
+        bpm: reply[7] | (reply[8] << 7),
+        beatsPerBar: reply[9],
+        beatUnit: reply[10],
+        clockOut: reply[11],
+        tapType: reply[12],
+        tapChannel: reply[13],
+        tapNumber: reply[14]
+      });
+    }
+    return g;
   }
 
   async setGlobal(g) {
     const payload = [g.mode, g.buttonAction, g.buttonParamA, g.buttonParamB, g.buttonToggleMomentary, g.ledBrightnessStep];
+    if (this.protocolVersion >= 3) {
+      payload.push(g.clockSource, g.bpm & 0x7F, (g.bpm >> 7) & 0x7F, g.beatsPerBar, g.beatUnit,
+        g.clockOut, g.tapType, g.tapChannel, g.tapNumber);
+    }
     return this._sendMutating(CMD.SET_GLOBAL, payload, checksum7(payload));
+  }
+
+  /** Protocol 3: waits up to 10 s for the next note or CC the device hears. { type 1 note / 2 CC, channel, number, port bit }. */
+  async learn() {
+    const r = await this._sendAndWait([CMD.LEARN], CMD.LEARN_DATA, LEARN_TIMEOUT_MS);
+    return { type: r[0], channel: r[1], number: r[2], port: r[3] };
   }
 
   async getRouteCount() {
@@ -383,11 +546,14 @@ export class DeviceLink extends EventTarget {
    * restartCount }.
    */
   async getStatus() {
-    if (this.protocolVersion < 2) return { sidecar: false, hostPortMask: 0, drops: 0, restartReason: 0, restartPort: 0, restartCount: 0 };
+    if (this.protocolVersion < 2) return { sidecar: false, hostPortMask: 0, drops: 0, restartReason: 0, restartPort: 0, restartCount: 0, bpm: null, clockStatus: 0 };
     const reply = await this._sendAndWait([CMD.GET_STATUS], CMD.STATUS_DATA, DEFAULT_TIMEOUT_MS);
     return {
       sidecar: reply[0] === 1, hostPortMask: reply[1], drops: reply[2],
-      restartReason: reply[3] ?? 0, restartPort: reply[4] ?? 0, restartCount: reply[5] ?? 0
+      restartReason: reply[3] ?? 0, restartPort: reply[4] ?? 0, restartCount: reply[5] ?? 0,
+      // Protocol 3: current BPM, and 0 clock unused, 1 master, 2 following, 3 following with no clock.
+      bpm: reply.length >= 9 ? reply[6] | (reply[7] << 7) : null,
+      clockStatus: reply[8] ?? 0
     };
   }
 
@@ -459,6 +625,16 @@ export class DeviceLink extends EventTarget {
   }
 
   /** Pulls global settings + every route from the device. progressCb(done, total). */
+  /** Protocol 4: a feature block's raw bytes. */
+  async getFeature(type) {
+    const reply = await this._sendAndWait([CMD.GET_FEATURE, type], CMD.FEATURE_DATA, DEFAULT_TIMEOUT_MS);
+    return unpack7(reply.slice(1));
+  }
+
+  async setFeature(type, bytes) {
+    return this._sendMutating(CMD.SET_FEATURE, [type, ...pack7(bytes)], checksum7(bytes));
+  }
+
   async loadAll(progressCb) {
     const global = await this.getGlobal();
     const count = await this.getRouteCount();
@@ -467,15 +643,34 @@ export class DeviceLink extends EventTarget {
       routes.push(await this.getRoute(i));
       if (progressCb) progressCb(i + 1, count);
     }
-    return { global, routes };
+    const features = {};
+    if (this.protocolVersion >= 4) features.noteCc = bytesToNoteCc(await this.getFeature(FEATURE_TYPE.NOTE_TO_CC));
+    // The Launchpad block arrived in firmware 1.7, still protocol 4. Older 1.6 builds don't have it.
+    if (this.protocolVersion >= 4) {
+      try { features.launchpad = bytesToLaunchpad(await this.getFeature(FEATURE_TYPE.LAUNCHPAD)); } catch (err) { /* 1.6 */ }
+      try { features.scale = bytesToScale(await this.getFeature(FEATURE_TYPE.SCALE)); } catch (err) { /* before 1.11 */ }
+      try {
+        features.arps = [];
+        for (let s = 0; s < ARP_SLOTS; s++) features.arps.push(bytesToArp(await this.getFeature(FEATURE_TYPE.ARP_1 + s)));
+      } catch (err) { delete features.arps; /* before 1.13 */ }
+    }
+    return { global, routes, features };
   }
 
   /** Pushes global settings + a full route list to the device, replacing whatever is there. */
-  async saveAll(global, routes, progressCb) {
+  async saveAll(global, routes, features, progressCb) {
     await this.clearAllRoutes();
     for (let i = 0; i < routes.length; i++) {
       await this.addRoute(routes[i]);
       if (progressCb) progressCb(i + 1, routes.length);
+    }
+    if (this.protocolVersion >= 4) {
+      await this.setFeature(FEATURE_TYPE.NOTE_TO_CC, noteCcToBytes(features.noteCc || []));
+      await this.setFeature(FEATURE_TYPE.LAUNCHPAD, launchpadToBytes(features.launchpad || defaultLaunchpadButtons())).catch(() => {}); // 1.6 has no block
+      await this.setFeature(FEATURE_TYPE.SCALE, scaleToBytes(features.scale || defaultScale())).catch(() => {}); // before 1.11
+      for (let s = 0; s < ARP_SLOTS; s++) {
+        await this.setFeature(FEATURE_TYPE.ARP_1 + s, arpToBytes(features.arps?.[s] || defaultArp())).catch(() => {}); // before 1.13
+      }
     }
     await this.setGlobal(global);
     await this.commit();

@@ -76,6 +76,7 @@
       </div>
 
       <div class="header-actions">
+        <span id="testTag" class="test-tag" title="Patchling is offering test firmware builds (firmware/test/), not the live firmware" hidden>Test builds</span>
         <button type="button" id="connectionPill" class="connection-pill disconnected" title="Click to try connecting again">
           <span class="connection-dot"></span>
           <span id="connectionLabel">Not connected</span>
@@ -105,6 +106,8 @@
 
   <main id="app" class="app-main">
     <section id="globalSettingsCard" class="card card-full global-card" aria-label="Global settings"></section>
+    <section id="clockRow" class="card card-full clock-row" aria-label="Global clock" hidden></section>
+    <section id="scaleRow" class="card card-full scale-row" aria-label="Scale" hidden></section>
     <section id="routesContainer" class="routes-container" aria-label="Routes"></section>
     <div class="add-route-row-top">
       <button id="addRouteBtnTop" class="btn btn-accent">+ Add Route</button>
@@ -116,7 +119,7 @@
   </main>
 
   <footer class="app-footer">
-    <p><a href="https://woz.lol" target="_blank" rel="noopener">woz.lol</a> &middot; FOXWIZARD PATCHLING v1.3 &middot; Programming Software for the <a href="https://woz.lol/foxwizard" target="_blank" rel="noopener">FoxWizard Mini MIDI Multitool</a> &middot; Works in Chrome and other Chromium-based browsers (Edge, Brave, Opera). Firefox and Safari don't support Web MIDI yet.</p>
+    <p><a href="https://woz.lol" target="_blank" rel="noopener">woz.lol</a> &middot; FOXWIZARD PATCHLING v1.22 &middot; Programming Software for the <a href="https://woz.lol/foxwizard" target="_blank" rel="noopener">FoxWizard Mini MIDI Multitool</a> &middot; Works in Chrome and other Chromium-based browsers (Edge, Brave, Opera). Firefox and Safari don't support Web MIDI yet.</p>
   </footer>
 
   <script type="module" src="js/app.js"></script>

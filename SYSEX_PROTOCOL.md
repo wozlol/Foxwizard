@@ -3,7 +3,9 @@
 IDENTITY_REPLY's `protocolVersion` says which version a board speaks:
 
 - **1:** firmware 1.0-1.3. 41-byte routes.
-- **2:** firmware 1.4 (Host Edition). 45-byte routes with port masks, and GET_STATUS for the sidecar.
+- **2:** 45-byte routes with port masks, and GET_STATUS for the sidecar.
+- **3:** Global clock settings, LEARN, and the clock in STATUS_DATA.
+- **4:** Host Edition test builds from 1.6. 53-byte routes with feature fields, and feature blocks.
 
 Patchling picks the route size from it, so it talks to both.
 
@@ -51,8 +53,13 @@ The route struct is 41 bytes → five groups of 7 + one group of 6 → packed to
 | 0x02   | IDENTITY_REPLY        | dev→host  | protocolVersion, fwMajor, fwMinor, maxRoutes(2), name (ASCII, remainder of message) |
 | 0x10   | GET_GLOBAL            | host→dev  | (none)                                                         |
 | 0x13   | GET_STATUS            | host→dev  | (none). Protocol 2 |
-| 0x14   | STATUS_DATA           | dev→host  | sidecarPresent (0/1), hostPortMask (bit0 = USB Host 1 has a USB MIDI device), sidecarDrops (saturates at 127), restartReason (0 none, 1 hang, 2 USB Host port stalled, 3 USB data sequence error, 4 USB buffer armed twice, 5 USB device stalled), restartPort (1-4, for reason 2), restartCount (recovery restarts since the sidecar powered up, saturates at 127). Protocol 2 |
-| 0x11   | GLOBAL_DATA           | dev→host  | mode, buttonAction, buttonParamA, buttonParamB, buttonToggleMomentary, ledBrightnessStep |
+| 0x14   | STATUS_DATA           | dev→host  | sidecarPresent (0/1), hostPortMask (bit0 = USB Host 1 has a USB MIDI device), sidecarDrops (saturates at 127), restartReason (0 none, 1 hang, 2 USB Host port stalled, 3 USB data sequence error, 4 USB buffer armed twice, 5 USB device stalled), restartPort (1-4, for reason 2), restartCount (recovery restarts since the sidecar powered up, saturates at 127). Protocol 2. Protocol 3 adds bpm(2) and clockStatus (0 clock unused, 1 master, 2 following, 3 following with no clock arriving) |
+| 0x15   | LEARN                 | host→dev  | (none). Protocol 3. The next Note On or CC from any input is consumed and answered with LEARN_DATA. Gives up after 10 s |
+| 0x16   | LEARN_DATA            | dev→host  | type (1 note, 2 CC), channel (0-15), number, port bit (0 TRS/DIN … 6 TRS 2) |
+| 0x17   | GET_FEATURE           | host→dev  | type. Protocol 4 |
+| 0x18   | FEATURE_DATA          | dev→host  | type + pack7(block). Protocol 4 |
+| 0x19   | SET_FEATURE           | host→dev  | type + pack7(block). ACK checksum is checksum7 of the block as stored, ACK extra is the type. Protocol 4 |
+| 0x11   | GLOBAL_DATA           | dev→host  | mode, buttonAction, buttonParamA, buttonParamB, buttonToggleMomentary, ledBrightnessStep. Protocol 3 adds clockSource, bpm(2), beatsPerBar, beatUnit, clockOut, tapType, tapChannel, tapNumber, see Global clock |
 | 0x12   | SET_GLOBAL            | host→dev  | same 6 bytes as GLOBAL_DATA                                   |
 | 0x20   | GET_ROUTE_COUNT       | host→dev  | (none)                                                         |
 | 0x21   | ROUTE_COUNT           | dev→host  | count(2)                                                       |
@@ -110,6 +117,119 @@ receive these commands. Firmware 1.0 ignores them anyway.
   with Flash Size `2MB (Sketch: 1792KB, FS: 256KB)`. `mmm_web_interface/firmware/build_firmware.sh`
   does this.
 
+## Global clock (protocol 3)
+
+GLOBAL_DATA and SET_GLOBAL grow from 6 to 15 bytes. A protocol 1-2 host sends 6, and the device
+leaves the clock settings alone.
+
+| byte | field | notes |
+|------|-------|-------|
+| 6 | clockSource | 0 the FoxWizard is master, 1-7 follow port bit 0-6 (TRS/DIN, USB Device, USB Host 1-4, TRS 2) |
+| 7-8 | bpm | two 7-bit bytes, low first, 20-300 |
+| 9 | beatsPerBar | time signature top, 1-16 |
+| 10 | beatUnit | time signature bottom: 2, 4, 8, 16 |
+| 11 | clockOut | 1 = send MIDI clock to every port while master |
+| 12 | tapType | tap tempo trigger: 0 none, 1 note, 2 CC |
+| 13 | tapChannel | 0-15, 16 any |
+| 14 | tapNumber | note or CC number |
+
+The settings only apply while something uses the clock: for now buttonAction 10 (Tap Tempo), later
+the looper and timed route features. Until then clock routes as it always has. While in use:
+
+- **Follow:** clock from the chosen port drives the clock engine and routes as usual. Clock from
+  every other port is discarded. Start, Continue, and Stop still route from every port.
+- **Master:** all incoming clock is discarded. With clockOut on, the FoxWizard sends its own clock
+  to every port.
+- **Tap tempo:** the button (buttonAction 10) or the tap trigger note or CC. The trigger is consumed,
+  its Note Off and zero CC values included. Tapping only sets the tempo while master. A tapped tempo
+  is kept in RAM until the next COMMIT.
+
+The clock engine is ported from ARPnMIDI (`src/clock_engine.*`, `src/musical_time.*`), 96 pulses per
+quarter note internally.
+
+## Feature blocks (protocol 4)
+
+Settings for a feature live in one shared block, not in every route. A route switches the feature on
+with its bit in the route's `features` field. A route from a protocol 1-3 host arrives without the
+feature fields, so every feature is off for it.
+
+Blocks are saved after the routes as `F` `X`, then (type, size, data) per block, then 0. A save
+without the marker loads every block as zeros. A block saved by a newer firmware with more bytes is
+cut to what this one knows, a shorter one is zero-filled. Zero means off or unused everywhere.
+
+| type | block | size | notes |
+|------|-------|------|-------|
+| 1 | Note to CC | 48 | 16 entries of (note + 1, cc, mode). Note 0 = unused entry. mode 0 = 127 on press, 0 on release. 1 = the note's velocity, 0 on release. 2 = toggle 127/0 on each press |
+| 2 | Launchpad | 32 | 16 round buttons of (type 0 off / 1 note / 2 CC, number): top row left to right, then the side column top to bottom. Firmware 1.7 |
+| 3 | Scale | 8 | root (0-11), scaleType (0-11: Major, Minor, Harmonic Major, Harmonic Minor, Melodic Major, Melodic Minor, Major Blues, Minor Blues, Major Pentatonic, Minor Pentatonic, Dorian, Mixolydian), layout (1.11-1.13, moved to route byte 48 in 1.14, now 0), chordMask (2, 1.12-1.14, moved to route bytes 49-50 in 1.15, now 0), 3 spare. Firmware 1.11 |
+| 4-7 | Arp slots 1-4 | 48 each | mode (0 Up, 1 Down, 2 Up-Down 1, 3 Up-Down 2, 4 Drum Roll/Chord Pulse, 5 Random, 6 Up 4-Step, 7 Rhythm, 8 Ostinato, 9 Octave Walk, 10 Fifth, 11 Bass+Chord, 12 Chord+Run, 13 As Played, 14 Converge, 15 Diverge, 16 Thumb, 17 Pinky), default division + 1 (fw::MusicalDivision, 0 = 1/16), octaves (1-4, 0 = 1), gate % (5-100, 0 = 50), velocity (1-127 fixed, 0 = each note's own), holdType (0 none, 2 CC), holdChannel (0-15, 16 any), holdNumber, aftertouch velocity (1 = on), bypass channel (0 off, 1-16, 1.19), bass channel (0 off, 1-16, 1.19), 5 spare, 7 division squares of (division + 1, 0 = unused, triggerType 0 none 1 note 2 CC, triggerChannel 0-15 16 any, triggerNumber), 4 spare. Firmware 1.13, 48 bytes and squares 1.16 |
+
+**Note to CC:** only the first route with the switch on uses the block. A mapped note from that
+route's inputs becomes a CC on each of its output channels and ports instead of a note. Unmapped
+notes play as usual.
+
+**Launchpad:** for older Launchpads (original, S, Mini mk1/mk2) in their default X-Y mode, where a
+pad sends note 16 × row + column (top-left 0), the round side buttons are column 8, and the top round
+buttons are CC 104-111. A route with the switch on turns the grid into the Launchpad's own drum rack
+layout, without sending the Launchpad a mode change: four 4×4 blocks from 36, bottom-left 36-51,
+top-left 52-67, bottom-right 68-83, top-right 84-99, each block left to right then up. Route note
+filters and everything after see the remapped note. Every pad note, side-button note, and top-button
+CC is first sent straight back to the Launchpad's port and channel unchanged, so its light comes on.
+That port is then left out of everything the route sends for that message, in any mode. Firmware
+1.9. The round buttons send the note (velocity 127,
+then a Note Off) or CC (127, then 0) set for them on the route's output channels and ports, whatever
+data types the route lets through.
+
+**Scale:** root and scale are global (Patchling's yellow Scale row). Each route with the switch on maps each note it lets through, after Launchpad and Note to CC,
+with its own Layout:
+
+- **Next Note Up:** a note outside the scale moves up to the next scale note.
+- **White Keys:** each white key plays the next scale degree, keeping the keyboard's octaves. A black
+  key plays the degree of the white key below it. Same as ARPnMIDI.
+- **Drum Pad 5ths, 4ths, 3rds:** a 4-wide pad grid from note 36, pad 0 playing the root at 36 + root.
+  scaleIndex = column + row × rowOffset, rowOffset 4, 3, 2. Right is the next scale note, up a row
+  is 4, 3, or 2 scale notes more.
+
+All Layouts count in scale positions, so they work the same for 5, 6, and 7-note scales. A note
+mapped outside 0-127 is dropped.
+
+**Auto Chord:** each route with the switch on plays its own chord for each note. On a route that also
+has Scale, the positions are scale positions counted from the played note's own position, so the
+chord stays in key. Otherwise they're semitones above it. Patchling clears positions beyond the
+current scale's size, so a hidden position never sounds. Mono Retrig routes play single notes.
+Firmware 1.12.
+
+Each held note's Note Off releases exactly what its Note On played, even if the settings changed in
+between. Output notes shared by several held notes are counted, so releasing one doesn't cut another.
+
+**Arp:** a route with an arpSlot holds the notes it lets through (after Launchpad, Note to CC, Scale,
+Auto Chord) into that slot instead of playing them, and the slot's steps go out through the route
+like ordinary notes. Ported from ARPnMIDI's classic arp: Up-Down 1 plays the end notes once, Up-Down
+2 twice, and Drum plays every held note at once on each step. Each full pass through the notes moves
+up an octave, for the slot's octave count. A note lasts gate % of a step, at least 15 ms.
+
+All slots step on the clock engine's pulses (96 per quarter), so they share one grid as master or
+following. As master, a fresh start (no other arp running) restarts the grid 6 ms after the first key,
+so the whole chord pressed is caught. Joining a running arp, or following another clock, lines up
+with that grid's next step. Hold works like a sustain pedal on its CC (64 and up holds): notes stay
+after release, and a new key after every key is up starts a fresh phrase.
+
+Modes 13-17 (1.20) are note orders played round, a full pass moving up an octave: As Played (the
+order pressed, restarting with each new phrase), Converge (outside in), Diverge (inside out), Thumb
+(the lowest note between each of the others), Pinky (the highest between each of the others).
+
+Fifth (10) plays each held note then a fifth above it, through every held note (1.21): 4 scale positions up on a Scale route, a perfect fifth otherwise (1.22). The other modes 6-12 are ARPnMIDI's 16-step patterns: each step picks a held note by index (low to high), with
+octave and semitone offsets, a rest, or every held note. On a Scale route, a pattern note outside
+the key snaps up to the next scale note. While a division square's note or CC (64 and up) is held,
+the arp plays that division from its next grid step, the last one pressed winning, then returns to
+the default. The trigger doesn't pass through. Aftertouch velocity takes channel pressure or poly aftertouch from the
+route's inputs and maps it to velocity 42-127, as ARPnMIDI's drum roll does, and the pressure still
+passes through. Bypass plays the held notes unarped on its channel, and Bass plays the lowest held note an
+octave down on its channel, retriggering when the lowest note changes. Both follow hold, go out the
+route's ports with its transpose, and can share a channel with each other or the route's outputs. Panic also makes every arp let go of its notes, hold included. When a hub
+device unplugs, the notes it was holding are released as if their Note Offs arrived. An arp route keeps the
+global clock in use, so its settings apply.
+
 ## Terminology: Poly Aftertouch vs. Channel Pressure
 
 MIDI has two unrelated messages both colloquially called "aftertouch," and this protocol (and the
@@ -149,6 +269,11 @@ from being confused with each other.
 | 17-40 | name (24 bytes)          | ASCII, zero-padded (not necessarily NUL-terminated if it fills all 24 bytes). The device stores and returns this verbatim but never interprets it — it's purely a label. The web UI enforces the 24-character limit and restricts input to printable ASCII before ever building the wire bytes. |
 | 41-42 | inPorts, little endian (protocol 2) | port mask, used when byte0 bit6 is set. Inputs are bits 0-6 |
 | 43-44 | outPorts, little endian (protocol 2) | port mask, used when byte0 bit6 is set |
+| 45-46 | features, little endian (protocol 4) | feature switches: bit0 Note to CC, bit1 Launchpad, bit2 Scale, bit3 Auto Chord |
+| 47    | arpSlot (protocol 4) | 0 none, 1-4: this route feeds that arp slot. Firmware 1.13 |
+| 48    | scaleLayout (protocol 4) | Layout of a Scale route: 0 Next Note Up, 1 White Keys, 2 Drum Pad 5ths, 3 Drum Pad 4ths, 4 Drum Pad 3rds. Firmware 1.14 |
+| 49-50 | chordMask, little endian (protocol 4) | Auto Chord positions of this route: bit k = scale position k+1 on a Scale route, else k semitones. Firmware 1.15 |
+| 51-52 | spare (protocol 4) | zero. Room for later route features without another wire format change |
 
 **Port masks** (protocol 2): bit0 TRS/DIN, bit1 USB Device, bits 2-5 USB Host 1-4 (sidecar hub
 ports), bit6 TRS 2 (sidecar DIN IN and DIN OUT 1), bits 7-10 TRS 3-6 (sidecar DIN OUT 2-5, outputs

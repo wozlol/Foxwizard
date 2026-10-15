@@ -54,6 +54,7 @@
 #include <EEPROM.h>
 #include <Updater.h>
 #include "foxwizard_link.h"
+#include "src/clock_engine.h"
 
 // ============================================================================================
 // Constants
@@ -89,9 +90,9 @@ constexpr uint32_t BRIGHTNESS_PREVIEW_HOLD_MS = 400;
 
 constexpr uint8_t SYSEX_MFR_ID = 0x7D;   // reserved for non-commercial/educational use
 constexpr uint8_t SYSEX_DEVICE_ID = 0x4D; // 'M'
-constexpr uint8_t PROTOCOL_VERSION = 2; // 2: 45-byte routes with port masks, GET_STATUS
+constexpr uint8_t PROTOCOL_VERSION = 4; // 2: 45-byte routes with port masks, GET_STATUS. 3: clock settings, LEARN. 4: 53-byte routes with feature fields, feature blocks
 constexpr uint8_t FW_VERSION_MAJOR = 1;
-constexpr uint8_t FW_VERSION_MINOR = 4;
+constexpr uint8_t FW_VERSION_MINOR = 22;
 constexpr uint8_t FW_CHUNK_BYTES = 128;          // firmware bytes per FW_DATA message, 147 once packed
 constexpr uint32_t FW_REBOOT_DELAY_MS = 300;     // lets the FW_END ACK reach the host before rebooting
 const char DEVICE_NAME[] = "FoxWizard Mini MIDI Multitool"; // long name sent in the SysEx IDENTITY_REPLY
@@ -99,7 +100,7 @@ const char USB_DESCRIPTOR_NAME[] = "FoxWizard"; // short name shown by the OS/DA
 
 constexpr uint16_t MAX_ROUTES = 64; // leaves each saved route room to grow to 63 bytes, see the EEPROM layout below
 constexpr uint8_t ROUTE_NAME_MAX_LEN = 24; // ASCII characters, enforced web-side too
-constexpr uint8_t ROUTE_RAW_BYTES = 17 + ROUTE_NAME_MAX_LEN + 4; // protocol 1 routes were 41 bytes, without the port masks
+constexpr uint8_t ROUTE_RAW_BYTES = 17 + ROUTE_NAME_MAX_LEN + 4 + 8; // protocol 1: 41 bytes, protocol 2-3: 45, protocol 4: 53
 constexpr uint8_t MAX_PENDING = 64;
 
 // ============================================================================================
@@ -111,6 +112,11 @@ enum SysexCmd : uint8_t {
   CMD_GET_GLOBAL = 0x10,
   CMD_GET_STATUS = 0x13,
   CMD_STATUS_DATA = 0x14,
+  CMD_LEARN = 0x15,
+  CMD_LEARN_DATA = 0x16,
+  CMD_GET_FEATURE = 0x17,
+  CMD_FEATURE_DATA = 0x18,
+  CMD_SET_FEATURE = 0x19,
   CMD_GLOBAL_DATA = 0x11,
   CMD_SET_GLOBAL = 0x12,
   CMD_GET_ROUTE_COUNT = 0x20,
@@ -162,7 +168,8 @@ enum : uint8_t {
   BTN_OCTAVE_UP = 6,
   BTN_OCTAVE_DOWN = 7,
   BTN_NOTE_MOMENTARY = 8,
-  BTN_NOTE_TOGGLE = 9
+  BTN_NOTE_TOGGLE = 9,
+  BTN_TAP_TEMPO = 10
 };
 enum MsgKind : uint8_t {
   MK_NOTE = 0,
@@ -199,6 +206,12 @@ struct RouteData {
   char name[ROUTE_NAME_MAX_LEN]; // ASCII, zero-padded, not necessarily NUL-terminated if it fills the buffer
   uint16_t inPorts;   // PORT_* inputs, used when flags bit6 is set
   uint16_t outPorts;  // PORT_* outputs, used when flags bit6 is set
+  // Protocol 4. Zero means off in every field.
+  uint16_t features;  // FEATURE_* switches, see the feature blocks
+  uint8_t arpSlot;    // 0 none, 1-4 arp slot
+  uint8_t scaleLayout; // LAYOUT_* for a Scale route. Key and scale are global, the Layout is per route
+  uint16_t chordMask; // Auto Chord positions: bit k = scale position k+1 on a Scale route, else k semitones
+  uint8_t spare[2];   // room for later route features without changing the wire format again
 };
 
 struct GlobalSettings {
@@ -208,11 +221,22 @@ struct GlobalSettings {
   uint8_t buttonParamB;
   uint8_t buttonToggleMomentary;
   uint8_t ledBrightnessStep;
+  // Global clock (protocol 3). Zero means the default in every field, see effectiveBpm() and friends,
+  // so saves from before these fields existed load as defaults.
+  uint8_t clockSource;  // 0 = the FoxWizard is master, 1-7 = follow port bit 0-6 (TRS/DIN ... TRS 2)
+  uint16_t bpm;         // 20-300, 0 = 120
+  uint8_t beatsPerBar;  // time signature top, 0 = 4
+  uint8_t beatUnit;     // time signature bottom (2, 4, 8, 16), 0 = 4
+  uint8_t clockOut;     // 1 = send MIDI clock to every port while master
+  uint8_t tapType;      // tap tempo trigger: 0 none, 1 note, 2 CC
+  uint8_t tapChannel;   // 0-15, 16 = any channel
+  uint8_t tapNumber;    // note or CC number
 };
 #pragma pack(pop)
 
 static_assert(sizeof(RouteData) == ROUTE_RAW_BYTES, "RouteData must stay wire-compatible");
-static_assert(sizeof(GlobalSettings) == 6, "GlobalSettings must stay wire-compatible");
+static_assert(sizeof(GlobalSettings) == 15, "GlobalSettings layout is saved to flash, append only");
+constexpr uint8_t GLOBAL_WIRE_BYTES = 15; // GLOBAL_DATA/SET_GLOBAL payload, bpm sent as two 7-bit bytes
 
 enum LedPhase { LED_OFF, LED_RISING, LED_ON, LED_FALLING };
 
@@ -312,7 +336,187 @@ uint32_t hostLastStatusMs = 0;
 
 DinParser dinParser;
 
-uint8_t replyBuf[64];
+uint8_t replyBuf[160];
+
+// ============================================================================================
+// Feature blocks: settings shared by the route(s) that switch a feature on, saved after the routes.
+// Each block has a type and a fixed size. A route switches a feature on with a FEATURE_* bit.
+// ============================================================================================
+constexpr uint16_t FEATURE_NOTE_TO_CC = 1u << 0; // only the first route with it on uses it
+constexpr uint16_t FEATURE_LAUNCHPAD = 1u << 1;  // same
+constexpr uint16_t FEATURE_SCALE = 1u << 2;      // same
+constexpr uint16_t FEATURE_AUTO_CHORD = 1u << 3; // same
+
+constexpr uint8_t FEATURE_TYPE_NOTE_TO_CC = 1;
+constexpr uint8_t FEATURE_TYPE_LAUNCHPAD = 2;
+constexpr uint8_t FEATURE_TYPE_SCALE = 3;
+constexpr uint8_t FEATURE_TYPE_ARP_1 = 4; // arp slots 1-4 are types 4-7
+constexpr uint8_t ARP_SLOTS = 4;
+constexpr uint8_t FEATURE_TYPE_LAST = FEATURE_TYPE_ARP_1 + ARP_SLOTS - 1;
+
+// Note to CC. note is stored +1 so zero means an unused entry.
+constexpr uint8_t NOTE_CC_ENTRIES = 16;
+enum : uint8_t { NOTE_CC_MOMENTARY = 0, NOTE_CC_VELOCITY = 1, NOTE_CC_TOGGLE = 2 };
+#pragma pack(push, 1)
+struct NoteCcEntry {
+  uint8_t notePlusOne; // 0 unused, else input note + 1
+  uint8_t cc;
+  uint8_t mode;        // NOTE_CC_*
+};
+#pragma pack(pop)
+NoteCcEntry noteCcEntries[NOTE_CC_ENTRIES];
+bool noteCcToggleState[NOTE_CC_ENTRIES];
+
+// Launchpad: the 16 round buttons, top row left to right (CC 104-111) then the side column top to
+// bottom (X-Y notes 8, 24 ... 120). Each sends a note or CC on the route's outputs.
+constexpr uint8_t LAUNCHPAD_BUTTONS = 16;
+enum : uint8_t { LP_BUTTON_OFF = 0, LP_BUTTON_NOTE = 1, LP_BUTTON_CC = 2 };
+#pragma pack(push, 1)
+struct LaunchpadButton {
+  uint8_t type;   // LP_BUTTON_*
+  uint8_t number; // note or CC number
+};
+#pragma pack(pop)
+LaunchpadButton launchpadButtons[LAUNCHPAD_BUTTONS];
+constexpr uint8_t LP_NOT_GRID = 0xFF; // not a grid pad: a side button, or outside the grid
+
+// Scale: the global key (the yellow Scale row) and the Scale route's Layout. Zero is C Major, Next
+// Note Up, no chord.
+enum : uint8_t { LAYOUT_NEXT_UP = 0, LAYOUT_WHITE_KEYS = 1, LAYOUT_PAD_5THS = 2, LAYOUT_PAD_4THS = 3, LAYOUT_PAD_3RDS = 4 };
+#pragma pack(push, 1)
+struct ScaleSettings {
+  uint8_t root;      // 0-11, C to B
+  uint8_t scaleType; // index into SCALES
+  uint8_t layout;    // LAYOUT_*
+  uint16_t chordMask; // Auto Chord positions: bit k = scale position k+1 (Scale on) or k semitones (off)
+  uint8_t spare[3];
+};
+#pragma pack(pop)
+struct ScaleDef { uint8_t size; uint8_t steps[7]; }; // semitones above the root
+ScaleSettings scaleSettings;
+
+// Arp: up to 4 slots, each used by the one route whose arpSlot points at it. Zero means the default
+// in every field: Up, 1/16, 1 octave, 50% gate, played velocity, no hold.
+// Modes 0-5 are ARPnMIDI's classic modes (its TRIGGER is Drum Roll/Chord Pulse here), 6-12 its
+// 16-step patterns.
+enum : uint8_t {
+  ARP_UP = 0, ARP_DOWN, ARP_UPDOWN1, ARP_UPDOWN2, ARP_DRUM, ARP_RANDOM,
+  ARP_PAT_UP_4STEP, ARP_PAT_RHYTHM, ARP_PAT_OSTINATO, ARP_PAT_OCTAVE_WALK, ARP_PAT_FIFTH, ARP_PAT_BASS_CHORD, ARP_PAT_CHORD_RUN,
+  // 1.20. As Played: the order the notes were pressed. Converge: outside in. Diverge: inside out.
+  // Thumb: the lowest note between each of the others. Pinky: the highest between each of the others.
+  ARP_AS_PLAYED, ARP_CONVERGE, ARP_DIVERGE, ARP_THUMB, ARP_PINKY,
+  ARP_MODE_COUNT
+};
+constexpr uint8_t ARP_SQUARES = 7; // division table squares besides the default one
+#pragma pack(push, 1)
+struct ArpSquare {
+  uint8_t divisionPlus1; // fw::MusicalDivision + 1, 0 = square not used
+  uint8_t triggerType;   // 0 none, 1 note, 2 CC (64 and up). Held, it plays this division
+  uint8_t triggerChannel; // 0-15, 16 = any
+  uint8_t triggerNumber;
+};
+struct ArpSettings {
+  uint8_t mode;          // ARP_*
+  uint8_t divisionPlus1; // fw::MusicalDivision + 1, 0 = 1/16
+  uint8_t octaves;       // 1-4, 0 = 1
+  uint8_t gatePercent;   // 5-100, 0 = 50
+  uint8_t velocity;      // 1-127 fixed, 0 = each note's own velocity
+  uint8_t holdType;      // 0 none, 2 CC (64 and up holds, like a sustain pedal)
+  uint8_t holdChannel;   // 0-15, 16 = any
+  uint8_t holdNumber;    // CC number
+  uint8_t aftertouchVelocity; // 1 = velocity follows channel pressure, ARPnMIDI's drum roll option
+  uint8_t bypassChannel; // 0 off, 1-16: the held notes also play unarped on this channel
+  uint8_t bassChannel;   // 0 off, 1-16: the lowest held note plays an octave down here, retriggering
+  uint8_t spare[5];
+  ArpSquare squares[ARP_SQUARES];
+  uint8_t spare2[4];
+};
+#pragma pack(pop)
+ArpSettings arpSettings[ARP_SLOTS];
+
+constexpr uint8_t ARP_MAX_OUT = 48;        // drum mode: notes x octaves at once
+
+struct ArpRuntime {
+  bool physical[128];    // keys held right now
+  bool latched[128];     // notes kept by hold
+  uint8_t velocity[128];
+  uint16_t pressOrder[128]; // when each note was pressed, for As Played
+  uint16_t pressCount;
+  uint8_t physicalCount;
+  bool hold;
+  bool running;
+  uint16_t routeIndex;
+  uint64_t pendingStartUs; // 0 = no fresh start waiting
+  uint32_t nextStepPulse;
+  uint32_t sequenceStep;
+  uint8_t patternStep;   // 0-15 through a pattern
+  uint8_t active[ARP_MAX_OUT];
+  uint8_t activeCount;
+  uint64_t gateOffUs;    // 0 = nothing to release
+  uint8_t moment[ARP_SQUARES]; // division squares held, last pressed on top
+  uint8_t momentCount;
+  uint8_t pressure;      // last channel pressure, for aftertouch velocity
+  uint8_t sideOn[128];   // bypass channel + 1 each note is sounding on, 0 none
+  uint8_t bassNote;      // bass note + 1 sounding, 0 none
+  uint8_t bassCh;        // the channel it's on
+};
+ArpRuntime arps[ARP_SLOTS];
+// Scale and Auto Chord: the notes each held input note plays, so its Note Off releases exactly
+// those, and how many held notes share each output note, so releasing one doesn't cut another.
+constexpr uint8_t CHORD_MAX = 12;
+// One shared pool of held keys for every Scale and Auto Chord route, sized by keys held at once, not
+// by routes. Whether an output note still sounds is counted from the pool.
+constexpr uint8_t HELD_POOL = 128;
+struct HeldKey {
+  bool used;
+  uint8_t route;
+  uint8_t in;
+  uint8_t count;
+  uint8_t out[CHORD_MAX];
+};
+HeldKey heldPool[HELD_POOL];
+
+fw::ClockEngine clockEngine; // ported from ARPnMIDI, see src/clock_engine.h
+
+// TRS/DIN output queue. Bytes wait here instead of the loop waiting on the 31,250-baud UART, so
+// timing work never stalls. Realtime bytes have their own lane and go first, MIDI allows them
+// between any two bytes. Inputs pause while the queue is nearly full, so nothing is dropped.
+constexpr uint16_t TRS_QUEUE_BYTES = 2048;
+constexpr uint16_t TRS_INPUT_HEADROOM = 512;
+constexpr uint8_t TRS_REALTIME_BYTES = 64;
+uint8_t trsQueue[TRS_QUEUE_BYTES];
+uint16_t trsHead = 0;
+uint16_t trsTail = 0;
+uint8_t trsRealtime[TRS_REALTIME_BYTES];
+uint8_t trsRtHead = 0;
+uint8_t trsRtTail = 0;
+uint32_t trsDropped = 0;
+
+// USB Device output queue. TinyUSB's own USB MIDI buffer holds only 16 packets and drops what doesn't
+// fit, which cut long SysEx replies (a 53-byte route is 23 packets) and bursts like a note cloned to
+// 16 channels. Packets wait here instead. Realtime has its own lane and goes first.
+constexpr uint16_t USB_QUEUE_PACKETS = 512;
+constexpr uint16_t USB_INPUT_HEADROOM = 128;
+constexpr uint8_t USB_REALTIME_PACKETS = 32;
+uint8_t usbQueue[USB_QUEUE_PACKETS][4];
+uint16_t usbHead = 0;
+uint16_t usbTail = 0;
+uint8_t usbRealtime[USB_REALTIME_PACKETS][4];
+uint8_t usbRtHead = 0;
+uint8_t usbRtTail = 0;
+uint32_t usbDropped = 0;
+
+// Learn (CMD_LEARN): the next Note On or CC from any input is sent back to whoever asked.
+constexpr uint32_t LEARN_TIMEOUT_MS = 10000;
+bool learnActive = false;
+uint8_t learnReplyPort = DEV_USB;
+uint32_t learnUntilMs = 0;
+
+// Tap tempo: the average of the last few taps. A gap longer than TAP_RESET_MS starts over.
+constexpr uint32_t TAP_RESET_MS = 2000;
+constexpr uint8_t TAP_HISTORY = 5;
+uint32_t tapTimesMs[TAP_HISTORY];
+uint8_t tapCount = 0;
 
 // Firmware update over SysEx, see ../SYSEX_PROTOCOL.md. fwNextChunk is the FW_DATA index expected
 // next. fwLastChecksum lets a repeated chunk (its ACK was lost and the host retried) be confirmed
@@ -443,6 +647,37 @@ uint16_t routeOutputPorts(const RouteData &r) {
 // it, this cached flag gates that work entirely. It's only recomputed when the route list actually
 // changes (add/set/delete/clear/load-from-flash) — never per MIDI event, since a per-event scan of
 // every route would cost more than the bookkeeping it's meant to save.
+HeldKey *findHeldKey(uint8_t route, uint8_t in) {
+  for (uint8_t k = 0; k < HELD_POOL; ++k) {
+    if (heldPool[k].used && heldPool[k].route == route && heldPool[k].in == in) return &heldPool[k];
+  }
+  return nullptr;
+}
+
+// Whether another held key on this route still plays this output note.
+// Remembers what a key played. With the pool full the key still plays, its Note Off then finds
+// nothing, and the stuck-note guard is the backstop. 128 keys held at once makes that unlikely.
+void holdKey(uint8_t route, uint8_t in, const uint8_t *outs, uint8_t count) {
+  for (uint8_t k = 0; k < HELD_POOL; ++k) {
+    if (heldPool[k].used) continue;
+    heldPool[k].used = true;
+    heldPool[k].route = route;
+    heldPool[k].in = in;
+    heldPool[k].count = count;
+    memcpy(heldPool[k].out, outs, count);
+    return;
+  }
+}
+
+bool heldOutSounding(uint8_t route, uint8_t note) {
+  for (uint8_t k = 0; k < HELD_POOL; ++k) {
+    const HeldKey &h = heldPool[k];
+    if (!h.used || h.route != route) continue;
+    for (uint8_t j = 0; j < h.count; ++j) if (h.out[j] == note) return true;
+  }
+  return false;
+}
+
 bool anyAftertouchMapRoutes = false;
 void recomputeAnyAftertouchMapRoutes() {
   anyAftertouchMapRoutes = false;
@@ -460,6 +695,8 @@ void recomputeAnyAftertouchMapRoutes() {
 // is both correct and cheap relative to how rarely it actually runs.
 void resetAllRouteNoteTracks() {
   for (uint16_t i = 0; i < MAX_ROUTES; ++i) routeNoteTracks[i] = RouteNoteTrack();
+  memset(heldPool, 0, sizeof(heldPool));
+  arpForgetAll(); // the arps point at routes by index, which a route change can move
 }
 
 RouteNoteSlot *routeNoteFindSlot(RouteNoteTrack &t, uint8_t note) {
@@ -510,6 +747,15 @@ uint8_t randomChannelInMask(uint16_t outMask) {
 // a real key release or Mono Retrig silencing a superseded-but-still-held note (which needs its
 // slot's velocity/order to survive for a possible later recall) — freeing is the caller's job, once
 // the caller knows which case it actually is. See call sites for where that happens.
+// Launchpad echo: a Launchpad route sends each message from the Launchpad straight back to its port,
+// unchanged, so the pressed pad or button lights. Then that port is left out of everything the route
+// sends for that message, in every mode, so the remapped note never reaches it too.
+uint16_t launchpadExcludePorts = 0;
+
+uint16_t routeOutputsNow(const RouteData &r) {
+  return routeOutputPorts(r) & ~launchpadExcludePorts;
+}
+
 void sendRouteNote(uint16_t routeIndex, const RouteData &r, bool on, uint8_t note, uint8_t velocity) {
   if (routeOutputPorts(r) == 0) return;
   int16_t transpose = (int16_t)r.transpose - 64;
@@ -542,7 +788,7 @@ void sendRouteNote(uint16_t routeIndex, const RouteData &r, bool on, uint8_t not
       msg.data1 = (uint8_t)outNote;
       msg.data2 = data2;
       msg.len = 3;
-      upsertPendingMask(routeOutputPorts(r), msg);
+      upsertPendingMask(routeOutputsNow(r), msg);
     }
     return;
   }
@@ -574,7 +820,7 @@ void sendRouteNote(uint16_t routeIndex, const RouteData &r, bool on, uint8_t not
   msg.data1 = (uint8_t)outNote;
   msg.data2 = data2;
   msg.len = 3;
-  upsertPendingMask(routeOutputPorts(r), msg);
+  upsertPendingMask(routeOutputsNow(r), msg);
 }
 
 // Mono Retrig (flags2 bit0): converts this route's note stream to mono with last-note priority.
@@ -637,7 +883,16 @@ void setFactoryDefaults() {
   globalSettings.buttonParamB = 0;
   globalSettings.buttonToggleMomentary = 0;
   globalSettings.ledBrightnessStep = 10; // 100% (scale is 0..10, step 0 = fully off)
+  globalSettings.clockSource = 0;
+  globalSettings.bpm = 120;
+  globalSettings.beatsPerBar = 4;
+  globalSettings.beatUnit = 4;
+  globalSettings.clockOut = 0;
+  globalSettings.tapType = 0;
+  globalSettings.tapChannel = 16;
+  globalSettings.tapNumber = 0;
   routeCount = 0;
+  resetFeatureBlocks();
   anyAftertouchMapRoutes = false; // no routes left, so trivially true without needing a scan
   resetAllRouteNoteTracks();
 }
@@ -650,8 +905,10 @@ void setFactoryDefaults() {
 constexpr uint32_t EEPROM_MAGIC_V1 = 0x464F5831; // "FOX1"
 constexpr uint32_t EEPROM_MAGIC_V2 = 0x464F5832; // "FOX2"
 constexpr size_t EEPROM_SIZE = 4096;             // the core's EEPROM maximum
-static_assert(4 + 2 + sizeof(GlobalSettings) + 2 + MAX_ROUTES * sizeof(RouteData) <= EEPROM_SIZE,
-              "saved settings must fit the EEPROM area, lower MAX_ROUTES if routes grow");
+// Feature blocks after the routes: marker (2), each block's type and size (2) and data, end byte (1).
+constexpr size_t FEATURE_BLOCKS_BYTES = 2 + (2 + sizeof(NoteCcEntry) * NOTE_CC_ENTRIES) + (2 + sizeof(LaunchpadButton) * LAUNCHPAD_BUTTONS) + (2 + sizeof(ScaleSettings)) + ARP_SLOTS * (2 + sizeof(ArpSettings)) + 1;
+static_assert(4 + 2 + sizeof(GlobalSettings) + 2 + MAX_ROUTES * sizeof(RouteData) + FEATURE_BLOCKS_BYTES <= EEPROM_SIZE,
+              "saved settings must fit the EEPROM area, lower MAX_ROUTES if routes or feature blocks grow");
 
 void eepromReadBytes(size_t addr, void *dst, size_t len) {
   uint8_t *d = (uint8_t *)dst;
@@ -697,8 +954,76 @@ void loadFromFlash() {
     eepromReadBytes(addr, &routes[i], min((size_t)routeBytes, sizeof(RouteData)));
     addr += routeBytes;
   }
+  loadFeatureBlocks(addr);
+  // Saves from 1.12-1.14 kept one chord in the Scale block, it moves to the Auto Chord route.
+  if (scaleSettings.chordMask) {
+    for (uint16_t i = 0; i < routeCount; ++i) {
+      if ((routes[i].features & FEATURE_AUTO_CHORD) && !routes[i].chordMask) routes[i].chordMask = scaleSettings.chordMask;
+    }
+    scaleSettings.chordMask = 0;
+  }
+  // Saves from 1.11-1.13 kept one Layout in the Scale block, it moves to the Scale route.
+  if (scaleSettings.layout) {
+    for (uint16_t i = 0; i < routeCount; ++i) {
+      if ((routes[i].features & FEATURE_SCALE) && !routes[i].scaleLayout) routes[i].scaleLayout = scaleSettings.layout;
+    }
+    scaleSettings.layout = 0;
+  }
   recomputeAnyAftertouchMapRoutes();
   resetAllRouteNoteTracks();
+}
+
+// Feature blocks follow the routes: "FX" then (type, size, data) records, ending with type 0. A save
+// without the marker (older firmware) leaves every feature at its default. A block saved by a
+// newer firmware with more bytes is cut to what this one knows, a shorter one is zero-filled.
+constexpr uint8_t FEATURE_MARKER[2] = {'F', 'X'};
+
+uint8_t *featureBlockData(uint8_t type, uint8_t &size) {
+  if (type >= FEATURE_TYPE_ARP_1 && type < FEATURE_TYPE_ARP_1 + ARP_SLOTS) { size = sizeof(ArpSettings); return (uint8_t *)&arpSettings[type - FEATURE_TYPE_ARP_1]; }
+  if (type == FEATURE_TYPE_SCALE) { size = sizeof(scaleSettings); return (uint8_t *)&scaleSettings; }
+  if (type == FEATURE_TYPE_NOTE_TO_CC) { size = sizeof(noteCcEntries); return (uint8_t *)noteCcEntries; }
+  if (type == FEATURE_TYPE_LAUNCHPAD) { size = sizeof(launchpadButtons); return (uint8_t *)launchpadButtons; }
+  size = 0;
+  return nullptr;
+}
+
+void resetFeatureBlocks() {
+  memset(noteCcEntries, 0, sizeof(noteCcEntries));
+  memset(noteCcToggleState, 0, sizeof(noteCcToggleState));
+  memset(launchpadButtons, 0, sizeof(launchpadButtons));
+  memset(&scaleSettings, 0, sizeof(scaleSettings));
+  memset(arpSettings, 0, sizeof(arpSettings));
+}
+
+void loadFeatureBlocks(size_t addr) {
+  resetFeatureBlocks();
+  if (addr + 3 > EEPROM_SIZE || EEPROM.read(addr) != FEATURE_MARKER[0] || EEPROM.read(addr + 1) != FEATURE_MARKER[1]) return;
+  addr += 2;
+  while (addr + 2 <= EEPROM_SIZE) {
+    const uint8_t type = EEPROM.read(addr);
+    const uint8_t stored = EEPROM.read(addr + 1);
+    if (type == 0 || addr + 2 + stored > EEPROM_SIZE) return;
+    uint8_t size;
+    uint8_t *data = featureBlockData(type, size);
+    if (data) eepromReadBytes(addr + 2, data, min(size, stored));
+    addr += 2 + stored;
+  }
+}
+
+size_t saveFeatureBlocks(size_t addr) {
+  EEPROM.write(addr++, FEATURE_MARKER[0]);
+  EEPROM.write(addr++, FEATURE_MARKER[1]);
+  for (uint8_t type = 1; type <= FEATURE_TYPE_LAST; ++type) {
+    uint8_t size;
+    const uint8_t *data = featureBlockData(type, size);
+    if (!data) continue;
+    EEPROM.write(addr++, type);
+    EEPROM.write(addr++, size);
+    eepromWriteBytes(addr, data, size);
+    addr += size;
+  }
+  EEPROM.write(addr++, 0);
+  return addr;
 }
 
 void saveToFlash() {
@@ -716,6 +1041,7 @@ void saveToFlash() {
     eepromWriteBytes(addr, &routes[i], sizeof(RouteData));
     addr += sizeof(RouteData);
   }
+  saveFeatureBlocks(addr);
   EEPROM.commit();
 }
 
@@ -1001,6 +1327,190 @@ void serviceLinkFlow() {
 }
 
 // ============================================================================================
+// TRS/DIN output queue
+// ============================================================================================
+uint16_t trsFree() {
+  return (uint16_t)((trsTail + TRS_QUEUE_BYTES - trsHead - 1) % TRS_QUEUE_BYTES);
+}
+
+void trsSend(const uint8_t *bytes, uint8_t len) {
+  if (len == 1 && bytes[0] >= 0xF8) {
+    const uint8_t next = (trsRtHead + 1) % TRS_REALTIME_BYTES;
+    if (next == trsRtTail) { ++trsDropped; return; }
+    trsRealtime[trsRtHead] = bytes[0];
+    trsRtHead = next;
+    return;
+  }
+  if (trsFree() < len) { ++trsDropped; return; } // only if inputs ignored the headroom, whole message dropped
+  for (uint8_t i = 0; i < len; ++i) {
+    trsQueue[trsHead] = bytes[i];
+    trsHead = (trsHead + 1) % TRS_QUEUE_BYTES;
+  }
+}
+
+void pumpTrsOut() {
+  while (Serial1.availableForWrite() > 0) {
+    if (trsRtTail != trsRtHead) {
+      Serial1.write(trsRealtime[trsRtTail]);
+      trsRtTail = (trsRtTail + 1) % TRS_REALTIME_BYTES;
+    } else if (trsTail != trsHead) {
+      Serial1.write(trsQueue[trsTail]);
+      trsTail = (trsTail + 1) % TRS_QUEUE_BYTES;
+    } else {
+      break;
+    }
+  }
+}
+
+uint16_t usbQueueFree() {
+  return (uint16_t)((usbTail + USB_QUEUE_PACKETS - usbHead - 1) % USB_QUEUE_PACKETS);
+}
+
+void pumpUsbOut() {
+  while (usbRtTail != usbRtHead && usb_midi.writePacket(usbRealtime[usbRtTail])) usbRtTail = (usbRtTail + 1) % USB_REALTIME_PACKETS;
+  while (usbTail != usbHead && usb_midi.writePacket(usbQueue[usbTail])) usbTail = (usbTail + 1) % USB_QUEUE_PACKETS;
+}
+
+void usbSend(const uint8_t packet[4]) {
+  const bool realtime = ((packet[0] & 0x0F) == 0x05 || (packet[0] & 0x0F) == 0x0F) && packet[1] >= 0xF8;
+  if (realtime) {
+    const uint8_t next = (usbRtHead + 1) % USB_REALTIME_PACKETS;
+    if (next == usbRtTail) { ++usbDropped; return; }
+    memcpy(usbRealtime[usbRtHead], packet, 4);
+    usbRtHead = next;
+  } else {
+    const uint16_t next = (usbHead + 1) % USB_QUEUE_PACKETS;
+    if (next == usbTail) { ++usbDropped; return; } // only if inputs ignored the headroom
+    memcpy(usbQueue[usbHead], packet, 4);
+    usbHead = next;
+  }
+  pumpUsbOut(); // straight out when TinyUSB has room, so nothing waits for the next loop
+}
+
+// Inputs are read only while both output queues have room, so a slow output holds the inputs back
+// instead of losing anything.
+bool outputsHaveRoom() {
+  return trsFree() >= TRS_INPUT_HEADROOM && usbQueueFree() >= USB_INPUT_HEADROOM;
+}
+
+void drainTrsOut() {
+  while (trsTail != trsHead || trsRtTail != trsRtHead) pumpTrsOut();
+}
+
+// ============================================================================================
+// Global clock, tap tempo, learn
+// The BPM row's settings only apply while something uses the clock. Until then clock routes
+// exactly as before.
+// ============================================================================================
+bool anyArpRoute() {
+  for (uint16_t i = 0; i < routeCount; ++i) if (routes[i].arpSlot) return true;
+  return false;
+}
+
+bool globalClockActive() {
+  return globalSettings.buttonAction == BTN_TAP_TEMPO || anyArpRoute(); // later: looper, echo, stutter
+}
+
+uint16_t effectiveBpm() {
+  const uint16_t bpm = globalSettings.bpm;
+  if (bpm == 0) return 120;
+  return bpm < 20 ? 20 : (bpm > 300 ? 300 : bpm);
+}
+
+uint16_t clockFollowPort() {
+  const uint8_t src = globalSettings.clockSource;
+  return (src >= 1 && src <= 7) ? (uint16_t)(1u << (src - 1)) : 0;
+}
+
+fw::ClockConfig clockConfig() {
+  fw::ClockConfig c;
+  c.followExternal = globalClockActive() && clockFollowPort() != 0;
+  // As master the engine always counts pulses while the clock is in use, the arps step on them.
+  // MIDI clock only goes out with Send Clock on, see serviceClock().
+  c.sendClock = globalClockActive();
+  c.beatsPerBar = globalSettings.beatsPerBar ? globalSettings.beatsPerBar : 4;
+  c.beatUnit = globalSettings.beatUnit ? globalSettings.beatUnit : 4;
+  c.manualBpm = effectiveBpm();
+  return c;
+}
+
+void applyClockConfig() {
+  clockEngine.setConfig(clockConfig(), time_us_64());
+}
+
+// For GET_STATUS: 0 clock not in use, 1 master, 2 following with clock arriving, 3 following, no clock.
+uint8_t clockStatus() {
+  if (!globalClockActive()) return 0;
+  if (!clockFollowPort()) return 1;
+  return clockEngine.externalClockPresent(time_us_64()) ? 2 : 3;
+}
+
+// Clock, Start, Continue, Stop. While the clock is in use, only the followed port's clock gets
+// through (and drives the engine). Every other port's clock is discarded. Transport still routes.
+bool acceptClockMessage(uint8_t inputDevice, uint8_t status) {
+  if (status != 0xF8 && status != 0xFA && status != 0xFB && status != 0xFC) return true;
+  if (!globalClockActive()) return true;
+  const uint16_t follow = clockFollowPort();
+  const bool fromSource = follow && sourcePort(inputDevice) == follow;
+  if (fromSource) clockEngine.receiveRealtime(status, time_us_64());
+  return status != 0xF8 || fromSource;
+}
+
+// Master with Send Clock on: the FoxWizard's own MIDI clock goes to every port.
+void serviceClock() {
+  const uint64_t now = time_us_64();
+  for (uint8_t guard = 0; guard < 4 && clockEngine.takeInternalClock(now); ++guard) {
+    if (globalSettings.clockOut) sendToOutputs(availablePorts(), 0xF8, 0, 0, 0, 1);
+  }
+}
+
+void tapTempo() {
+  if (clockFollowPort()) return; // following another clock, its tempo wins
+  const uint32_t now = millis();
+  if (tapCount && now - tapTimesMs[tapCount - 1] > TAP_RESET_MS) tapCount = 0;
+  if (tapCount == TAP_HISTORY) {
+    for (uint8_t i = 1; i < TAP_HISTORY; ++i) tapTimesMs[i - 1] = tapTimesMs[i];
+    --tapCount;
+  }
+  tapTimesMs[tapCount++] = now;
+  noteActivity(ledOut);
+  if (tapCount < 2) return;
+  const uint32_t avgMs = (tapTimesMs[tapCount - 1] - tapTimesMs[0]) / (tapCount - 1);
+  if (avgMs == 0) return;
+  uint32_t bpm = (60000 + avgMs / 2) / avgMs;
+  globalSettings.bpm = (uint16_t)(bpm < 20 ? 20 : (bpm > 300 ? 300 : bpm)); // kept until Save to Device
+  applyClockConfig();
+}
+
+// Learn and the tap tempo trigger see notes and CCs before routing, and consume them.
+bool captureLearnOrTap(uint8_t inputDevice, MsgKind kind, bool isNoteOn, uint8_t channel, uint8_t data1, uint8_t data2) {
+  if (kind != MK_NOTE && kind != MK_CC) return false;
+  if (learnActive && (isNoteOn || kind == MK_CC)) {
+    learnActive = false;
+    beginReply(CMD_LEARN_DATA);
+    appendReply(kind == MK_NOTE ? 1 : 2);
+    appendReply(channel);
+    appendReply(data1 & 0x7F);
+    appendReply((uint8_t)__builtin_ctz(sourcePort(inputDevice))); // port bit, 0 TRS/DIN ... 6 TRS 2
+    sendReply(learnReplyPort);
+    return true;
+  }
+  if (globalClockActive() && globalSettings.tapType) {
+    const bool typeMatch = (globalSettings.tapType == 1 && kind == MK_NOTE) || (globalSettings.tapType == 2 && kind == MK_CC);
+    const bool channelMatch = globalSettings.tapChannel > 15 || globalSettings.tapChannel == channel;
+    if (typeMatch && channelMatch && data1 == globalSettings.tapNumber) {
+      if ((kind == MK_NOTE && isNoteOn) || (kind == MK_CC && data2 > 0)) tapTempo();
+      return true; // the trigger doesn't pass through, its Note Off and zero CCs included
+    }
+  }
+  return false;
+}
+
+void serviceLearnTimeout() {
+  if (learnActive && (int32_t)(millis() - learnUntilMs) >= 0) learnActive = false;
+}
+
+// ============================================================================================
 // Outputs
 // ============================================================================================
 // Every port that exists right now. The sidecar's ports only while it's present.
@@ -1024,14 +1534,13 @@ uint8_t linkPortsFor(uint16_t mask, uint8_t ports[9]) {
 
 void sendToOutputs(uint16_t mask, uint8_t statusHi, uint8_t channel, uint8_t data1, uint8_t data2, uint8_t len) {
   if (mask & PORT_TRS) {
-    Serial1.write((uint8_t)(statusHi | channel));
-    if (len > 1) Serial1.write(data1);
-    if (len > 2) Serial1.write(data2);
+    const uint8_t bytes[3] = {(uint8_t)(statusHi | channel), data1, data2};
+    trsSend(bytes, len);
     noteActivity(ledOut);
   }
   uint8_t packet[4] = {usbCinFor(statusHi, len), (uint8_t)(statusHi | channel), len > 1 ? data1 : (uint8_t)0, len > 2 ? data2 : (uint8_t)0};
   if (mask & PORT_USB) {
-    usb_midi.writePacket(packet);
+    usbSend(packet);
     noteActivity(ledUsb);
   }
   uint8_t ports[9];
@@ -1244,11 +1753,643 @@ void applyModeDefault(uint8_t inputDevice, uint8_t statusHi, uint8_t channel, ui
 // pair a mid-note octave shift change sends (see retriggerHeldNotesForShiftChange) — those need to
 // go through exactly the same route matching/transpose/velocity-scale/fan-out as a real note would,
 // not a simplified copy of it.
-void dispatchNoteEvent(uint8_t inputDevice, uint8_t channel, bool isNoteOn, uint8_t note, uint8_t velocity) {
+// Note to CC: a mapped note on a route with FEATURE_NOTE_TO_CC becomes a CC on that route's output
+// channels and ports instead of a note. Returns true if it was mapped.
+bool handleNoteToCc(const RouteData &r, bool isNoteOn, uint8_t note, uint8_t velocity) {
+  if (!(r.features & FEATURE_NOTE_TO_CC)) return false;
+  for (uint8_t e = 0; e < NOTE_CC_ENTRIES; ++e) {
+    const NoteCcEntry &entry = noteCcEntries[e];
+    if (entry.notePlusOne != note + 1) continue;
+    uint8_t value;
+    if (entry.mode == NOTE_CC_TOGGLE) {
+      if (!isNoteOn) return true; // a toggle only acts on press
+      noteCcToggleState[e] = !noteCcToggleState[e];
+      value = noteCcToggleState[e] ? 127 : 0;
+    } else if (entry.mode == NOTE_CC_VELOCITY) {
+      value = isNoteOn ? velocity : 0;
+    } else {
+      value = isNoteOn ? 127 : 0;
+    }
+    const uint16_t outMask = r.outChLow | ((uint16_t)r.outChHigh << 8);
+    for (uint8_t c = 0; c < 16; ++c) {
+      if (!(outMask & (1u << c))) continue;
+      PendingMsg msg;
+      msg.used = true;
+      msg.channel = c;
+      msg.kind = MK_CC;
+      msg.statusHi = 0xB0;
+      msg.number = entry.cc;
+      msg.data1 = entry.cc;
+      msg.data2 = value;
+      msg.len = 3;
+      upsertPendingMask(routeOutputsNow(r), msg);
+    }
+    return true;
+  }
+  return false;
+}
+
+// ============================================================================================
+// Launchpad. Older Launchpads (original, S, Mini mk1/mk2) send X-Y notes in their default mode:
+// note = 16 x row + column, top-left 0, column 8 the round side buttons, the top round buttons
+// CC 104-111. A route with FEATURE_LAUNCHPAD turns the grid into the Launchpad's own drum rack
+// layout, four 4x4 blocks from note 36 (bottom-left 36-51, top-left 52-67, bottom-right 68-83,
+// top-right 84-99), without sending it a mode change. Scale Layouts later see a normal drum pad.
+// ============================================================================================
+constexpr uint8_t LP_TOP_BUTTON_CC = 104;
+
+// Grid note for an X-Y note, LP_NOT_GRID for a side button or anything outside the grid.
+uint8_t launchpadGridNote(uint8_t xy) {
+  const uint8_t row = xy >> 4, col = xy & 0x0F;
+  if (row > 7 || col > 7) return LP_NOT_GRID;
+  const uint8_t rowFromBottom = 7 - row;
+  const uint8_t block = (col >= 4 ? 2 : 0) + (rowFromBottom >= 4 ? 1 : 0);
+  return 36 + block * 16 + (rowFromBottom % 4) * 4 + (col % 4);
+}
+
+// Side button index 8-15 for an X-Y note, or 0xFF.
+uint8_t launchpadSideButton(uint8_t xy) {
+  const uint8_t row = xy >> 4, col = xy & 0x0F;
+  return (row <= 7 && col == 8) ? 8 + row : 0xFF;
+}
+
+// Port and channel only: a Launchpad button works whatever data types the route lets through.
+bool routeAcceptsSource(const RouteData &r, uint8_t inputDevice, uint8_t channel) {
+  if (!(r.flags & 0x80)) return false;
+  if (!(routeInputPorts(r) & sourcePort(inputDevice))) return false;
+  const uint16_t mask = r.inChLow | ((uint16_t)r.inChHigh << 8);
+  return mask & (1u << channel);
+}
+
+void handleLaunchpadButton(const RouteData &r, uint8_t button, bool pressed) {
+  const LaunchpadButton &b = launchpadButtons[button];
+  if (b.type == LP_BUTTON_OFF) return;
+  const uint16_t outMask = r.outChLow | ((uint16_t)r.outChHigh << 8);
+  for (uint8_t c = 0; c < 16; ++c) {
+    if (!(outMask & (1u << c))) continue;
+    PendingMsg msg;
+    msg.used = true;
+    msg.channel = c;
+    msg.number = b.number;
+    msg.data1 = b.number;
+    msg.len = 3;
+    if (b.type == LP_BUTTON_NOTE) {
+      msg.kind = MK_NOTE;
+      msg.statusHi = pressed ? 0x90 : 0x80;
+      msg.data2 = pressed ? 127 : 0;
+    } else {
+      msg.kind = MK_CC;
+      msg.statusHi = 0xB0;
+      msg.data2 = pressed ? 127 : 0;
+    }
+    upsertPendingMask(routeOutputsNow(r), msg);
+  }
+}
+
+// ============================================================================================
+// Scale. Every Layout works in scale positions: scale index si counts scale notes from root in
+// octave 0, so si = n is the root an octave up for an n-note scale.
+// ============================================================================================
+const ScaleDef SCALES[] = {
+  {7, {0, 2, 4, 5, 7, 9, 11}},  // Major
+  {7, {0, 2, 3, 5, 7, 8, 10}},  // Minor
+  {7, {0, 2, 4, 5, 7, 8, 11}},  // Harmonic Major
+  {7, {0, 2, 3, 5, 7, 8, 11}},  // Harmonic Minor
+  {7, {0, 2, 4, 5, 7, 8, 10}},  // Melodic Major
+  {7, {0, 2, 3, 5, 7, 9, 11}},  // Melodic Minor
+  {6, {0, 2, 3, 4, 7, 9}},      // Major Blues
+  {6, {0, 3, 5, 6, 7, 10}},     // Minor Blues
+  {5, {0, 2, 4, 7, 9}},         // Major Pentatonic
+  {5, {0, 3, 5, 7, 10}},        // Minor Pentatonic
+  {7, {0, 2, 3, 5, 7, 9, 10}},  // Dorian
+  {7, {0, 2, 4, 5, 7, 9, 10}},  // Mixolydian
+};
+constexpr uint8_t SCALE_COUNT = sizeof(SCALES) / sizeof(SCALES[0]);
+constexpr uint8_t DRUM_PAD_ROOT = 36; // pad 0 of a drum pad plays the root at this octave
+constexpr uint8_t NO_NOTE = 0xFF;
+
+int16_t floorDiv(int16_t a, int16_t b) { return (a >= 0) ? a / b : -((-a + b - 1) / b); }
+
+const ScaleDef &currentScale() {
+  return SCALES[scaleSettings.scaleType < SCALE_COUNT ? scaleSettings.scaleType : 0];
+}
+
+int16_t scaleIndexToNote(int16_t si) {
+  const ScaleDef &sc = currentScale();
+  const int16_t oct = floorDiv(si, sc.size);
+  return (scaleSettings.root % 12) + oct * 12 + sc.steps[si - oct * sc.size];
+}
+
+// The scale index of the first scale note at or above note.
+int16_t scaleIndexAtOrAbove(int16_t note) {
+  const ScaleDef &sc = currentScale();
+  const int16_t rel = note - (scaleSettings.root % 12);
+  const int16_t oct = floorDiv(rel, 12);
+  const int16_t pc = rel - oct * 12;
+  for (uint8_t d = 0; d < sc.size; ++d) {
+    if (sc.steps[d] >= pc) return oct * sc.size + d;
+  }
+  return (oct + 1) * sc.size;
+}
+
+// The note a Scale route plays for an input note, NO_NOTE if it lands outside 0-127.
+uint8_t scaleTransform(uint8_t note, uint8_t layout) {
+  const ScaleDef &sc = currentScale();
+  int16_t out;
+  switch (layout) {
+    case LAYOUT_WHITE_KEYS: {
+      // Each white key plays the next scale degree, keeping the keyboard's octaves. A black key plays
+      // the degree of the white key below it. Same as ARPnMIDI.
+      static const uint8_t pcToWhite[12] = {0, 0, 1, 1, 2, 3, 3, 4, 4, 5, 5, 6};
+      const int16_t white = pcToWhite[note % 12];
+      const int16_t oct = floorDiv(white, sc.size);
+      out = (note / 12) * 12 + (scaleSettings.root % 12) + oct * 12 + sc.steps[white - oct * sc.size];
+      break;
+    }
+    case LAYOUT_PAD_5THS:
+    case LAYOUT_PAD_4THS:
+    case LAYOUT_PAD_3RDS: {
+      // A 4-wide pad grid from note 36: right is the next scale note, up a row is rowOffset more.
+      const int16_t rowOffset = layout == LAYOUT_PAD_5THS ? 4 : (layout == LAYOUT_PAD_4THS ? 3 : 2);
+      const int16_t pad = (int16_t)note - DRUM_PAD_ROOT;
+      const int16_t row = floorDiv(pad, 4);
+      const int16_t col = pad - row * 4;
+      out = scaleIndexToNote(scaleIndexAtOrAbove(DRUM_PAD_ROOT + (scaleSettings.root % 12)) + col + row * rowOffset);
+      break;
+    }
+    default: // LAYOUT_NEXT_UP
+      out = scaleIndexToNote(scaleIndexAtOrAbove(note));
+      break;
+  }
+  return (out < 0 || out > 127) ? NO_NOTE : (uint8_t)out;
+}
+
+// The notes a Scale or Auto Chord route plays for an input note. Returns how many.
+uint8_t notesForInput(const RouteData &r, uint8_t in, uint8_t out[CHORD_MAX]) {
+  const uint8_t base = (r.features & FEATURE_SCALE) ? scaleTransform(in, r.scaleLayout) : in;
+  if (base == NO_NOTE) return 0;
+  if (!(r.features & FEATURE_AUTO_CHORD) || (r.flags2 & 0x01)) { // Mono Retrig plays single notes
+    out[0] = base;
+    return 1;
+  }
+  uint8_t n = 0;
+  if (r.features & FEATURE_SCALE) {
+    // Scale positions above the played note's own position, so the chord stays in key.
+    const int16_t si = scaleIndexAtOrAbove(base);
+    for (uint8_t k = 0; k < currentScale().size; ++k) {
+      if (!(r.chordMask & (1u << k))) continue;
+      const int16_t note = scaleIndexToNote(si + k);
+      if (note >= 0 && note <= 127) out[n++] = (uint8_t)note;
+    }
+  } else {
+    for (uint8_t k = 0; k < 12; ++k) {
+      if (!(r.chordMask & (1u << k))) continue;
+      if (base + k <= 127) out[n++] = base + k;
+    }
+  }
+  return n;
+}
+
+// ============================================================================================
+// Arp. Ported from ARPnMIDI's classic arp: Up, Down, Up-Down 1 (ends once), Up-Down 2 (ends
+// twice), and Drum (every note at once, ARPnMIDI's trigger). Each full pass through the notes moves
+// up an octave. All slots step on the clock engine's pulses, 96 per quarter, so they share one grid,
+// as master or following. The notes a route lets through (after Launchpad, Scale, Auto Chord) are
+// held into its slot, and the arp's steps go out through the route like ordinary notes.
+// ============================================================================================
+constexpr uint32_t ARP_CAPTURE_US = 6000;  // a fresh start waits this long to catch the whole chord
+constexpr uint32_t ARP_MIN_GATE_US = 15000;
+
+uint8_t arpModeOf(const ArpSettings &a) { return a.mode < ARP_MODE_COUNT ? a.mode : ARP_UP; }
+
+// ARPnMIDI's pattern tokens: note index into the held notes (low to high), octave and semitone
+// offsets. Copied from its kPatterns.
+constexpr int8_t TOK_REST = -3, TOK_ALL = -2;
+struct ArpToken { int8_t index, octave, semitone; };
+const ArpToken ARP_PATTERNS[7][16] = {
+  { {0,0,0},{1,0,0},{2,0,0},{3,0,0},{0,0,0},{1,0,0},{2,0,0},{3,0,0},
+    {0,0,0},{1,0,0},{2,0,0},{3,0,0},{0,0,0},{1,0,0},{2,0,0},{3,0,0} }, // Up 4-Step (ARPnMIDI's Up 1-Oct)
+  { {0,0,0},{TOK_REST,0,0},{0,0,0},{TOK_REST,0,0},{1,0,0},{TOK_REST,0,0},{1,0,0},{TOK_REST,0,0},
+    {0,0,0},{TOK_REST,0,0},{2,0,0},{TOK_REST,0,0},{0,0,0},{TOK_REST,0,0},{3,0,0},{TOK_REST,0,0} }, // Rhythm
+  { {0,0,0},{1,0,0},{2,0,0},{0,0,0},{1,0,0},{2,0,0},{0,0,0},{1,0,0},
+    {2,0,0},{0,0,0},{1,0,0},{2,0,0},{0,0,0},{1,0,0},{2,0,0},{0,0,0} }, // Ostinato
+  { {0,0,0},{0,1,0},{0,2,0},{0,3,0},{1,0,0},{1,1,0},{1,2,0},{1,3,0},
+    {2,0,0},{2,1,0},{2,2,0},{2,3,0},{3,0,0},{3,1,0},{3,2,0},{3,3,0} }, // Octave Walk
+  { {0,0,0},{0,0,7},{1,0,0},{1,0,7},{2,0,0},{2,0,7},{3,0,0},{3,0,7},
+    {0,0,0},{0,0,7},{1,0,0},{1,0,7},{2,0,0},{2,0,7},{3,0,0},{3,0,7} }, // Fifth
+  { {0,0,0},{TOK_ALL,0,0},{0,0,0},{TOK_ALL,0,0},{1,0,0},{TOK_ALL,0,0},{1,0,0},{TOK_ALL,0,0},
+    {2,0,0},{TOK_ALL,0,0},{2,0,0},{TOK_ALL,0,0},{3,0,0},{TOK_ALL,0,0},{3,0,0},{TOK_ALL,0,0} }, // Bass+Chord
+  { {TOK_ALL,0,0},{0,0,0},{1,0,0},{2,0,0},{3,0,0},{TOK_ALL,0,0},{3,0,0},{2,0,0},
+    {1,0,0},{0,0,0},{TOK_ALL,0,0},{0,0,0},{1,0,0},{2,0,0},{3,0,0},{TOK_ALL,0,0} }  // Chord+Run
+};
+uint8_t arpOctavesOf(const ArpSettings &a) { return a.octaves >= 1 && a.octaves <= 4 ? a.octaves : 1; }
+uint8_t arpGateOf(const ArpSettings &a) { return a.gatePercent >= 5 && a.gatePercent <= 100 ? a.gatePercent : 50; }
+
+fw::MusicalDivision arpDivisionFrom(uint8_t divisionPlus1) {
+  if (divisionPlus1 == 0 || divisionPlus1 > fw::kMusicalDivisionCount) return fw::MusicalDivision::Sixteenth;
+  return static_cast<fw::MusicalDivision>(divisionPlus1 - 1);
+}
+
+// The division playing now: the last held division square, else the default square.
+fw::MusicalDivision arpCurrentDivision(uint8_t slot) {
+  const ArpRuntime &r = arps[slot];
+  const ArpSettings &a = arpSettings[slot];
+  if (r.momentCount) {
+    const ArpSquare &sq = a.squares[r.moment[r.momentCount - 1]];
+    if (sq.divisionPlus1) return arpDivisionFrom(sq.divisionPlus1);
+  }
+  return arpDivisionFrom(a.divisionPlus1);
+}
+
+fw::MusicalDivision arpDivisionOf(const ArpSettings &a) {
+  if (a.divisionPlus1 == 0 || a.divisionPlus1 > fw::kMusicalDivisionCount) return fw::MusicalDivision::Sixteenth;
+  return static_cast<fw::MusicalDivision>(a.divisionPlus1 - 1);
+}
+
+bool arpSounding(const ArpRuntime &r, uint8_t note) { return r.hold ? r.latched[note] : r.physical[note]; }
+
+bool arpHasNotes(const ArpRuntime &r) {
+  for (uint8_t n = 0; n < 128; ++n) if (arpSounding(r, n)) return true;
+  return false;
+}
+
+bool otherArpRunning(uint8_t slot) {
+  for (uint8_t s = 0; s < ARP_SLOTS; ++s) if (s != slot && arps[s].running) return true;
+  return false;
+}
+
+void arpReleaseActive(uint8_t slot) {
+  ArpRuntime &r = arps[slot];
+  if (r.routeIndex < routeCount) {
+    for (uint8_t k = 0; k < r.activeCount; ++k) sendRouteNote(r.routeIndex, routes[r.routeIndex], false, r.active[k], 0);
+  }
+  r.activeCount = 0;
+  r.gateOffUs = 0;
+}
+
+// A note on one channel through the route's outputs, with its transpose and velocity scale.
+void sendChannelNote(const RouteData &r, uint8_t channel, bool on, uint8_t note, uint8_t velocity) {
+  const int16_t outNote = (int16_t)note + (int16_t)r.transpose - 64;
+  if (outNote < 0 || outNote > 127) return;
+  uint16_t scaled = ((uint16_t)velocity * r.velocityScale) / 100;
+  PendingMsg msg;
+  msg.used = true;
+  msg.channel = channel & 0x0F;
+  msg.kind = MK_NOTE;
+  msg.statusHi = on ? 0x90 : 0x80;
+  msg.number = (uint8_t)outNote;
+  msg.data1 = (uint8_t)outNote;
+  msg.data2 = on ? max<uint8_t>(1, (uint8_t)min<uint16_t>(127, scaled)) : 0;
+  msg.len = 3;
+  upsertPendingMask(routeOutputsNow(r), msg);
+}
+
+// Bypass and bass follow the notes the arp holds (hold included): whatever changed since last time
+// is sent. releaseAll lets go of everything.
+void arpSyncSide(uint8_t slot, bool releaseAll = false) {
+  ArpRuntime &r = arps[slot];
+  const ArpSettings &a = arpSettings[slot];
+  if (r.routeIndex >= routeCount) return;
+  const RouteData &rt = routes[r.routeIndex];
+  uint8_t lowest = 0xFF;
+  for (uint8_t n = 0; n < 128; ++n) {
+    const bool sounding = !releaseAll && arpSounding(r, n);
+    if (sounding && lowest == 0xFF) lowest = n;
+    const uint8_t want = (sounding && a.bypassChannel) ? (r.sideOn[n] ? r.sideOn[n] : a.bypassChannel) : 0;
+    if (want == r.sideOn[n]) continue;
+    if (r.sideOn[n]) sendChannelNote(rt, r.sideOn[n] - 1, false, n, 0);
+    if (want) sendChannelNote(rt, want - 1, true, n, r.velocity[n]);
+    r.sideOn[n] = want;
+  }
+  const uint8_t wantBass = (a.bassChannel && lowest != 0xFF && lowest >= 12) ? lowest - 12 + 1 : 0;
+  if (wantBass != r.bassNote) {
+    if (r.bassNote) sendChannelNote(rt, r.bassCh, false, r.bassNote - 1, 0);
+    if (wantBass) {
+      r.bassCh = a.bassChannel - 1;
+      sendChannelNote(rt, r.bassCh, true, wantBass - 1, r.velocity[lowest]);
+    }
+    r.bassNote = wantBass;
+  }
+  flushPending();
+}
+
+void arpStop(uint8_t slot) {
+  arpReleaseActive(slot);
+  arps[slot].running = false;
+  arps[slot].pendingStartUs = 0;
+  flushPending();
+}
+
+// After routes change: release what the arps are sounding through the routes as they were, then
+// start clean. The clock picks up arp routes appearing or going away.
+// Panic: every arp lets go of its notes, held keys and hold included.
+void arpPanic() {
+  for (uint8_t s = 0; s < ARP_SLOTS; ++s) {
+    arpStop(s);
+    ArpRuntime &r = arps[s];
+    memset(r.physical, 0, sizeof(r.physical));
+    memset(r.latched, 0, sizeof(r.latched));
+    r.physicalCount = 0;
+    r.hold = false;
+    r.momentCount = 0;
+    arpSyncSide(s);
+  }
+}
+
+void arpForgetAll() {
+  for (uint8_t s = 0; s < ARP_SLOTS; ++s) {
+    arpStop(s);
+    arpSyncSide(s, true);
+    memset(&arps[s], 0, sizeof(ArpRuntime));
+    arps[s].pressure = 127; // full velocity until the keyboard sends pressure
+  }
+  applyClockConfig();
+}
+
+// Called with each note the arp route lets through, in place of sending it.
+void arpInput(uint16_t routeIndex, uint8_t note, uint8_t velocity, bool on) {
+  const uint8_t slot = routes[routeIndex].arpSlot - 1;
+  if (slot >= ARP_SLOTS) return;
+  ArpRuntime &r = arps[slot];
+  r.routeIndex = routeIndex;
+  if (on) {
+    if (r.hold && r.physicalCount == 0) memset(r.latched, 0, sizeof(r.latched)); // a new phrase replaces the held one
+    if (r.physicalCount == 0 || r.pressCount == 0xFFFF) r.pressCount = 0;       // press order restarts with each phrase
+    if (!r.physical[note]) ++r.physicalCount;
+    r.physical[note] = true;
+    r.latched[note] = true;
+    r.velocity[note] = velocity;
+    r.pressOrder[note] = ++r.pressCount;
+    if (!r.running && !r.pendingStartUs) r.pendingStartUs = time_us_64() + ARP_CAPTURE_US;
+  } else {
+    if (r.physical[note] && r.physicalCount) --r.physicalCount;
+    r.physical[note] = false;
+    if (!r.hold) r.latched[note] = false;
+    if (!arpHasNotes(r)) arpStop(slot);
+  }
+  arpSyncSide(slot);
+}
+
+void arpSetHold(uint8_t slot, bool hold) {
+  if (slot >= ARP_SLOTS) return;
+  ArpRuntime &r = arps[slot];
+  if (r.hold == hold) return;
+  r.hold = hold;
+  if (!hold) {
+    memcpy(r.latched, r.physical, sizeof(r.latched)); // only the keys still down keep playing
+    if (!arpHasNotes(r)) arpStop(slot);
+  }
+  arpSyncSide(slot);
+}
+
+// The division square a note (type 1) or CC (type 2) triggers on this route's arp, -1 none.
+int8_t arpSquareFor(const RouteData &rt, uint8_t inputDevice, uint8_t type, uint8_t channel, uint8_t number) {
+  if (!rt.arpSlot || rt.arpSlot > ARP_SLOTS) return -1;
+  const ArpSettings &a = arpSettings[rt.arpSlot - 1];
+  for (uint8_t k = 0; k < ARP_SQUARES; ++k) {
+    const ArpSquare &sq = a.squares[k];
+    if (!sq.divisionPlus1 || sq.triggerType != type || sq.triggerNumber != number) continue;
+    if (sq.triggerChannel <= 15 && sq.triggerChannel != channel) continue;
+    if (!routeAcceptsSource(rt, inputDevice, channel)) return -1;
+    return (int8_t)k;
+  }
+  return -1;
+}
+
+// A division square pressed or released. The new division starts on its own next grid step.
+void arpMomentary(uint8_t slot, uint8_t square, bool down) {
+  ArpRuntime &r = arps[slot];
+  uint8_t n = 0;
+  for (uint8_t k = 0; k < r.momentCount; ++k) if (r.moment[k] != square) r.moment[n++] = r.moment[k];
+  r.momentCount = n;
+  if (down && r.momentCount < ARP_SQUARES) r.moment[r.momentCount++] = square;
+  if (r.running) {
+    const uint16_t div = fw::divisionPulses(arpCurrentDivision(slot));
+    r.nextStepPulse = ((clockEngine.internalPulse() / div) + 1) * div;
+  }
+}
+
+bool arpHoldMatches(const RouteData &rt, uint8_t inputDevice, uint8_t channel, uint8_t cc) {
+  if (!rt.arpSlot || rt.arpSlot > ARP_SLOTS) return false;
+  const ArpSettings &a = arpSettings[rt.arpSlot - 1];
+  if (a.holdType != 2 || a.holdNumber != cc) return false;
+  if (a.holdChannel <= 15 && a.holdChannel != channel) return false;
+  return routeAcceptsSource(rt, inputDevice, channel);
+}
+
+void arpStep(uint8_t slot, uint64_t nowUs) {
+  ArpRuntime &r = arps[slot];
+  const ArpSettings &a = arpSettings[slot];
+  arpReleaseActive(slot);
+  if (r.routeIndex >= routeCount) return;
+  uint8_t notes[128];
+  uint8_t n = 0;
+  for (uint8_t note = 0; note < 128; ++note) if (arpSounding(r, note)) notes[n++] = note;
+  if (n == 0) return;
+
+  const uint8_t octaves = arpOctavesOf(a);
+  const uint8_t mode = arpModeOf(a);
+  auto play = [&](uint8_t note, uint8_t vel) {
+    if (r.activeCount >= ARP_MAX_OUT) return;
+    for (uint8_t k = 0; k < r.activeCount; ++k) if (r.active[k] == note) return;
+    r.active[r.activeCount++] = note;
+    sendRouteNote(r.routeIndex, routes[r.routeIndex], true, note, vel);
+  };
+  // Aftertouch velocity maps pressure to 33-100%, as ARPnMIDI's drum roll does.
+  const uint8_t pressureVel = (uint8_t)map(r.pressure, 0, 127, 42, 127);
+  auto velOf = [&](uint8_t note) -> uint8_t {
+    if (a.aftertouchVelocity) return pressureVel;
+    return a.velocity ? a.velocity : max<uint8_t>(1, r.velocity[note]);
+  };
+  // Pattern offsets can leave the key, so a Scale route snaps them up to the next scale note.
+  const bool snap = routes[r.routeIndex].features & FEATURE_SCALE;
+  auto playAt = [&](int16_t note, uint8_t vel) {
+    if (note < 0 || note > 127) return;
+    if (snap) note = scaleIndexToNote(scaleIndexAtOrAbove((uint8_t)note));
+    if (note >= 0 && note <= 127) play((uint8_t)note, vel);
+  };
+  auto playAll = [&]() {
+    for (uint8_t o = 0; o < octaves; ++o) {
+      for (uint8_t i = 0; i < n; ++i) playAt(notes[i] + o * 12, velOf(notes[i]));
+    }
+  };
+
+  const ArpToken *pattern = (mode >= ARP_PAT_UP_4STEP && mode <= ARP_PAT_CHORD_RUN) ? ARP_PATTERNS[mode - ARP_PAT_UP_4STEP] : nullptr;
+  const ArpToken token = pattern ? pattern[r.patternStep % 16] : ArpToken{0, 0, 0};
+  if (pattern && token.index == TOK_REST) {
+    // a rest
+  } else if (mode == ARP_DRUM || (pattern && token.index == TOK_ALL)) {
+    playAll();
+  } else if (mode >= ARP_AS_PLAYED) {
+    // Each mode is an order of the held notes, played round; a full pass moves up an octave.
+    uint8_t seq[256];
+    uint16_t len = 0;
+    if (mode == ARP_AS_PLAYED) {
+      for (uint8_t i = 0; i < n; ++i) seq[len++] = i;
+      for (uint8_t i = 1; i < n; ++i) { // insertion sort by press order
+        const uint8_t v = seq[i];
+        uint8_t j = i;
+        while (j > 0 && r.pressOrder[notes[seq[j - 1]]] > r.pressOrder[notes[v]]) { seq[j] = seq[j - 1]; --j; }
+        seq[j] = v;
+      }
+    } else if (mode == ARP_CONVERGE || mode == ARP_DIVERGE) {
+      for (uint8_t k = 0; k < n; ++k) seq[len++] = (k & 1) ? n - 1 - k / 2 : k / 2;
+      if (mode == ARP_DIVERGE) for (uint8_t a2 = 0, b2 = n - 1; a2 < b2; ++a2, --b2) { const uint8_t t = seq[a2]; seq[a2] = seq[b2]; seq[b2] = t; }
+    } else if (n == 1) {
+      seq[len++] = 0;
+    } else if (mode == ARP_THUMB) {
+      for (uint8_t i = 1; i < n; ++i) { seq[len++] = 0; seq[len++] = i; }
+    } else { // ARP_PINKY
+      for (uint8_t i = 0; i < n - 1; ++i) { seq[len++] = i; seq[len++] = n - 1; }
+    }
+    const uint8_t idx = seq[r.sequenceStep % len];
+    const uint8_t octave = (r.sequenceStep / len) % octaves;
+    playAt(notes[idx] + octave * 12, velOf(notes[idx]));
+  } else if (mode == ARP_PAT_FIFTH) {
+    // Each held note then a fifth above it, through however many notes are held. ARPnMIDI's table
+    // assumed 4 notes. The fifth is 4 scale positions up on a Scale route, so it stays in key,
+    // otherwise a perfect fifth.
+    const uint16_t len = n * 2;
+    const uint16_t pos = r.sequenceStep % len;
+    const uint8_t base = notes[pos / 2];
+    const uint8_t octave = (r.sequenceStep / len) % octaves;
+    int16_t note = base;
+    if (pos & 1) note = snap ? scaleIndexToNote(scaleIndexAtOrAbove(base) + 4) : base + 7;
+    playAt(note + octave * 12, velOf(base));
+  } else if (pattern) {
+    const uint8_t octave = (r.sequenceStep / n) % octaves;
+    const uint8_t base = notes[token.index % n];
+    playAt(base + token.semitone + (token.octave + octave) * 12, velOf(base));
+  } else {
+    const uint32_t phase = r.sequenceStep;
+    uint8_t idx;
+    if (n == 1) {
+      idx = 0;
+    } else if (mode == ARP_RANDOM) {
+      idx = random(n);
+    } else if (mode == ARP_DOWN) {
+      idx = n - 1 - (phase % n);
+    } else if (mode == ARP_UPDOWN1) {
+      const uint8_t period = n * 2 - 2, pos = phase % period;
+      idx = pos < n ? pos : period - pos;
+    } else if (mode == ARP_UPDOWN2) {
+      const uint8_t period = n * 2, pos = phase % period;
+      idx = pos < n ? pos : period - 1 - pos;
+    } else {
+      idx = phase % n;
+    }
+    const uint8_t octave = (phase / n) % octaves;
+    const uint16_t note = notes[idx] + octave * 12;
+    if (note <= 127) play((uint8_t)note, velOf(notes[idx]));
+  }
+  flushPending();
+  ++r.sequenceStep;
+  r.patternStep = (r.patternStep + 1) % 16;
+
+  const uint64_t stepUs = fw::divisionDurationUs(arpCurrentDivision(slot), clockEngine.bpm());
+  const uint64_t gateUs = stepUs * arpGateOf(a) / 100;
+  r.gateOffUs = nowUs + (gateUs > ARP_MIN_GATE_US ? gateUs : ARP_MIN_GATE_US);
+}
+
+void serviceArps() {
+  const uint64_t now = time_us_64();
+  for (uint8_t s = 0; s < ARP_SLOTS; ++s) {
+    ArpRuntime &r = arps[s];
+    if (r.gateOffUs && now >= r.gateOffUs) {
+      arpReleaseActive(s);
+      flushPending();
+    }
+    if (r.pendingStartUs && now >= r.pendingStartUs) {
+      r.pendingStartUs = 0;
+      if (!arpHasNotes(r)) continue;
+      const uint16_t div = fw::divisionPulses(arpCurrentDivision(s));
+      // A fresh start restarts the master grid. Joining a running arp, or following another clock,
+      // lines up with that grid's next step instead.
+      if (!otherArpRunning(s) && !clockFollowPort()) clockEngine.start(now);
+      const uint32_t pulse = clockEngine.internalPulse();
+      r.nextStepPulse = ((pulse + div - 1) / div) * div;
+      r.sequenceStep = 0;
+      r.patternStep = 0;
+      r.running = true;
+    }
+    if (!r.running) continue;
+    if (!clockEngine.synchronizedAdvanceAllowed(now)) continue;
+    const uint32_t pulse = clockEngine.internalPulse();
+    if (pulse >= r.nextStepPulse) {
+      const uint16_t div = fw::divisionPulses(arpCurrentDivision(s));
+      arpStep(s, now);
+      // One step per pass. After a stall, skip ahead rather than burst through missed steps.
+      r.nextStepPulse += div;
+      if (pulse >= r.nextStepPulse) r.nextStepPulse = ((pulse / div) + 1) * div;
+    }
+  }
+}
+
+void dispatchNoteEvent(uint8_t inputDevice, uint8_t channel, bool isNoteOn, uint8_t rawNote, uint8_t velocity) {
   bool matchedAny = false;
   for (uint16_t i = 0; i < routeCount; ++i) {
+    uint8_t note = rawNote;
+    launchpadExcludePorts = 0;
+    const int8_t square = arpSquareFor(routes[i], inputDevice, 1, channel, rawNote);
+    if (square >= 0) { // a division trigger, it doesn't pass through
+      matchedAny = true;
+      arpMomentary(routes[i].arpSlot - 1, square, isNoteOn);
+      continue;
+    }
+    if (routes[i].features & FEATURE_LAUNCHPAD) {
+      if (!routeAcceptsSource(routes[i], inputDevice, channel)) continue;
+      launchpadExcludePorts = sourcePort(inputDevice);
+      sendToOutputs(launchpadExcludePorts, isNoteOn ? 0x90 : 0x80, channel, rawNote, velocity, 3);
+      const uint8_t side = launchpadSideButton(rawNote);
+      if (side != 0xFF) {
+        matchedAny = true;
+        handleLaunchpadButton(routes[i], side, isNoteOn);
+        continue;
+      }
+      note = launchpadGridNote(rawNote);
+      if (note == LP_NOT_GRID) continue;
+    }
     if (routeMatches(routes[i], inputDevice, channel, MK_NOTE, note)) {
       matchedAny = true;
+      if (handleNoteToCc(routes[i], isNoteOn, note, velocity)) continue;
+      if (routes[i].features & (FEATURE_SCALE | FEATURE_AUTO_CHORD)) {
+        // A Note Off releases exactly what its Note On played, even if the settings changed between.
+        uint8_t outs[CHORD_MAX];
+        uint8_t count;
+        if (isNoteOn) {
+          if (findHeldKey(i, note)) continue; // already held (a repeat Note On), keep what's sounding
+          count = notesForInput(routes[i], note, outs);
+          if (count == 0) continue;
+        } else {
+          HeldKey *h = findHeldKey(i, note);
+          if (!h) continue;
+          count = h->count;
+          memcpy(outs, h->out, count);
+          h->used = false;
+        }
+        if (routes[i].arpSlot) {
+          if (isNoteOn) holdKey(i, note, outs, count);
+          for (uint8_t k = 0; k < count; ++k) arpInput(i, outs[k], velocity, isNoteOn);
+          continue;
+        }
+        if (routes[i].flags2 & 0x01) {
+          if (isNoteOn) holdKey(i, note, outs, count);
+          handleMonoRetrigNote(i, routes[i], outs[0], velocity, isNoteOn);
+          continue;
+        }
+        for (uint8_t k = 0; k < count; ++k) {
+          const uint8_t out = outs[k];
+          if (heldOutSounding(i, out)) continue; // another held key on this route already plays it
+          sendRouteNote(i, routes[i], isNoteOn, out, isNoteOn ? velocity : 0);
+          if (!isNoteOn) routeNoteFreeSlot(routeNoteTracks[i], out);
+        }
+        if (isNoteOn) holdKey(i, note, outs, count);
+        continue;
+      }
+      if (routes[i].arpSlot) {
+        arpInput(i, note, velocity, isNoteOn);
+        continue;
+      }
       if (routes[i].flags2 & 0x01) {
         handleMonoRetrigNote(i, routes[i], note, velocity, isNoteOn);
       } else {
@@ -1260,10 +2401,11 @@ void dispatchNoteEvent(uint8_t inputDevice, uint8_t channel, bool isNoteOn, uint
       }
     }
   }
+  launchpadExcludePorts = 0;
   flushPending();
 
   if (!matchedAny) {
-    applyModeDefault(inputDevice, isNoteOn ? 0x90 : 0x80, channel, note, velocity, 3);
+    applyModeDefault(inputDevice, isNoteOn ? 0x90 : 0x80, channel, rawNote, velocity, 3);
   } else {
     // still count as "seen" on the input side for the IN LED even if fully consumed by routes
     if (inputDevice == DEV_USB) noteActivity(ledUsb); else noteActivity(ledIn);
@@ -1284,6 +2426,7 @@ void processIncomingEvent(uint8_t inputDevice, uint8_t statusHi, uint8_t channel
   }
 
   bool isNoteOn = (kind == MK_NOTE) && (statusHi == 0x90 && data2 > 0);
+  if (captureLearnOrTap(inputDevice, kind, isNoteOn, channel, data1, data2)) return;
 
   if (kind == MK_NOTE && (inputDevice == DEV_HOST || inputDevice == DEV_TRS2)) {
     sidecarHeld[channel][data1] = !isNoteOn ? 0 : (inputDevice == DEV_HOST ? currentHostPort : 0x80);
@@ -1341,6 +2484,36 @@ void processIncomingEvent(uint8_t inputDevice, uint8_t statusHi, uint8_t channel
 
   bool matchedAny = false;
   for (uint16_t i = 0; i < routeCount; ++i) {
+    if (kind == MK_CC && (routes[i].features & FEATURE_LAUNCHPAD) && number >= LP_TOP_BUTTON_CC && number < LP_TOP_BUTTON_CC + 8) {
+      if (routeAcceptsSource(routes[i], inputDevice, channel)) {
+        matchedAny = true;
+        launchpadExcludePorts = sourcePort(inputDevice);
+        sendToOutputs(launchpadExcludePorts, 0xB0, channel, number, data2, 3); // lights the button
+        handleLaunchpadButton(routes[i], number - LP_TOP_BUTTON_CC, data2 > 0);
+        flushPending();
+        launchpadExcludePorts = 0;
+      }
+      continue;
+    }
+    if (kind == MK_CC) {
+      const int8_t square = arpSquareFor(routes[i], inputDevice, 2, channel, number);
+      if (square >= 0) {
+        matchedAny = true;
+        arpMomentary(routes[i].arpSlot - 1, square, data2 >= 64);
+        continue;
+      }
+    }
+    // Aftertouch velocity follows channel pressure (value in the first data byte) or poly aftertouch
+    // (second byte), whichever the controller sends. Pads often send poly. Both still pass through below.
+    if ((kind == MK_CHAN_PRESSURE || kind == MK_POLY_AT) && routes[i].arpSlot && routes[i].arpSlot <= ARP_SLOTS &&
+        arpSettings[routes[i].arpSlot - 1].aftertouchVelocity && routeAcceptsSource(routes[i], inputDevice, channel)) {
+      arps[routes[i].arpSlot - 1].pressure = kind == MK_POLY_AT ? data2 : data1;
+    }
+    if (kind == MK_CC && arpHoldMatches(routes[i], inputDevice, channel, number)) {
+      matchedAny = true;
+      arpSetHold(routes[i].arpSlot - 1, data2 >= 64);
+      continue;
+    }
     if (routeMatches(routes[i], inputDevice, channel, kind, number)) {
       matchedAny = true;
       applyRouteOutput(routes[i], inputDevice, channel, kind, number, statusHi, data1, data2);
@@ -1379,6 +2552,7 @@ uint16_t resolveDestination(uint8_t inputDevice, MsgKind kind) {
 // handled. The message kind is inferred from the status byte itself so every call site can just
 // pass the raw byte through without also having to classify it themselves.
 void forwardCommonOrRealtime(uint8_t inputDevice, uint8_t statusByte, uint8_t data1, uint8_t data2, uint8_t len) {
+  if (!acceptClockMessage(inputDevice, statusByte)) return;
   MsgKind kind;
   if (statusByte == 0xF8) kind = MK_CLOCK;
   else if (statusByte >= 0xF8) kind = MK_REALTIME;
@@ -1399,14 +2573,14 @@ void usbSysexByte(UsbOutSysexAccum &accum, uint8_t b) {
     uint8_t cin = 0x04 + accum.len;
     uint8_t pkt[4] = {cin, 0, 0, 0};
     for (uint8_t i = 0; i < accum.len; ++i) pkt[1 + i] = accum.buf[i];
-    usb_midi.writePacket(pkt);
+    usbSend(pkt);
     accum.len = 0;
     noteActivity(ledUsb);
     return;
   }
   if (accum.len == 3) {
     uint8_t pkt[4] = {0x04, accum.buf[0], accum.buf[1], accum.buf[2]};
-    usb_midi.writePacket(pkt);
+    usbSend(pkt);
     accum.len = 0;
     noteActivity(ledUsb);
   }
@@ -1425,7 +2599,7 @@ void linkSysexByte(UsbOutSysexAccum &accum, const uint8_t *ports, uint8_t portCo
 
 void forwardSysexByte(uint8_t fromInputDevice, uint16_t destPorts, uint8_t b) {
   if (destPorts & PORT_TRS) {
-    Serial1.write(b);
+    trsSend(&b, 1);
     noteActivity(ledOut);
   }
   if (destPorts & PORT_USB) usbSysexByte(usbOutFrom[fromInputDevice], b);
@@ -1520,7 +2694,7 @@ void appendReply(uint8_t b) { if (replyLen < sizeof(replyBuf) - 1) replyBuf[repl
 void sendReply(uint8_t sourcePort) {
   appendReply(0xF7);
   if (sourcePort == DEV_TRS) {
-    for (uint8_t i = 0; i < replyLen; ++i) Serial1.write(replyBuf[i]);
+    trsSend(replyBuf, replyLen);
     noteActivity(ledOut);
   } else if (sourcePort == DEV_HOST || sourcePort == DEV_TRS2) {
     UsbOutSysexAccum accum; // reply goes back out the sidecar port the command came in on
@@ -1585,6 +2759,42 @@ void handleSysexCommand(uint8_t sourcePort, const uint8_t *cmdBuf, uint8_t cmdLe
       break;
     }
 
+    case CMD_GET_FEATURE: {
+      if (payloadLen < 1) { sendAck(sourcePort, cmd, ACK_ERR_BAD_DATA, 0, 0); break; }
+      uint8_t size;
+      const uint8_t *data = featureBlockData(payload[0], size);
+      if (!data) { sendAck(sourcePort, cmd, ACK_ERR_BAD_INDEX, 0, 0); break; }
+      beginReply(CMD_FEATURE_DATA);
+      appendReply(payload[0]);
+      uint8_t packed[sizeof(replyBuf)];
+      const uint8_t packedLen = pack7(data, size, packed);
+      for (uint8_t i = 0; i < packedLen; ++i) appendReply(packed[i]);
+      sendReply(sourcePort);
+      break;
+    }
+
+    case CMD_SET_FEATURE: {
+      if (payloadLen < 1) { sendAck(sourcePort, cmd, ACK_ERR_BAD_DATA, 0, 0); break; }
+      uint8_t size;
+      uint8_t *data = featureBlockData(payload[0], size);
+      if (!data) { sendAck(sourcePort, cmd, ACK_ERR_BAD_INDEX, 0, 0); break; }
+      uint8_t raw[sizeof(((SysexState *)nullptr)->cmdBuf)];
+      const uint8_t rawLen = unpack7(payload + 1, payloadLen - 1, raw);
+      memset(data, 0, size);
+      memcpy(data, raw, min(rawLen, size));
+      if (payload[0] == FEATURE_TYPE_NOTE_TO_CC) memset(noteCcToggleState, 0, sizeof(noteCcToggleState));
+      sendAck(sourcePort, cmd, ACK_OK, checksum7(data, size), payload[0]);
+      break;
+    }
+
+    case CMD_LEARN: {
+      // The next Note On or CC from any input is captured, consumed, and sent back as LEARN_DATA.
+      learnActive = true;
+      learnReplyPort = sourcePort;
+      learnUntilMs = millis() + LEARN_TIMEOUT_MS;
+      break;
+    }
+
     case CMD_GET_STATUS: {
       beginReply(CMD_STATUS_DATA);
       appendReply(hostPresent() ? 1 : 0);
@@ -1593,6 +2803,10 @@ void handleSysexCommand(uint8_t sourcePort, const uint8_t *cmdBuf, uint8_t cmdLe
       appendReply(hostRestartReason & 0x7F);
       appendReply(hostRestartPort & 0x7F);
       appendReply(hostRestartCount & 0x7F);
+      const uint16_t bpmNow = (uint16_t)(clockEngine.bpm() + 0.5f);
+      appendReply(bpmNow & 0x7F);
+      appendReply((bpmNow >> 7) & 0x7F);
+      appendReply(clockStatus());
       sendReply(sourcePort);
       break;
     }
@@ -1605,6 +2819,16 @@ void handleSysexCommand(uint8_t sourcePort, const uint8_t *cmdBuf, uint8_t cmdLe
       appendReply(globalSettings.buttonParamB);
       appendReply(globalSettings.buttonToggleMomentary);
       appendReply(globalSettings.ledBrightnessStep);
+      appendReply(globalSettings.clockSource);
+      // The values in use: saves from before these fields existed hold zeros, which mean the defaults.
+      appendReply(effectiveBpm() & 0x7F);
+      appendReply((effectiveBpm() >> 7) & 0x7F);
+      appendReply(globalSettings.beatsPerBar ? globalSettings.beatsPerBar : 4);
+      appendReply(globalSettings.beatUnit ? globalSettings.beatUnit : 4);
+      appendReply(globalSettings.clockOut);
+      appendReply(globalSettings.tapType);
+      appendReply(globalSettings.tapChannel);
+      appendReply(globalSettings.tapNumber);
       sendReply(sourcePort);
       break;
     }
@@ -1617,9 +2841,22 @@ void handleSysexCommand(uint8_t sourcePort, const uint8_t *cmdBuf, uint8_t cmdLe
       globalSettings.buttonParamB = payload[3];
       globalSettings.buttonToggleMomentary = payload[4];
       globalSettings.ledBrightnessStep = payload[5];
+      // Protocol 1-2 hosts send only the first 6 bytes, the clock settings stay as they are.
+      const uint8_t applied = (payloadLen >= GLOBAL_WIRE_BYTES) ? GLOBAL_WIRE_BYTES : 6;
+      if (applied == GLOBAL_WIRE_BYTES) {
+        globalSettings.clockSource = payload[6];
+        globalSettings.bpm = (uint16_t)payload[7] | ((uint16_t)payload[8] << 7);
+        globalSettings.beatsPerBar = payload[9];
+        globalSettings.beatUnit = payload[10];
+        globalSettings.clockOut = payload[11];
+        globalSettings.tapType = payload[12];
+        globalSettings.tapChannel = payload[13];
+        globalSettings.tapNumber = payload[14];
+      }
       applyBrightnessToLeds();
       resetButtonRuntimeState();
-      sendAck(sourcePort, cmd, ACK_OK, checksum7(payload, 6), 0);
+      applyClockConfig();
+      sendAck(sourcePort, cmd, ACK_OK, checksum7(payload, applied), 0);
       break;
     }
 
@@ -1638,7 +2875,7 @@ void handleSysexCommand(uint8_t sourcePort, const uint8_t *cmdBuf, uint8_t cmdLe
       beginReply(CMD_ROUTE_DATA);
       appendReply(idx & 0x7F);
       appendReply((idx >> 7) & 0x7F);
-      uint8_t packed[56]; // pack7(45 raw bytes) = 52 packed bytes
+      uint8_t packed[64]; // pack7(53 raw bytes) = 61 packed bytes
       uint8_t packedLen = pack7((const uint8_t *)&routes[idx], ROUTE_RAW_BYTES, packed);
       for (uint8_t i = 0; i < packedLen; ++i) appendReply(packed[i]);
       sendReply(sourcePort);
@@ -1724,6 +2961,7 @@ void handleSysexCommand(uint8_t sourcePort, const uint8_t *cmdBuf, uint8_t cmdLe
       setFactoryDefaults();
       applyBrightnessToLeds();
       resetButtonRuntimeState();
+      applyClockConfig();
       saveToFlash();
       sendAck(sourcePort, cmd, ACK_OK, 0, 0);
       allLedConfirmationFlashes();
@@ -1865,6 +3103,7 @@ void processDinByte(uint8_t b) {
 
 void pumpDinIn() {
   uint8_t budget = INPUT_BUDGET;
+  if (!outputsHaveRoom()) return;
   while (budget-- && Serial1.available() > 0) {
     processDinByte(static_cast<uint8_t>(Serial1.read()));
   }
@@ -1936,17 +3175,19 @@ void handleUsbMidiPacket(uint8_t inputDevice, SysexState &sysex, const uint8_t p
 void pumpUsbIn() {
   uint8_t packet[4];
   uint8_t budget = INPUT_BUDGET; // a flood (a feedback loop in a DAW) can't starve everything else
+  if (!outputsHaveRoom()) return; // an output backed up: the computer waits, nothing is dropped
   while (budget-- && usb_midi.readPacket(packet)) handleUsbMidiPacket(DEV_USB, usbSysex, packet);
 }
 
 // Host brain frames: ports 1-4 are hub ports, 5 is its DIN IN, 15 is control. All parsing is
 // bounded per loop and reads only what the PIO receive interrupt has already buffered.
-// Releases every note still held from the host brain's inputs, as if its Note Off had arrived.
-void releaseSidecarNotes() {
+// Releases every note still held from the host brain's inputs, as if its Note Off had arrived. With
+// onlyPort (1-4), just the notes from that hub port.
+void releaseSidecarNotes(uint8_t onlyPort = 0) {
   for (uint8_t ch = 0; ch < 16; ++ch) {
     for (uint8_t note = 0; note < 128; ++note) {
       const uint8_t held = sidecarHeld[ch][note];
-      if (!held) continue;
+      if (!held || (onlyPort && held != onlyPort)) continue;
       uint8_t device = DEV_TRS2;
       if (held != 0x80) {
         device = DEV_HOST;
@@ -1981,6 +3222,7 @@ void serviceStuckNoteGuard() {
 
 void pumpHostIn() {
   uint16_t budget = LINK_RX_BUDGET;
+  if (!outputsHaveRoom()) return; // backlog builds, so the host brain is asked to pause
   while (budget-- && linkSerial.available() > 0) {
     if (!linkReader.feed((uint8_t)linkSerial.read())) continue;
     uint8_t packet[4];
@@ -1989,7 +3231,11 @@ void pumpHostIn() {
     if (port == LINK_PORT_CONTROL) {
       uint8_t type = packet[0] & 0x0F;
       if (type == CONTROL_PORT_MAP) {
+        // A device unplugged mid-note never sends its Note Offs, so its held notes (and any arp they
+        // feed) are released here.
+        const uint8_t gone = hostPortMask & ~packet[1];
         hostPortMask = packet[1];
+        for (uint8_t p = 1; p <= 4; ++p) if (gone & (1 << (p - 1))) releaseSidecarNotes(p);
         hostFwVersion = packet[2];
         hostDropCount = packet[3];
         hostLastStatusMs = millis();
@@ -2072,6 +3318,7 @@ uint8_t resolveButtonChannel() {
 }
 
 void sendPanic() {
+  arpPanic(); // otherwise a held arp keeps stepping right after
   // Deliberately NOT sending an individual Note Off for every note on every channel here — that's
   // 16 x 128 x 2 ports = 4096+ messages, which over a 31250-baud DIN line takes close to 2 seconds
   // of real transmit time and makes "panic" feel broken instead of instant. CC 120 (All Sound Off)
@@ -2084,7 +3331,7 @@ void sendPanic() {
     sendToOutputs(availablePorts(), 0xB0, channel, 120, 0, 3); // All Sound Off
     serviceLeds();
   }
-  Serial1.flush();
+  drainTrsOut(); // panic goes out before the confirmation flashes
   allLedConfirmationFlashes();
 }
 
@@ -2197,6 +3444,7 @@ void onButtonPress() {
       noteToggleState = !noteToggleState;
       sendNote(noteToggleState);
       break;
+    case BTN_TAP_TEMPO: tapTempo(); break;
   }
 }
 
@@ -2265,6 +3513,7 @@ void setup() {
 
   Serial1.setTX(PIN_DIN_MIDI_TX);
   Serial1.setRX(PIN_DIN_MIDI_RX);
+  Serial1.setFIFOSize(256); // room for TRS/DIN input while the loop holds off reading it
   Serial1.begin(DIN_BAUD);
 
   linkSerial.begin(LINK_BAUD);
@@ -2279,6 +3528,7 @@ void setup() {
   applyBrightnessToLeds();
   resetButtonRuntimeState();
 
+  clockEngine.begin(clockConfig(), time_us_64());
   startupSequence();
   rp2040.wdt_begin(WATCHDOG_MS); // last resort: a hang anywhere reboots instead of staying frozen
 }
@@ -2300,6 +3550,11 @@ void loop() {
   serviceButton();
   serviceRamp();
   serviceLeds();
+  serviceClock();
+  serviceArps();
+  serviceLearnTimeout();
+  pumpTrsOut();
+  pumpUsbOut();
   serviceLinkFlow();
   pumpLinkOut();
 }
