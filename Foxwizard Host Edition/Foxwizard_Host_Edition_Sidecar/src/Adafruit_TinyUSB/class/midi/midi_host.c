@@ -1,25 +1,6 @@
 /*
- * The MIT License (MIT)
- *
- * Copyright (c) 2019 Ha Thach (tinyusb.org)
- *
- * Permission is hereby granted, free of charge, to any person obtaining a copy
- * of this software and associated documentation files (the "Software"), to deal
- * in the Software without restriction, including without limitation the rights
- * to use, copy, modify, merge, publish, distribute, sublicense, and/or sell
- * copies of the Software, and to permit persons to whom the Software is
- * furnished to do so, subject to the following conditions:
- *
- * The above copyright notice and this permission notice shall be included in
- * all copies or substantial portions of the Software.
- *
- * THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
- * IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
- * FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE
- * AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
- * LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
- * OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN
- * THE SOFTWARE.
+ * SPDX-FileCopyrightText: Copyright (c) 2019 Ha Thach (tinyusb.org)
+ * SPDX-License-Identifier: MIT
  *
  * This file is part of the TinyUSB stack.
  */
@@ -170,10 +151,9 @@ bool midih_xfer_cb(uint8_t dev_addr, uint8_t ep_addr, xfer_result_t result, uint
   if (ep_addr == ep_str_rx->ep_addr) {
     // receive new data, put it into FIFO and invoke callback if available
     // Note: some devices send back all zero packets even if there is no data ready
-    uint32_t const packet_bytes = xferred_bytes & ~0x03u;
-    if (packet_bytes && !tu_mem_is_zero(ep_str_rx->ep_buf, packet_bytes)) {
-      tu_edpt_stream_read_xfer_complete(ep_str_rx, packet_bytes);
-      tuh_midi_rx_cb(idx, packet_bytes);
+    if (xferred_bytes && !tu_mem_is_zero(ep_str_rx->ep_buf, xferred_bytes)) {
+      tu_edpt_stream_read_xfer_complete(ep_str_rx, xferred_bytes);
+      tuh_midi_rx_cb(idx, xferred_bytes);
     }
 
     tu_edpt_stream_read_xfer(ep_str_rx); // prepare for next transfer
@@ -415,22 +395,6 @@ uint32_t tuh_midi_read_available(uint8_t idx) {
   TU_VERIFY(idx < CFG_TUH_MIDI);
   midih_interface_t *p_midi = &_midi_host[idx];
   return tu_edpt_stream_read_available(&p_midi->ep_stream.rx);
-}
-
-bool tuh_midi_rx_rearm(uint8_t idx) {
-  TU_VERIFY(idx < CFG_TUH_MIDI);
-  midih_interface_t *p_midi = &_midi_host[idx];
-  tu_edpt_stream_t *ep_str_rx = &p_midi->ep_stream.rx;
-  TU_VERIFY(p_midi->mounted && ep_str_rx->ep_addr);
-
-  if (usbh_edpt_busy(p_midi->daddr, ep_str_rx->ep_addr)) {
-    (void)tuh_edpt_abort_xfer(p_midi->daddr, ep_str_rx->ep_addr);
-  }
-  tu_fifo_clear(&ep_str_rx->ff);
-#if CFG_TUH_MIDI_STREAM_API
-  tu_memclr(&p_midi->stream_read, sizeof(p_midi->stream_read));
-#endif
-  return tu_edpt_stream_read_xfer(ep_str_rx) > 0;
 }
 
 uint32_t tuh_midi_write_flush(uint8_t idx) {

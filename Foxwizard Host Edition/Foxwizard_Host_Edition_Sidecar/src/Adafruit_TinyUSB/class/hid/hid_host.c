@@ -1,25 +1,6 @@
 /*
- * The MIT License (MIT)
- *
- * Copyright (c) 2019 Ha Thach (tinyusb.org)
- *
- * Permission is hereby granted, free of charge, to any person obtaining a copy
- * of this software and associated documentation files (the "Software"), to deal
- * in the Software without restriction, including without limitation the rights
- * to use, copy, modify, merge, publish, distribute, sublicense, and/or sell
- * copies of the Software, and to permit persons to whom the Software is
- * furnished to do so, subject to the following conditions:
- *
- * The above copyright notice and this permission notice shall be included in
- * all copies or substantial portions of the Software.
- *
- * THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
- * IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
- * FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE
- * AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
- * LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
- * OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN
- * THE SOFTWARE.
+ * SPDX-FileCopyrightText: Copyright (c) 2019 Ha Thach (tinyusb.org)
+ * SPDX-License-Identifier: MIT
  *
  * This file is part of the TinyUSB stack.
  */
@@ -704,6 +685,10 @@ uint8_t tuh_hid_parse_report_descriptor(tuh_hid_report_info_t* report_info_arr, 
       size = 4; // HID 1.11 6.2.2.2 3 is 4 bytes
     }
 
+    // item data must fit in the remaining descriptor; a truncated item would
+    // read past the buffer and underflow desc_len below
+    if (size > desc_len) break;
+
     uint8_t const data8 = (size > 0) ? desc_report[0] : 0;
 
     TU_LOG(3, "tag = %d, type = %d, size = %d, data = ", tag, type, size);
@@ -738,7 +723,12 @@ uint8_t tuh_hid_parse_report_descriptor(tuh_hid_report_info_t* report_info_arr, 
         switch (tag) {
           case RI_GLOBAL_USAGE_PAGE:
             // only take in account the "usage page" before REPORT ID
-            if (ri_collection_depth == 0) memcpy(&info->usage_page, desc_report, size);
+            if (ri_collection_depth == 0) {
+              // zero-extend: a shorter payload must not leave a stale high byte
+              // from a previous usage page item in the same report
+              info->usage_page = 0;
+              memcpy(&info->usage_page, desc_report, TU_MIN(size, sizeof(info->usage_page)));
+            }
             break;
 
           case RI_GLOBAL_LOGICAL_MIN: break;
