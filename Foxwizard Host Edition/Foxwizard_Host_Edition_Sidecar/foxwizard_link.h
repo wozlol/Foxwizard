@@ -1,7 +1,7 @@
 #pragma once
 
 // Shared by both Host Edition sketches. Keep the copies in Foxwizard_Host_Edition_Sidecar and
-// Mini_MIDI_Multitool_Host_Edition identical. Frame format and ports: ../README.md.
+// Mini_MIDI_Multitool identical. Frame format and ports: Foxwizard Host Edition/README.md.
 
 #include <stdint.h>
 #include <string.h>

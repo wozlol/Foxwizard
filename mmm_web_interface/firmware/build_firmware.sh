@@ -4,13 +4,12 @@
 #
 # ./build_firmware.sh                  live firmware, ../../Mini_MIDI_Multitool, into firmware/.
 #                                      Upload the .uf2 to woz.lol/foxwizard-midi-multitool-firmware.
-# ./build_firmware.sh --host-edition   test build of the Host Edition main brain into firmware/test/.
-#                                      Only Patchling served locally (serve.sh) or opened with ?test
-#                                      offers it.
+# ./build_firmware.sh --test-channel   the same firmware as a test build into firmware/test/. Only
+#                                      Patchling served locally (serve.sh) or opened with ?test offers it.
 # ./build_firmware.sh --test MINOR     the live firmware relabeled MAJOR.MINOR, for testing the update
 #                                      itself. The source is not changed. Rerun with no options after.
 #
-# Patchling and the firmware always share one version number. Live and Host Edition builds refuse
+# Patchling and the firmware always share one version number. Live and test channel builds refuse
 # to publish unless the Patchling footer (index.html) and cache name (sw.js) match.
 set -e
 cd "$(dirname "$0")"
@@ -25,11 +24,8 @@ PREFIX=foxwizard-firmware
 TEST_MINOR=""
 
 case "$1" in
-  --host-edition)
-    SKETCH="../../Foxwizard Host Edition/Mini_MIDI_Multitool_Host_Edition"
-    SKETCH_NAME=Mini_MIDI_Multitool_Host_Edition
+  --test-channel)
     OUT=test
-    PREFIX=foxwizard-host-edition
     ;;
   --test)
     TEST_MINOR="$2"
@@ -40,7 +36,7 @@ case "$1" in
     SKETCH="$BUILD/$SKETCH_NAME"
     ;;
   "") ;;
-  *) echo "Usage: $0 [--host-edition | --test MINOR]" >&2; exit 1 ;;
+  *) echo "Usage: $0 [--test-channel | --test MINOR]" >&2; exit 1 ;;
 esac
 
 INO="$SKETCH/$SKETCH_NAME.ino"

@@ -620,9 +620,10 @@ button.connection-pill.connecting { cursor: default; transform: none; }
   position: absolute; left: 71%; top: 47%;
   width: 4px; height: 4px; border-radius: 50%;
   background: #00ff00; box-shadow: 0 0 3px 1px #00ff00;
-  animation: pingMini 3s linear infinite;
+  opacity: .15; z-index: 1;
+  transition: left 1.2s linear, top 1.2s linear; /* app.js radarBlip wanders it and flashes it as the sweep passes */
 }
-@keyframes pingMini { 0%, 50% { opacity: 1; } 100% { opacity: .3; } }
+@keyframes blipFlash { 0% { opacity: 1; } 100% { opacity: .15; } }
 .radar-overlay-text { margin: 16px 0 2px; font-size: 0.9rem; color: var(--text); }
 .radar-overlay-progress { margin: 0; font-size: 0.76rem; color: var(--text-dim); }
 
@@ -959,7 +960,7 @@ body.dragging-active { overflow: hidden; }
 .chord-positions { margin-top: 8px; }
 
 /* Launchpad round buttons, inside a route's output column. */
-.lp-buttons { display: grid; grid-template-columns: repeat(auto-fill, minmax(230px, 1fr)); gap: 6px; margin-top: 8px; }
+.lp-buttons { display: grid; grid-template-columns: repeat(auto-fill, minmax(200px, 1fr)); gap: 6px; margin-top: 8px; }
 .lp-button { display: flex; align-items: center; gap: 6px; }
 .lp-button select, .lp-button input { flex: 1; min-width: 60px; }
 .lp-button-label { font-size: 0.74rem; color: var(--text-dim); width: 46px; flex-shrink: 0; }
@@ -1001,3 +1002,29 @@ body.dragging-active { overflow: hidden; }
 .arp-square-actions { display: flex; gap: 4px; }
 .arp-square-add { align-items: center; justify-content: center; font-size: 1.4rem; color: var(--text-dim); cursor: pointer; }
 .arp-square-add:hover { color: var(--text); border-color: var(--text-dim); }
+
+/* Looper mode's switches, stacked in one box. */
+.looper-switches { display: flex; flex-direction: column; gap: 8px; justify-content: center; }
+
+/* Patchling's piano plays its keys. */
+.scale-piano [data-note] { cursor: pointer; }
+.scale-piano { touch-action: none; }
+.autosave-switch { margin-left: 4px; }
+
+/* The mapper's action editor: action type, then its values. */
+.action-editor { display: inline-flex; flex-wrap: wrap; align-items: center; gap: 6px; }
+.action-editor select { flex: 1 1 auto; min-width: 0; }
+.notecc-row .action-editor { flex: 1 1 0; min-width: 0; flex-wrap: nowrap; }
+.notecc-row .action-editor select { flex: 1 1 0; min-width: 90px; }
+/* Number boxes stay narrow so Learn and the trash button keep to the row. */
+.action-editor input[type="number"], .notecc-row > input[type="number"] { flex: 0 0 64px; width: 64px; min-width: 0; }
+.notecc-row > select { flex: 0 0 auto; }
+.notecc-row input[type="number"] { flex: 0 0 50px; width: 50px; padding-left: 6px; padding-right: 4px; }
+
+/* Looper Length and Quantize, side by side in one box. */
+.looper-pair { display: grid; grid-template-columns: 1fr 1fr; gap: 10px; }
+.looper-pair select { width: 100%; }
+
+/* A feature that's on and open sits in its own box, apart from the others. */
+.feature-open { border: 1px solid var(--box-border); border-radius: var(--radius-sm); background: var(--box); padding: 10px 12px; }
+.lp-options { margin: 6px 0 8px; }

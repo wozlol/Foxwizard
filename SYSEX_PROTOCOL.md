@@ -159,10 +159,14 @@ cut to what this one knows, a shorter one is zero-filled. Zero means off or unus
 
 | type | block | size | notes |
 |------|-------|------|-------|
-| 1 | Note to CC | 48 | 16 entries of (note + 1, cc, mode). Note 0 = unused entry. mode 0 = 127 on press, 0 on release. 1 = the note's velocity, 0 on release. 2 = toggle 127/0 on each press |
-| 2 | Launchpad | 32 | 16 round buttons of (type 0 off / 1 note / 2 CC, number): top row left to right, then the side column top to bottom. Firmware 1.7 |
-| 3 | Scale | 8 | root (0-11), scaleType (0-11: Major, Minor, Harmonic Major, Harmonic Minor, Melodic Major, Melodic Minor, Major Blues, Minor Blues, Major Pentatonic, Minor Pentatonic, Dorian, Mixolydian), layout (1.11-1.13, moved to route byte 48 in 1.14, now 0), chordMask (2, 1.12-1.14, moved to route bytes 49-50 in 1.15, now 0), 3 spare. Firmware 1.11 |
-| 4-7 | Arp slots 1-4 | 48 each | mode (0 Up, 1 Down, 2 Up-Down 1, 3 Up-Down 2, 4 Drum Roll/Chord Pulse, 5 Random, 6 Up 4-Step, 7 Rhythm, 8 Ostinato, 9 Octave Walk, 10 Fifth, 11 Bass+Chord, 12 Chord+Run, 13 As Played, 14 Converge, 15 Diverge, 16 Thumb, 17 Pinky), default division + 1 (fw::MusicalDivision, 0 = 1/16), octaves (1-4, 0 = 1), gate % (5-100, 0 = 50), velocity (1-127 fixed, 0 = each note's own), holdType (0 none, 2 CC), holdChannel (0-15, 16 any), holdNumber, aftertouch velocity (1 = on), bypass channel (0 off, 1-16, 1.19), bass channel (0 off, 1-16, 1.19), 5 spare, 7 division squares of (division + 1, 0 = unused, triggerType 0 none 1 note 2 CC, triggerChannel 0-15 16 any, triggerNumber), 4 spare. Firmware 1.13, 48 bytes and squares 1.16 |
+| 3 | Scale | 8 | root (0-11), scaleType (0-11: Major, Minor, Harmonic Major, Harmonic Minor, Melodic Major, Melodic Minor, Major Blues, Minor Blues, Major Pentatonic, Minor Pentatonic, Dorian, Mixolydian), 6 spare (Layout and chord are per route). Firmware 1.11 |
+| 4-7 | Arp slots 1-4 | 48 each | mode (0 Up, 1 Down, 2 Up-Down 1, 3 Up-Down 2, 4 Drum Roll/Chord Pulse, 5 Random, 6 Up 4-Step, 7 Rhythm, 8 Ostinato, 9 Octave Walk, 10 Fifth, 11 Bass+Chord, 12 Chord+Run, 13 As Played, 14 Converge, 15 Diverge, 16 Thumb, 17 Pinky), default division + 1 (fw::MusicalDivision, 0 = 1/16), octaves (1-4, 0 = 1), gate % (5-100, 0 = 50), velocity (1-127 fixed, 0 = each note's own), holdType (0 none, 2 CC), holdChannel (0-15, 16 any), holdNumber, aftertouch velocity (1 = on), bypass channel (0 off, 1-16, 1.19), bass channel (0 off, 1-16, 1.19), default trigger type, channel, number (1.24), follows live channel (1.40), 1 spare, 7 division squares of (division + 1, 0 = unused, triggerType 0 none 1 note 2 CC, triggerChannel 0-15 16 any, triggerNumber), 4 spare. Firmware 1.13, 48 bytes and squares 1.16 |
+| 8 | Echo | 48 | division + 1 (0 = 1/8), repeats (1-32, 0 = 4), level % of the note's velocity for the first echo (1-100, 0 = 70), default trigger type, channel, number (1.24), 10 spare, 7 division squares as in the arp block whose triggers latch, 4 spare. Firmware 1.23 |
+| 9 | Stutter | 48 | default division + 1 (0 = 1/8), runout bars (1-16, 0 = 16), default trigger type, channel, number, 11 spare, 7 division squares as in the arp block, 4 spare. Firmware 1.24 |
+| 10 | Looper | 48 | bars (0 Free, 1-16), quantize (0 off, else fw::MusicalDivision + 1), auto overdub (1.29), record inputs (0 outputs, 1 inputs), double tap clears (1.29: 0 = holding the button clears and a double tap stops, 1 the other way), 43 spare. Firmware 1.27 |
+| 11 | Note to Feature | 80 | 16 entries of (source note + 1, 0 = unused, then a 4-byte action). Firmware 1.40 |
+| 12 | CC to Feature | 80 | 16 entries of (source CC + 1, 0 = unused, then a 4-byte action). Firmware 1.40 |
+| 13 | Launchpad buttons | 64 | 16 actions of 4 bytes, top row then side column. Firmware 1.40 |
 
 **Note to CC:** only the first route with the switch on uses the block. A mapped note from that
 route's inputs becomes a CC on each of its output channels and ports instead of a note. Unmapped
@@ -230,6 +234,105 @@ route's ports with its transpose, and can share a channel with each other or the
 device unplugs, the notes it was holding are released as if their Note Offs arrived. An arp route keeps the
 global clock in use, so its settings apply.
 
+**Echo:** the one route with feature bit 4 repeats each note it sends, on the same channel and ports,
+at the echo division, from ARPnMIDI's echo engine. Echoes fade evenly so the last of the repeats is
+the quietest, and each echo is no longer than the played note or 3/4 of the echo spacing. Pressing a
+division square's note or CC (64 and up) latches that division, pressing it again goes back to the
+default. The trigger doesn't pass through. An Echo route keeps the global clock in use. Panic stops
+every echo.
+
+**Default square triggers (1.24):** a trigger type, channel, and number on a division table's default
+square. On the arp it turns arpeggiating off and on (1.26): while off, the route plays the held notes
+straight and Bypass and Bass keep playing, and turning it on with notes held starts like a fresh press. On Echo it turns echoing off (echoes already sounding fade out) and on.
+Either lasts until routes change or power off. On Stutter the default square stutters like the others.
+
+**Stutter (1.24):** the one route with feature bit 5 remembers the last 512 notes it sent. Holding a
+division square's note or CC (64 and up), the default square included, loops that length of what it
+just played, from ARPnMIDI's repeater: the route's live notes stop and stay muted, and the loop feeds
+Echo. With several held, the last one pressed loops. Releasing every trigger stops it. The runout
+lets go by itself after its bars, counted from the first press, until a trigger is pressed again.
+Panic stops it.
+
+**Looper (1.27):** button action 11, one loop from ARPnMIDI's looper engine. It records the notes the
+routes send, replayed to the same ports, or with Record Inputs the notes coming in, replayed through
+the routes as if they came in again. The lights show its state: red recording or overdubbing, yellow
+armed, green playing, off when stopped or cleared. It powers up stopped, never armed.
+
+Play/arm (the button, or a mapped Looper action) acts at once on a single tap:
+
+| State | Single tap |
+|---|---|
+| Stopped and cleared | Arms, recording from the next note |
+| Armed | Unarms |
+| Recording | Free: ends the take and plays it. Measures: cancels and re-arms |
+| Playing | Overdub on or off |
+| Stopped with a loop | Plays |
+
+A double tap (a second tap within 1 second) and holding the button half a second each first put back
+what the first tap did, then one clears and the other stops (1.29). With Double Tap Clears off, the
+default, holding clears and a double tap stops. Clear, from the state before the first tap: a cleared
+or armed looper brings its loop back and plays it, a take in progress is cancelled, a playing or
+stopped loop stops and clears (undoable). Stop: the loop stops, kept, so a tap plays it.
+
+Stop/clear (a mapped Looper action) works as ARPnMIDI's: it ends a take, stops, and the next press
+clears, or brings back a cleared loop. A Free take sets the BPM, taking the loop as one bar, unless
+following another clock. Auto Overdub (1.29) turns overdub on as a new take starts playing, until a
+tap turns it off. Panic stops the loop without clearing it. Arming never discards a cleared loop's
+undo, only the first note of a new take does. A take that starts while notes are already sounding on the side
+being recorded (a held bass note, a chord already down) begins with them (1.30). A take or overdub
+only records a note's end if it recorded its start, so releasing a note held from before an overdub
+leaves the loop alone (1.31).
+
+The loop holds 6144 events (a note is 2), in 12-byte slots (1.28). It's saved to the flash area as
+/loop.fw once the looper is stopped and no note has come in or gone out for 5 seconds, through a
+temporary file, with a checksum checked at power on (anything wrong leaves the looper empty). The
+host brain is paused while flash is written. A firmware update removes the saved loop only if the
+flash area can't fit both, and the update's staged file is removed at power on once installed.
+
+**Launchpad ports (1.38):** a port a Launchpad route's grid or button presses come in on becomes a
+Launchpad port, owned by that route, until routes change. No note goes there as it is. Every note
+headed to it, from any route and channel (arp, Bypass, Bass, echoes, stutter, looper playback),
+lights each grid pad that plays that note on the owning route (through the grid, Scale, Auto Chord
+and transpose), on channel 1. The velocity sets the color by the note's real channel (1.39): yellow
+(62), orange (47), green (60), red (15), round again, with channel 10 always red. Presses echo back
+as they come in, in their channel's color.
+
+**Route rewrites (1.35):** adding, setting, deleting, moving or clearing routes forgets which keys
+hold which notes, so 50 ms after the last one, All Notes Off (CC 123) goes to every port on every
+channel. Patchling's Autosave saves while notes play, so this keeps them from sticking.
+
+**The mapper (1.40):** Note to Feature (feature bit 0), CC to Feature (bit 6) and
+the Launchpad buttons run the same actions, 4 bytes each: type, a, b, spare. A note presses and
+releases. A CC presses when it crosses 64 and releases below, and every value also reaches value
+actions. CC to Feature matches the route's input ports and channels only, not its data type filters.
+Mapped notes and CCs don't pass through. Messages go to the route's outputs and channels.
+
+| Type | Action | a | b | Acts on |
+|---|---|---|---|---|
+| 0 | Off | | | |
+| 1 | Note | note | | press (velocity, 127 from a CC), release |
+| 2 | CC Momentary | CC | | press 127, release 0 |
+| 3 | CC Toggle | CC | | press, 127 and 0 in turn |
+| 4 | CC Value | CC | | a note's velocity (0 on release), or every CC value |
+| 5 | CC Level | CC | level | press, stays |
+| 6 | Transport | 0 Play, 1 Stop, 2 Continue, 3 Pause, 4 Record, 5 Record Exit, 6 Rewind, 7 Fast Forward, 8 Return to Start | | press: MMC (F0 7F 7F 06 cmd F7, Locate to 0 for Return to Start), plus MIDI Start for Play, Continue for Continue, Stop for Stop and Pause. Not to Launchpad ports |
+| 7 | Program Change | program | | press |
+| 8 | Program Up/Down | 1 up, 0 down | | press, from the last program sent, wrapping |
+| 9 | Live Out Channel | channel 0-15 | | press: the route sends only on that channel for the session, pressed again it's back. Notes sounding on the old channels get All Notes Off, and the route's arp lets go |
+| 10 | Live Velocity | 0 follows the value, 1-20 = 10-200% | | follows: every CC value or press velocity sets 10-200%. Fixed: press sets it, pressed again it's back. Takes the place of the route's Velocity % for the session |
+| 11 | Looper | 0 Button (as the button in Looper mode, hold included), 1 Play/Arm/Rec, 2 Stop/Clear/Undo, 3 Play, 4 Stop, 5 Pause, 6 Overdub, 7 Clear, 8 Undo, 9 Rec/Arm | | press (Button: press and release). Needs Button Action LOOPER, which Patchling sets |
+| 12 | Tap Tempo | | | press |
+
+Live out channel and velocity are session only, cleared when routes change. With a live out channel on,
+a route's arp is bypassed (notes play straight on the live channel, no Bypass or Bass) unless its
+Follows Live Ch Change switch is on (arp block byte 14), then it arpeggiates onto the live channel.
+Echo and Stutter apply either way. Stop starts the next Play from the top, Pause carries on from
+where it stopped. Rec/Arm arms, and pressed again while armed starts recording at once. Types 1 and
+2 are unused.
+
+**PLAY_NOTE (0x33, 1.34):** on (1/0), note, velocity. The note goes to every port on every channel,
+for Patchling's piano. No reply.
+
 ## Terminology: Poly Aftertouch vs. Channel Pressure
 
 MIDI has two unrelated messages both colloquially called "aftertouch," and this protocol (and the
@@ -273,7 +376,8 @@ from being confused with each other.
 | 47    | arpSlot (protocol 4) | 0 none, 1-4: this route feeds that arp slot. Firmware 1.13 |
 | 48    | scaleLayout (protocol 4) | Layout of a Scale route: 0 Next Note Up, 1 White Keys, 2 Drum Pad 5ths, 3 Drum Pad 4ths, 4 Drum Pad 3rds. Firmware 1.14 |
 | 49-50 | chordMask, little endian (protocol 4) | Auto Chord positions of this route: bit k = scale position k+1 on a Scale route, else k semitones. Firmware 1.15 |
-| 51-52 | spare (protocol 4) | zero. Room for later route features without another wire format change |
+| 51    | launchpadFlags (protocol 4) | bit0: a Launchpad route plays an octave down, its output shifted like a -12 transpose, lights included. Firmware 1.43 |
+| 52    | spare (protocol 4) | zero. Room for later route features without another wire format change |
 
 **Port masks** (protocol 2): bit0 TRS/DIN, bit1 USB Device, bits 2-5 USB Host 1-4 (sidecar hub
 ports), bit6 TRS 2 (sidecar DIN IN and DIN OUT 1), bits 7-10 TRS 3-6 (sidecar DIN OUT 2-5, outputs

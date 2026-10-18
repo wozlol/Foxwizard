@@ -1,11 +1,11 @@
+import { ACTION_TYPES, MAP_ENTRIES, defaultAction, defaultLpActions } from './mapper.js';
 // Human-readable XML preset format for FoxWizard Patchling.
 // A preset captures mode, button config, LED brightness, and the full route list — everything
 // the device's SysEx protocol can set. Numbers are kept human (channel lists as "1,2,4-6", device
 // names as words) rather than raw bitmasks/enums, so the file is meant to be hand-editable.
 
-import { DATA_TYPE_BITS, PORTS, PORT_TRS, PORT_USB, FEATURE, NOTE_CC_ENTRIES, LAUNCHPAD_BUTTONS, defaultLaunchpadButtons, SCALES, LAYOUTS, defaultScale, ARP_SLOTS, ARP_MODES, ARP_SQUARES, DIVISIONS, defaultArp } from './midi.js';
+import { DATA_TYPE_BITS, PORTS, PORT_TRS, PORT_USB, FEATURE, SCALES, LAYOUTS, defaultScale, ARP_SLOTS, ARP_MODES, ARP_SQUARES, DIVISIONS, defaultArp, defaultEcho, defaultStutter, defaultLooper, noTrigger } from './midi.js';
 
-const NOTE_CC_MODE_NAMES = ['momentary', 'velocity', 'toggle'];
 
 const MODE_NAMES = ['usbAdaptor', 'router'];
 const BUTTON_ACTION_NAMES = ['panic', 'pitchUp', 'pitchDown', 'mod', 'ccMomentary', 'ccToggle', 'octaveUp', 'octaveDown', 'noteMomentary', 'noteToggle', 'tapTempo'];
@@ -45,6 +45,79 @@ function legacyDeviceName(mask, names) {
 function readPorts(el, fallbackDevice) {
   if (el?.hasAttribute('ports')) return stringToPorts(el.getAttribute('ports'));
   return LEGACY_DEVICE_PORTS[el?.getAttribute('device') || fallbackDevice] ?? LEGACY_DEVICE_PORTS[fallbackDevice];
+}
+
+// Division squares (arp and echo) as <division> children.
+function squaresToXml(lines, squares, indent) {
+  (squares || []).forEach((sq) => {
+    if (!sq) return;
+    lines.push(`${indent}<division value="${DIVISIONS[sq.division]}" trigger="${['none', 'note', 'cc'][sq.triggerType] || 'none'}" channel="${sq.triggerChannel > 15 ? 'any' : sq.triggerChannel + 1}" number="${sq.triggerNumber}"/>`);
+  });
+}
+
+function squaresFromXml(el) {
+  const found = [...el.querySelectorAll('division')];
+  return Array.from({ length: ARP_SQUARES }, (_, k) => {
+    const d = found[k];
+    if (!d || !DIVISIONS.includes(d.getAttribute('value'))) return null;
+    const c = d.getAttribute('channel') || 'any';
+    return {
+      division: DIVISIONS.indexOf(d.getAttribute('value')),
+      triggerType: Math.max(0, ['none', 'note', 'cc'].indexOf(d.getAttribute('trigger'))),
+      triggerChannel: c === 'any' ? 16 : Math.min(15, Math.max(0, parseInt(c, 10) - 1)),
+      triggerNumber: Math.min(127, Math.max(0, parseInt(d.getAttribute('number') || '0', 10) || 0))
+    };
+  });
+}
+
+function echoFromXml(el) {
+  const e = defaultEcho();
+  if (!el) return e;
+  if (DIVISIONS.includes(el.getAttribute('division'))) e.division = DIVISIONS.indexOf(el.getAttribute('division'));
+  e.repeats = Math.min(32, Math.max(1, parseInt(el.getAttribute('repeats') || '4', 10) || 4));
+  e.level = Math.min(100, Math.max(1, parseInt(el.getAttribute('level') || '70', 10) || 70));
+  e.squares = squaresFromXml(el);
+  e.defaultTrigger = triggerFromXml(el);
+  return e;
+}
+
+function stutterFromXml(el) {
+  const st = defaultStutter();
+  if (!el) return st;
+  if (DIVISIONS.includes(el.getAttribute('division'))) st.division = DIVISIONS.indexOf(el.getAttribute('division'));
+  st.maxBars = Math.min(16, Math.max(1, parseInt(el.getAttribute('runoutBars') || '16', 10) || 16));
+  st.squares = squaresFromXml(el);
+  st.defaultTrigger = triggerFromXml(el);
+  return st;
+}
+
+function looperFromXml(el) {
+  const lp = defaultLooper();
+  if (!el) return lp;
+  const len = el.getAttribute('length') || 'free';
+  lp.bars = len === 'free' ? 0 : Math.min(16, Math.max(1, parseInt(len, 10) || 1));
+  lp.quantize = DIVISIONS.indexOf(el.getAttribute('quantize'));
+  lp.autoOverdub = el.getAttribute('autoOverdub') === 'true';
+  lp.recordInputs = el.getAttribute('records') === 'inputs';
+  lp.holdClears = el.getAttribute('holdClears') !== 'false';
+  return lp;
+}
+
+// A default square's trigger as attributes: trigger="note|cc" triggerChannel="1-16|any" triggerNumber.
+function triggerAttrs(t) {
+  if (!t || !t.triggerType) return '';
+  return ` trigger="${t.triggerType === 1 ? 'note' : 'cc'}" triggerChannel="${t.triggerChannel > 15 ? 'any' : t.triggerChannel + 1}" triggerNumber="${t.triggerNumber}"`;
+}
+
+function triggerFromXml(el) {
+  const type = ['none', 'note', 'cc'].indexOf(el.getAttribute('trigger') || 'none');
+  if (type <= 0) return noTrigger();
+  const c = el.getAttribute('triggerChannel') || 'any';
+  return {
+    triggerType: type,
+    triggerChannel: c === 'any' ? 16 : Math.min(15, Math.max(0, parseInt(c, 10) - 1)),
+    triggerNumber: Math.min(127, Math.max(0, parseInt(el.getAttribute('triggerNumber') || '0', 10) || 0))
+  };
 }
 
 // "1,3,5" (positions from 1) to a chord mask.
@@ -113,32 +186,56 @@ export function serializePreset(state) {
     lines.push(`      <passthrough programChange="${!!(r.typeFlags & DATA_TYPE_BITS.programChange)}" pitchBend="${!!(r.typeFlags & DATA_TYPE_BITS.pitchBend)}" aftertouch="${!!(r.typeFlags & DATA_TYPE_BITS.aftertouch)}" aftertouchMapEnabled="${!!(r.typeFlags & DATA_TYPE_BITS.aftertouchMap)}" aftertouchMapCC="${r.atMapCC}" pressure="${!!(r.typeFlags & DATA_TYPE_BITS.pressure)}" pressureMapEnabled="${!!r.cpMapEnabled}" pressureMapCC="${r.cpMapCC}" sysex="${!!(r.typeFlags & DATA_TYPE_BITS.sysex)}" common="${!!r.commonEnabled}" realtime="${!!r.realtimeEnabled}" clock="${!!r.clockEnabled}"/>`);
     lines.push(`      <noteRange enabled="${!!(r.typeFlags & DATA_TYPE_BITS.note)}" start="${r.noteStart}" end="${r.noteEnd}"/>`);
     lines.push(`      <ccRange enabled="${!!(r.typeFlags & DATA_TYPE_BITS.cc)}" start="${r.ccStart}" end="${r.ccEnd}"/>`);
-    lines.push(`      <output ports="${portsToString(r.outPorts)}" device="${legacyDeviceName(r.outPorts, OUT_DEVICE_NAMES)}" channels="${channelsToRangeString(r.outputChannels)}" transpose="${r.transpose}" velocityScale="${r.velocityScale}" ccMapStart="${r.ccMapStart}" monoRetrig="${!!r.monoRetrig}" roundRobin="${!!r.roundRobin}" roundRobinRandom="${!!r.roundRobinRandom}" noteToCc="${!!(r.features & FEATURE.NOTE_TO_CC)}" launchpad="${!!(r.features & FEATURE.LAUNCHPAD)}" scale="${!!(r.features & FEATURE.SCALE)}" layout="${esc(LAYOUTS[r.scaleLayout || 0])}" autoChord="${!!(r.features & FEATURE.AUTO_CHORD)}" chord="${Array.from({ length: 12 }, (_, k) => k).filter((k) => (r.chordMask || 0) & (1 << k)).map((k) => k + 1).join(',')}" arp="${r.arpSlot || 0}"/>`);
+    lines.push(`      <output ports="${portsToString(r.outPorts)}" device="${legacyDeviceName(r.outPorts, OUT_DEVICE_NAMES)}" channels="${channelsToRangeString(r.outputChannels)}" transpose="${r.transpose}" velocityScale="${r.velocityScale}" ccMapStart="${r.ccMapStart}" monoRetrig="${!!r.monoRetrig}" roundRobin="${!!r.roundRobin}" roundRobinRandom="${!!r.roundRobinRandom}" noteToCc="${!!(r.features & FEATURE.NOTE_TO_CC)}" launchpad="${!!(r.features & FEATURE.LAUNCHPAD)}" launchpadOctaveDown="${!!r.lpOctaveDown}" scale="${!!(r.features & FEATURE.SCALE)}" layout="${esc(LAYOUTS[r.scaleLayout || 0])}" autoChord="${!!(r.features & FEATURE.AUTO_CHORD)}" chord="${Array.from({ length: 12 }, (_, k) => k).filter((k) => (r.chordMask || 0) & (1 << k)).map((k) => k + 1).join(',')}" arp="${r.arpSlot || 0}" echo="${!!(r.features & FEATURE.ECHO)}" stutter="${!!(r.features & FEATURE.STUTTER)}" ccToFeature="${!!(r.features & FEATURE.CC_MAP)}"/>`);
     lines.push('    </route>');
   }
   lines.push('  </routes>');
-  lines.push('  <noteToCc>');
-  for (const e of state.noteCc || []) lines.push(`    <map note="${e.note}" cc="${e.cc}" value="${NOTE_CC_MODE_NAMES[e.mode] || 'momentary'}"/>`);
-  lines.push('  </noteToCc>');
+  lines.push('  <noteToFeature>');
+  for (const e of state.noteMap || []) lines.push(`    <map note="${e.source}"${actionAttrs(e.action)}/>`);
+  lines.push('  </noteToFeature>');
+  lines.push('  <ccToFeature>');
+  for (const e of state.ccMap || []) lines.push(`    <map cc="${e.source}"${actionAttrs(e.action)}/>`);
+  lines.push('  </ccToFeature>');
   const sc = state.scale || defaultScale();
   lines.push(`  <scale root="${sc.root}" scale="${esc(SCALES[sc.scaleType]?.name || 'Major')}"/>`);
   lines.push('  <arps>');
   (state.arps || []).forEach((ar, s) => {
-    lines.push(`    <arp slot="${s + 1}" mode="${esc(ARP_MODES[ar.mode] || 'Up')}" division="${DIVISIONS[ar.division] || '1/16'}" octaves="${ar.octaves}" gate="${ar.gate}" velocity="${ar.aftertouch ? 'aftertouch' : (ar.velocity ? ar.velocity : 'played')}" hold="${ar.holdType ? 'cc' : 'none'}" holdChannel="${ar.holdChannel > 15 ? 'any' : ar.holdChannel + 1}" holdNumber="${ar.holdNumber}" bypass="${ar.bypassChannel || 'off'}" bass="${ar.bassChannel || 'off'}">`);
-    (ar.squares || []).forEach((sq) => {
-      if (!sq) return;
-      lines.push(`      <division value="${DIVISIONS[sq.division]}" trigger="${['none', 'note', 'cc'][sq.triggerType] || 'none'}" channel="${sq.triggerChannel > 15 ? 'any' : sq.triggerChannel + 1}" number="${sq.triggerNumber}"/>`);
-    });
+    lines.push(`    <arp slot="${s + 1}" mode="${esc(ARP_MODES[ar.mode] || 'Up')}" division="${DIVISIONS[ar.division] || '1/16'}" octaves="${ar.octaves}" gate="${ar.gate}" velocity="${ar.aftertouch ? 'aftertouch' : (ar.velocity ? ar.velocity : 'played')}" hold="${ar.holdType ? 'cc' : 'none'}" holdChannel="${ar.holdChannel > 15 ? 'any' : ar.holdChannel + 1}" holdNumber="${ar.holdNumber}" bypass="${ar.bypassChannel || 'off'}" bass="${ar.bassChannel || 'off'}" followsLiveCh="${!!ar.followsLiveChannel}"${triggerAttrs(ar.defaultTrigger)}>`);
+    squaresToXml(lines, ar.squares, '      ');
     lines.push('    </arp>');
   });
   lines.push('  </arps>');
+  const ec = state.echo || defaultEcho();
+  lines.push(`  <echo division="${DIVISIONS[ec.division]}" repeats="${ec.repeats}" level="${ec.level}"${triggerAttrs(ec.defaultTrigger)}>`);
+  squaresToXml(lines, ec.squares, '    ');
+  lines.push('  </echo>');
+  const stt = state.stutter || defaultStutter();
+  lines.push(`  <stutter division="${DIVISIONS[stt.division]}" runoutBars="${stt.maxBars}"${triggerAttrs(stt.defaultTrigger)}>`);
+  squaresToXml(lines, stt.squares, '    ');
+  lines.push('  </stutter>');
+  const lp = state.looper || defaultLooper();
+  lines.push(`  <looper length="${lp.bars ? lp.bars : 'free'}" quantize="${lp.quantize >= 0 ? DIVISIONS[lp.quantize] : 'off'}" autoOverdub="${lp.autoOverdub}" records="${lp.recordInputs ? 'inputs' : 'outputs'}" holdClears="${lp.holdClears}">`);
+  lines.push('  </looper>');
   lines.push('  <launchpad>');
-  (state.launchpad || []).forEach((b, i) => {
-    if (b.type) lines.push(`    <button index="${i}" sends="${b.type === 1 ? 'note' : 'cc'}" number="${b.number}"/>`);
+  (state.lpActions || []).forEach((act, i) => {
+    if (act.type) lines.push(`    <button index="${i}"${actionAttrs(act)}/>`);
   });
   lines.push('  </launchpad>');
   lines.push('</foxwizardPatchlingPreset>');
   return lines.join('\n');
+}
+
+// An action as attributes: action="CC Level" a="20" b="64".
+function actionAttrs(act) {
+  const t = ACTION_TYPES.find((x) => x.v === act?.type) || ACTION_TYPES[0];
+  return ` action="${t.l}" a="${act?.a || 0}" b="${act?.b || 0}"`;
+}
+
+function actionFromXml(el) {
+  const t = ACTION_TYPES.find((x) => x.l === el.getAttribute('action'));
+  if (!t) return defaultAction();
+  const clamp = (name) => Math.min(127, Math.max(0, parseInt(el.getAttribute(name) || '0', 10) || 0));
+  return { type: t.v, a: clamp('a'), b: clamp('b') };
 }
 
 function boolAttr(el, name) {
@@ -235,13 +332,17 @@ export function parsePreset(xmlText) {
       commonEnabled: passEl && passEl.hasAttribute('common') ? boolAttr(passEl, 'common') : true,
       realtimeEnabled: passEl && passEl.hasAttribute('realtime') ? boolAttr(passEl, 'realtime') : true,
       clockEnabled: passEl && passEl.hasAttribute('clock') ? boolAttr(passEl, 'clock') : true,
-      chordMask: outputEl?.hasAttribute('chord') ? parseChord(outputEl.getAttribute('chord')) : undefined,
-      scaleLayout: outputEl?.hasAttribute('layout') ? Math.max(0, LAYOUTS.indexOf(outputEl.getAttribute('layout'))) : undefined,
+      chordMask: parseChord(outputEl?.getAttribute('chord')),
+      scaleLayout: Math.max(0, LAYOUTS.indexOf(outputEl?.getAttribute('layout'))),
+      lpOctaveDown: outputEl?.getAttribute('launchpadOctaveDown') === 'true',
       arpSlot: Math.min(ARP_SLOTS, Math.max(0, parseInt(outputEl?.getAttribute('arp') || '0', 10) || 0)),
       features: (boolAttr(outputEl || document.createElement('x'), 'noteToCc') ? FEATURE.NOTE_TO_CC : 0) |
         (boolAttr(outputEl || document.createElement('x'), 'launchpad') ? FEATURE.LAUNCHPAD : 0) |
         (boolAttr(outputEl || document.createElement('x'), 'scale') ? FEATURE.SCALE : 0) |
-        (boolAttr(outputEl || document.createElement('x'), 'autoChord') ? FEATURE.AUTO_CHORD : 0)
+        (boolAttr(outputEl || document.createElement('x'), 'autoChord') ? FEATURE.AUTO_CHORD : 0) |
+        (boolAttr(outputEl || document.createElement('x'), 'echo') ? FEATURE.ECHO : 0) |
+        (boolAttr(outputEl || document.createElement('x'), 'stutter') ? FEATURE.STUTTER : 0) |
+        (boolAttr(outputEl || document.createElement('x'), 'ccToFeature') ? FEATURE.CC_MAP : 0)
     });
   }
 
@@ -252,7 +353,7 @@ export function parsePreset(xmlText) {
     const vel = el.getAttribute('velocity') || 'played';
     const ch = el.getAttribute('holdChannel') || 'any';
     arps[s] = {
-      mode: Math.max(0, ARP_MODES.indexOf(el.getAttribute('mode') === 'Up 1-Oct' ? 'Up 4-Step' : el.getAttribute('mode'))), // renamed in 1.20
+      mode: Math.max(0, ARP_MODES.indexOf(el.getAttribute('mode'))),
       division: DIVISIONS.includes(el.getAttribute('division')) ? DIVISIONS.indexOf(el.getAttribute('division')) : arps[s].division,
       octaves: Math.min(4, Math.max(1, parseInt(el.getAttribute('octaves') || '1', 10) || 1)),
       gate: Math.min(100, Math.max(5, parseInt(el.getAttribute('gate') || '50', 10) || 50)),
@@ -260,17 +361,9 @@ export function parsePreset(xmlText) {
       aftertouch: vel === 'aftertouch',
       bypassChannel: Math.min(16, Math.max(0, parseInt(el.getAttribute('bypass') || '0', 10) || 0)),
       bassChannel: Math.min(16, Math.max(0, parseInt(el.getAttribute('bass') || '0', 10) || 0)),
-      squares: Array.from({ length: ARP_SQUARES }, (_, k) => {
-        const d = el.querySelectorAll('division')[k];
-        if (!d || !DIVISIONS.includes(d.getAttribute('value'))) return null;
-        const c = d.getAttribute('channel') || 'any';
-        return {
-          division: DIVISIONS.indexOf(d.getAttribute('value')),
-          triggerType: Math.max(0, ['none', 'note', 'cc'].indexOf(d.getAttribute('trigger'))),
-          triggerChannel: c === 'any' ? 16 : Math.min(15, Math.max(0, parseInt(c, 10) - 1)),
-          triggerNumber: Math.min(127, Math.max(0, parseInt(d.getAttribute('number') || '0', 10) || 0))
-        };
-      }),
+      squares: squaresFromXml(el),
+      defaultTrigger: triggerFromXml(el),
+      followsLiveChannel: el.getAttribute('followsLiveCh') === 'true',
       holdType: el.getAttribute('hold') === 'cc' ? 2 : 0,
       holdChannel: ch === 'any' ? 16 : Math.min(15, Math.max(0, parseInt(ch, 10) - 1)),
       holdNumber: Math.min(127, Math.max(0, parseInt(el.getAttribute('holdNumber') || '64', 10) || 0))
@@ -282,39 +375,30 @@ export function parsePreset(xmlText) {
   if (scaleEl) {
     scale.root = Math.min(11, Math.max(0, parseInt(scaleEl.getAttribute('root') || '0', 10) || 0));
     scale.scaleType = Math.max(0, SCALES.findIndex((s) => s.name === scaleEl.getAttribute('scale')));
-    scale.layout = Math.max(0, LAYOUTS.indexOf(scaleEl.getAttribute('layout')));
-    scale.chordMask = parseChord(scaleEl.getAttribute('chord'));
   }
 
-  // Presets from 1.11-1.13 kept one Layout on <scale>, it goes to each Scale route without its own.
-  for (const r of routes) {
-    if (r.scaleLayout === undefined) r.scaleLayout = (r.features & FEATURE.SCALE) ? scale.layout : 0;
-    if (r.chordMask === undefined) r.chordMask = (r.features & FEATURE.AUTO_CHORD) ? scale.chordMask : 0; // presets from 1.12-1.14
-  }
-  scale.layout = 0;
-  scale.chordMask = 0;
-
-  const launchpad = defaultLaunchpadButtons();
+  const num = (el, name) => Math.min(127, Math.max(0, parseInt(el.getAttribute(name) || '0', 10) || 0));
+  const lpActions = defaultLpActions();
   for (const b of root.querySelectorAll('launchpad > button')) {
     const i = parseInt(b.getAttribute('index') || '-1', 10);
-    if (i < 0 || i >= LAUNCHPAD_BUTTONS) continue;
-    launchpad[i] = { type: b.getAttribute('sends') === 'cc' ? 2 : 1, number: Math.min(127, Math.max(0, parseInt(b.getAttribute('number') || '0', 10) || 0)) };
+    if (i >= 0 && i < 16) lpActions[i] = actionFromXml(b);
   }
 
-  const noteCc = [...root.querySelectorAll('noteToCc > map')].slice(0, NOTE_CC_ENTRIES).map((m) => ({
-    note: Math.min(127, Math.max(0, parseInt(m.getAttribute('note') || '0', 10) || 0)),
-    cc: Math.min(127, Math.max(0, parseInt(m.getAttribute('cc') || '0', 10) || 0)),
-    mode: Math.max(0, NOTE_CC_MODE_NAMES.indexOf(m.getAttribute('value') || 'momentary'))
-  }));
+  const noteMap = [...root.querySelectorAll('noteToFeature > map')].slice(0, MAP_ENTRIES).map((m) => ({ source: num(m, 'note'), action: actionFromXml(m) }));
+  const ccMap = [...root.querySelectorAll('ccToFeature > map')].slice(0, MAP_ENTRIES).map((m) => ({ source: num(m, 'cc'), action: actionFromXml(m) }));
 
   return {
     name,
     global: { mode, buttonAction, buttonParamA, buttonParamB, buttonToggleMomentary, ledBrightnessStep, ...clock },
     routes,
-    noteCc,
-    launchpad,
+    noteMap,
+    ccMap,
+    lpActions,
     scale,
-    arps
+    arps,
+    echo: echoFromXml(root.querySelector('echo')),
+    stutter: stutterFromXml(root.querySelector('stutter')),
+    looper: looperFromXml(root.querySelector('looper'))
   };
 }
 

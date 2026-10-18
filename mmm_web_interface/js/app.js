@@ -1,4 +1,5 @@
-import { DeviceLink, DATA_TYPE_BITS, ROUTE_NAME_MAX_LEN, PORTS, PORT_TRS, PORT_USB, SIDECAR_INPUT_PORTS, SIDECAR_OUTPUT_PORTS, FEATURE, NOTE_CC_ENTRIES, defaultLaunchpadButtons, SCALES, LAYOUTS, defaultScale, ARP_SLOTS, ARP_MODES, ARP_MODE_ORDER, ARP_SQUARES, DIVISIONS, defaultArp } from './midi.js';
+import { ACT, MAP_ENTRIES, defaultAction, defaultLpActions, actionEditorHtml, applyActionField, usesLooper, usesLiveChannel } from './mapper.js';
+import { DeviceLink, DATA_TYPE_BITS, ROUTE_NAME_MAX_LEN, PORTS, PORT_TRS, PORT_USB, SIDECAR_INPUT_PORTS, SIDECAR_OUTPUT_PORTS, FEATURE, SCALES, LAYOUTS, defaultScale, ARP_SLOTS, ARP_MODES, ARP_MODE_ORDER, ARP_SQUARES, DIVISIONS, defaultArp, defaultEcho, defaultStutter, defaultLooper, noTrigger } from './midi.js';
 import { serializePreset, parsePreset, downloadPreset, readPresetFile, channelsToRangeString } from './presetXml.js';
 import { attachDragReorder } from './dragReorder.js';
 
@@ -129,10 +130,14 @@ const state = {
   global: defaultGlobal(),
   routes: [],
   // Feature blocks, shared by the route that switches the feature on (firmware 1.6 and later).
-  noteCc: [], // [{ note, cc, mode: 0 momentary 127/0, 1 velocity, 2 toggle }]
-  launchpad: defaultLaunchpadButtons(), // 16 round buttons: [{ type: 0 off, 1 note, 2 CC, number }]
+  noteMap: [], // Note to Feature: [{ source note, action }]
+  ccMap: [], // CC to Feature: [{ source CC, action }]
+  lpActions: defaultLpActions(), // the Launchpad's 16 round buttons, an action each
   scale: defaultScale(), // { root 0-11, scaleType }, each route has its own scaleLayout and chordMask
-  arps: Array.from({ length: ARP_SLOTS }, defaultArp) // slot settings, route.arpSlot 1-4 points at one
+  arps: Array.from({ length: ARP_SLOTS }, defaultArp), // slot settings, route.arpSlot 1-4 points at one
+  echo: defaultEcho(),
+  stutter: defaultStutter(),
+  looper: defaultLooper()
 };
 
 const device = new DeviceLink();
@@ -148,12 +153,79 @@ const overlayProgress = document.getElementById('radarOverlayProgress');
 function showOverlay(text) {
   overlayText.textContent = text;
   overlayProgress.textContent = '';
-  overlay.hidden = false;
+  if (overlay.hidden) {
+    overlay.hidden = false;
+    radarBlip.start();
+  }
 }
 function setOverlayProgress(done, total) {
   overlayProgress.textContent = total ? `${done} / ${total}` : '';
 }
-function hideOverlay() { overlay.hidden = true; }
+function hideOverlay() {
+  overlay.hidden = true;
+  radarBlip.stop();
+}
+
+// The radar's blip wanders and flashes as the sweep passes over it. Ported from Regime Radar's info
+// modal (RegimeReferenceModal.js initRadarAnimation), without its crown.
+const radarBlip = (() => {
+  const CYCLE = 3000;    // ms per sweep turn, matches .mini-sweep
+  const FLASH_MS = 4500; // ping length
+  const STEP_MAX = 8;    // px per hop
+  const MOVE_MIN = 2000; // ms between hops
+  const MOVE_MAX = 3500;
+  const R = 32.5, rDot = 2; // radar and dot radii
+  const sweep = overlay.querySelector('.mini-sweep');
+  const blip = overlay.querySelector('.mini-blip');
+  let x, y, flashTimer, flashLoop, wanderTimer;
+
+  // The sweep's current angle, degrees clockwise from the right axis.
+  function sweepAngle() {
+    const m = new DOMMatrixReadOnly(getComputedStyle(sweep).transform);
+    return (Math.atan2(m.b, m.a) * 180 / Math.PI + 360) % 360;
+  }
+  function pulse() {
+    blip.style.animation = 'none';
+    void blip.offsetWidth; // restarts the animation
+    blip.style.animation = `blipFlash ${FLASH_MS}ms ease-out`;
+  }
+  // Flashes when the bright edge of the sweep reaches the dot.
+  function syncFlash() {
+    clearTimeout(flashTimer);
+    clearInterval(flashLoop);
+    const dotAngle = (Math.atan2(y - R, x - R) * 180 / Math.PI + 360) % 360;
+    const wait = ((dotAngle - sweepAngle() + 360) % 360) / 360 * CYCLE;
+    flashTimer = setTimeout(() => { pulse(); flashLoop = setInterval(pulse, CYCLE); }, wait);
+  }
+  function wander() {
+    let nx, ny;
+    do { // a short random hop that stays inside the radar
+      const t = Math.random() * 2 * Math.PI, d = Math.random() * STEP_MAX;
+      nx = x + d * Math.cos(t);
+      ny = y + d * Math.sin(t);
+    } while (Math.hypot(nx - R, ny - R) > R - rDot);
+    x = nx; y = ny;
+    blip.style.left = `${x - rDot}px`;
+    blip.style.top = `${y - rDot}px`;
+    blip.addEventListener('transitionend', syncFlash, { once: true });
+    wanderTimer = setTimeout(wander, MOVE_MIN + Math.random() * (MOVE_MAX - MOVE_MIN));
+  }
+  return {
+    start() {
+      x = 0.71 * 65 + rDot;
+      y = 0.47 * 65 + rDot;
+      blip.style.left = `${x - rDot}px`;
+      blip.style.top = `${y - rDot}px`;
+      syncFlash();
+      wanderTimer = setTimeout(wander, 1500);
+    },
+    stop() {
+      clearTimeout(flashTimer);
+      clearInterval(flashLoop);
+      clearTimeout(wanderTimer);
+    }
+  };
+})();
 
 let toastStack = document.querySelector('.toast-stack');
 if (!toastStack) {
@@ -179,6 +251,45 @@ const saveToDeviceBtn = document.getElementById('saveToDeviceBtn');
 function markDirty() {
   dirty = true;
   saveToDeviceBtn.classList.add('has-unsaved');
+  scheduleAutosave();
+}
+
+// Autosave: a change goes to the device a moment after it's made, without the overlay. Changes made
+// while a save is going out are sent once it finishes.
+const AUTOSAVE_DELAY_MS = 700;
+const autosaveSwitch = document.getElementById('autosaveSwitch');
+let autosaveTimer = null;
+let autosaving = false;
+let autosaveAgain = false;
+try { autosaveSwitch.checked = localStorage.getItem('patchling.autosave') === '1'; } catch (err) { /* no storage */ }
+autosaveSwitch.addEventListener('change', () => {
+  try { localStorage.setItem('patchling.autosave', autosaveSwitch.checked ? '1' : '0'); } catch (err) { /* no storage */ }
+  if (autosaveSwitch.checked && dirty) scheduleAutosave();
+});
+
+function scheduleAutosave() {
+  if (!autosaveSwitch.checked || !device.connected) return;
+  clearTimeout(autosaveTimer);
+  autosaveTimer = setTimeout(autosave, AUTOSAVE_DELAY_MS);
+}
+
+async function autosave() {
+  if (!autosaveSwitch.checked || !device.connected || !dirty) return;
+  if (autosaving || updateInProgress || !overlay.hidden) { autosaveAgain = true; return; }
+  if (state.routes.length > routeLimit()) return; // the Save button explains this one
+  autosaving = true;
+  autosaveAgain = false;
+  dirty = false; // a change made during the save marks it dirty again
+  try {
+    await device.saveAll(state.global, state.routes, { noteMap: state.noteMap, ccMap: state.ccMap, lpActions: state.lpActions, scale: state.scale, arps: state.arps, echo: state.echo, stutter: state.stutter, looper: state.looper });
+    if (!dirty) clearDirty();
+  } catch (err) {
+    dirty = true;
+    toast('Autosave failed, use Save to Device', 'error');
+  } finally {
+    autosaving = false;
+    if (autosaveAgain || dirty) scheduleAutosave();
+  }
 }
 function clearDirty() {
   dirty = false;
@@ -227,7 +338,7 @@ const FIRMWARE_DOWNLOAD_LABEL = 'woz.lol/foxwizard-midi-multitool-firmware';
 const RECONNECT_WAIT_MS = 30000;
 
 // Test channel: Patchling served from this computer (serve.sh) or opened with ?test offers the test
-// builds in firmware/test/ (build_firmware.sh --host-edition), falling back to the live firmware if
+// builds in firmware/test/ (build_firmware.sh --test-channel), falling back to the live firmware if
 // there are none. The live site never offers test builds.
 const TEST_CHANNEL = ['localhost', '127.0.0.1', '[::1]'].includes(location.hostname) || new URLSearchParams(location.search).has('test');
 let firmwareDir = 'firmware/';
@@ -492,6 +603,7 @@ const globalCard = document.getElementById('globalSettingsCard');
 
 const BUTTON_ACTIONS = [
   { value: 0, label: 'Panic (default)' },
+  { value: 11, label: 'LOOPER', protocol: 4 },
   { value: 1, label: 'Pitch Up' },
   { value: 2, label: 'Pitch Down' },
   { value: 3, label: 'Mod' },
@@ -591,6 +703,8 @@ function renderGlobalCard() {
     buttonExtraFields = `
       <div class="mini-box">${miniBoxMain('Note', `<select data-global-field="buttonParamA">${noteSelectOptions(g.buttonParamA)}</select>`)}</div>
       <div class="mini-box">${miniBoxMain('Channel', `<select data-global-field="buttonParamB">${channelSelectOptions(g.buttonParamB)}</select>`)}</div>`;
+  } else if (g.buttonAction === 11) {
+    buttonExtraFields = looperFieldsHtml();
   }
 
   const brightnessPct = g.ledBrightnessStep * 10;
@@ -647,6 +761,37 @@ function renderGlobalCard() {
   wireSpeedSecondsInput();
 }
 
+// Looper mode's settings, in the mode card next to the button action.
+function looperFieldsHtml() {
+  const l = state.looper;
+  const opt = (v, cur, label) => `<option value="${v}" ${cur === v ? 'selected' : ''}>${label}</option>`;
+  const sw = (field, on, label) => `<label class="switch">
+      <input type="checkbox" data-looper-field="${field}" ${on ? 'checked' : ''}>
+      <span class="switch-track"><span class="switch-thumb"></span></span>
+      <span class="switch-label">${label}</span>
+    </label>`;
+  return `
+    <div class="mini-box looper-pair">
+      ${miniBoxMain('Length', `<select data-looper-field="bars">${opt(0, l.bars, 'Free')}${Array.from({ length: 16 }, (_, k) => opt(k + 1, l.bars, `${k + 1} bar${k ? 's' : ''}`)).join('')}</select>`)}
+      ${miniBoxMain('Quantize', `<select data-looper-field="quantize">${opt(-1, l.quantize, 'Off')}${DIVISIONS.map((d, i) => opt(i, l.quantize, d)).join('')}</select>`)}
+    </div>
+    <div class="mini-box looper-switches">
+      ${sw('autoOverdub', l.autoOverdub, 'Auto Overdub')}
+      ${sw('recordAfter', !l.recordInputs, 'Record After Routes')}
+      ${sw('holdClears', l.holdClears, 'Hold Clears')}
+    </div>`;
+}
+
+globalCard.addEventListener('change', (e) => {
+  const field = e.target.dataset.looperField;
+  if (!field) return;
+  const l = state.looper;
+  if (field === 'recordAfter') l.recordInputs = !e.target.checked; // on records what the routes send
+  else if (e.target.type === 'checkbox') l[field] = e.target.checked;
+  else l[field] = parseInt(e.target.value, 10);
+  markDirty();
+});
+
 // ============================================================================================
 // Global clock row (red). Shows while something uses the clock: for now the Tap Tempo button,
 // later the looper and timed route features.
@@ -655,7 +800,7 @@ const clockRow = document.getElementById('clockRow');
 let clockReadout = { bpm: null, status: 0 };
 
 function clockRowActive() {
-  return state.global.buttonAction === 10 || state.routes.some((r) => r.arpSlot);
+  return state.global.buttonAction === 10 || state.global.buttonAction === 11 || state.routes.some((r) => r.arpSlot || (r.features & (FEATURE.ECHO | FEATURE.STUTTER)));
 }
 
 function clockSourceOptions(g) {
@@ -713,7 +858,19 @@ function renderClockRow() {
     </div>`;
 }
 
+// A tempo set on the FoxWizard itself (tap tempo, a Free loop) shows here too. Only a change on the
+// device is taken, so a BPM typed here and not saved yet isn't overwritten.
+let lastDeviceBpm = null;
 function updateClockReadout(status) {
+  if (status.clockStatus === 1 && status.bpm) {
+    if (lastDeviceBpm !== null && status.bpm !== lastDeviceBpm && status.bpm !== state.global.bpm) {
+      state.global.bpm = status.bpm;
+      const input = clockRow.querySelector('[data-clock-field="bpm"]');
+      if (input && document.activeElement !== input) input.value = status.bpm;
+      markDirty();
+    }
+    lastDeviceBpm = status.bpm;
+  }
   clockReadout = { bpm: status.bpm, status: status.clockStatus };
   const el = document.getElementById('clockReadout');
   if (el) el.textContent = clockReadoutText();
@@ -749,6 +906,25 @@ const PRESSED_STROKE = '#0f172a';
 
 // Two octaves from C. Scale notes yellow, the root orange. A held note (shown by note % 24) gets a dark
 // inner outline, so the key looks pressed.
+// The piano's keys play C3 to B4 (48-71, middle C and the octave below) on every port and channel.
+const pianoPointers = new Map(); // pointerId -> note held down
+scaleRow.addEventListener('pointerdown', (e) => {
+  const key = e.target.closest('.scale-piano [data-note]');
+  if (!key || !device.connected) return;
+  e.preventDefault();
+  const note = parseInt(key.dataset.note, 10);
+  pianoPointers.set(e.pointerId, note);
+  device.playNote(true, note);
+});
+function pianoRelease(e) {
+  const note = pianoPointers.get(e.pointerId);
+  if (note === undefined) return;
+  pianoPointers.delete(e.pointerId);
+  device.playNote(false, note);
+}
+document.addEventListener('pointerup', pianoRelease);
+document.addEventListener('pointercancel', pianoRelease);
+
 function pianoSvg(pcs, root, held) {
   const whitePcs = [0, 2, 4, 5, 7, 9, 11];
   const blackPcs = { 1: 0, 3: 1, 6: 3, 8: 4, 10: 5 }; // black key pc: the white key index it sits after
@@ -759,7 +935,7 @@ function pianoSvg(pcs, root, held) {
   for (let o = 0; o < 2; o++) {
     whitePcs.forEach((pc, i) => {
       const x = (o * 7 + i) * W;
-      keys += `<rect x="${x}" y="${Y}" width="${W}" height="${H}" rx="2" fill="${fill(pc, false)}" stroke="#334155" stroke-width="1"/>`;
+      keys += `<rect x="${x}" y="${Y}" width="${W}" height="${H}" rx="2" fill="${fill(pc, false)}" stroke="#334155" stroke-width="1" data-note="${48 + o * 12 + pc}"/>`;
       if (held.has(o * 12 + pc)) keys += pressed(x, W, H);
     });
   }
@@ -767,7 +943,7 @@ function pianoSvg(pcs, root, held) {
     for (const [pcText, after] of Object.entries(blackPcs)) {
       const pc = Number(pcText);
       const x = (o * 7 + after + 1) * W - BW / 2;
-      keys += `<rect x="${x}" y="${Y}" width="${BW}" height="${BH}" rx="2" fill="${fill(pc, true)}" stroke="#0f172a" stroke-width="1"/>`;
+      keys += `<rect x="${x}" y="${Y}" width="${BW}" height="${BH}" rx="2" fill="${fill(pc, true)}" stroke="#0f172a" stroke-width="1" data-note="${48 + o * 12 + pc}"/>`;
       // Dark outline on a highlighted black key, light on a plain one where dark wouldn't show.
       const stroke = (pc === root || pcs.has(pc)) ? PRESSED_STROKE : '#e2e8f0';
       if (held.has(o * 12 + pc)) keys += `<rect x="${x + 1.5}" y="${Y + 1.5}" width="${BW - 3}" height="${BH - 3}" rx="1.5" fill="none" stroke="${stroke}" stroke-width="2.5"/>`;
@@ -1377,7 +1553,7 @@ function renderRouteCard(route, index, animateStaple) {
               </div>
               <p class="note-hint">Mono to Poly. ${route.roundRobin && route.roundRobinRandom ? 'Picks a random selected channel for each new note.' : 'Cycles each new note to a different selected channel.'}</p>
             </div>
-            ${featuresSupported() ? noteCcSectionHtml(route, index) + launchpadSectionHtml(route, index) + scaleSectionHtml(route, index) + autoChordSectionHtml(route, index) + arpSectionHtml(route, index) : ''}
+            ${featuresSupported() ? mapSectionHtml(route, index, 'note') + mapSectionHtml(route, index, 'cc') + launchpadSectionHtml(route, index) + scaleSectionHtml(route, index) + autoChordSectionHtml(route, index) + arpSectionHtml(route, index) + echoSectionHtml(route, index) + stutterSectionHtml(route, index) : ''}
           </div>
         </div>
       </div>
@@ -1430,82 +1606,133 @@ function featuresSupported() {
   return !device.connected || device.protocolVersion >= 4;
 }
 
-const NOTE_CC_MODES = [{ v: 0, l: '127 / 0' }, { v: 1, l: 'Velocity' }, { v: 2, l: 'Toggle' }];
+// Note to Feature and CC to Feature: each note or CC the route hears that has an entry runs its
+// action instead of passing through. The Launchpad's round buttons run an action each too.
+function mapListFor(owner) { return owner === 'cc' ? state.ccMap : state.noteMap; }
+function actionFor(owner, i) { return owner === 'lp' ? state.lpActions[i] : mapListFor(owner)[i]?.action; }
 
-function noteCcSectionHtml(route, index) {
-  const on = !!(route.features & FEATURE.NOTE_TO_CC);
-  const rows = state.noteCc.map((e, i) => `
-    <div class="notecc-row">
-      <select data-notecc-field="note" data-notecc-index="${i}" data-route-index="${index}" title="Note">${noteSelectOptions(e.note)}</select>
-      <button type="button" class="btn btn-ghost btn-tiny" data-action="learnNoteCc" data-notecc-index="${i}" data-route-index="${index}">Learn</button>
-      <span class="notecc-arrow">→ CC</span>
-      <input type="number" min="0" max="127" value="${e.cc}" data-notecc-field="cc" data-notecc-index="${i}" data-route-index="${index}" title="CC number">
-      <select data-notecc-field="mode" data-notecc-index="${i}" data-route-index="${index}" title="CC value">${NOTE_CC_MODES.map((m) => `<option value="${m.v}" ${e.mode === m.v ? 'selected' : ''}>${m.l}</option>`).join('')}</select>
-      <button type="button" class="btn btn-icon btn-danger btn-tiny" data-action="removeNoteCc" data-notecc-index="${i}" data-route-index="${index}" title="Remove">${TRASH_SVG}</button>
-    </div>`).join('');
+function mapSectionHtml(route, index, owner) {
+  const isCc = owner === 'cc';
+  const bit = isCc ? FEATURE.CC_MAP : FEATURE.NOTE_TO_CC;
+  const on = !!(route.features & bit);
+  const label = isCc ? 'CC to Feature' : 'Note to Feature';
+  const field = isCc ? 'ccMapOn' : 'noteToCc';
+  const list = mapListFor(owner);
+  const rows = list.map((e, i) => {
+    const ids = `data-act-owner="${owner}" data-act-index="${i}" data-route-index="${index}"`;
+    const source = isCc
+      ? `<input type="number" min="0" max="127" value="${e.source}" data-map-source ${ids} title="CC number">`
+      : `<select data-map-source ${ids} title="Note">${noteSelectOptions(e.source)}</select>`;
+    return `<div class="notecc-row">
+        ${source}
+        <button type="button" class="btn btn-ghost btn-tiny" data-action="learnMapSource" ${ids}>Learn</button>
+        <span class="notecc-arrow">→</span>
+        ${actionEditorHtml(e.action, ids, noteSelectOptions)}
+        <button type="button" class="btn btn-icon btn-danger btn-tiny" data-action="removeMapEntry" ${ids} title="Remove">${TRASH_SVG}</button>
+      </div>`;
+  }).join('');
   return `<div class="${featureRowClass(on)}">
-      ${switchHtml(index, 'noteToCc', on, 'Note to CC')}
+      ${switchHtml(index, field, on, label)}
       ${on ? `<div class="notecc-table">${rows}
-        ${state.noteCc.length < NOTE_CC_ENTRIES ? `<button type="button" class="btn btn-ghost btn-tiny" data-action="addNoteCc" data-route-index="${index}">+ Add Note</button>` : ''}
+        ${list.length < MAP_ENTRIES ? `<button type="button" class="btn btn-ghost btn-tiny" data-action="addMapEntry" data-act-owner="${owner}" data-route-index="${index}">+ Add ${isCc ? 'CC' : 'Note'}</button>` : ''}
       </div>` : ''}
     </div>`;
 }
 
-// Launchpad: remaps an older Launchpad's grid to a normal drum pad (from note 36), and lets each of
-// its 16 round buttons send a note or CC.
+// Launchpad: remaps an older Launchpad's grid to a normal drum pad (from note 36), and gives each of
+// its 16 round buttons an action.
 const LP_BUTTON_LABELS = [...Array.from({ length: 8 }, (_, i) => `Top ${i + 1}`), ...Array.from({ length: 8 }, (_, i) => `Side ${i + 1}`)];
 
 function launchpadSectionHtml(route, index) {
   const on = !!(route.features & FEATURE.LAUNCHPAD);
-  const buttons = state.launchpad.map((b, i) => {
-    const typeSel = `<select data-lp-field="type" data-lp-index="${i}" data-route-index="${index}">
-        <option value="0" ${b.type === 0 ? 'selected' : ''}>Off</option>
-        <option value="1" ${b.type === 1 ? 'selected' : ''}>Note</option>
-        <option value="2" ${b.type === 2 ? 'selected' : ''}>CC</option>
-      </select>`;
-    const numberField = b.type === 1
-      ? `<select data-lp-field="number" data-lp-index="${i}" data-route-index="${index}">${noteSelectOptions(b.number)}</select>`
-      : b.type === 2 ? `<input type="number" min="0" max="127" value="${b.number}" data-lp-field="number" data-lp-index="${i}" data-route-index="${index}">` : '';
-    return `<div class="lp-button">
-        <span class="lp-button-label">${LP_BUTTON_LABELS[i]}</span>${typeSel}${numberField}
-        <button type="button" class="btn btn-ghost btn-tiny" data-action="learnLaunchpad" data-lp-index="${i}" data-route-index="${index}">Learn</button>
-      </div>`;
-  }).join('');
+  const buttons = state.lpActions.map((act, i) => `<div class="lp-button">
+        <span class="lp-button-label">${LP_BUTTON_LABELS[i]}</span>
+        ${actionEditorHtml(act, `data-act-owner="lp" data-act-index="${i}" data-route-index="${index}"`, noteSelectOptions)}
+      </div>`).join('');
   return `<div class="${featureRowClass(on)}">
       ${switchHtml(index, 'launchpad', on, 'Launchpad')}
-      ${on ? `<div class="lp-buttons">${buttons}</div>` : ''}
+      ${on ? `<div class="lp-options">${switchHtml(index, 'lpOctaveDown', !!route.lpOctaveDown, '-1 Oct')}</div>
+        <div class="lp-buttons">${buttons}</div>` : ''}
     </div>`;
 }
 
+// Mapping anything to a looper action puts the button in Looper mode, the looper only runs there.
+function ensureLooperMode() {
+  if (state.global.buttonAction === 11) return;
+  state.global.buttonAction = 11;
+  renderGlobalCard();
+  toast('Button Action set to LOOPER for the looper mapping', 'warn');
+}
+
 routesContainer.addEventListener('change', (e) => {
-  const field = e.target.dataset.lpField;
-  if (!field) return;
-  const b = state.launchpad[parseInt(e.target.dataset.lpIndex, 10)];
-  let v = parseInt(e.target.value, 10);
-  if (!b || Number.isNaN(v)) return;
-  if (field === 'number') { v = Math.min(127, Math.max(0, v)); e.target.value = v; }
-  b[field] = v;
+  const owner = e.target.dataset.actOwner;
+  if (!owner) return;
+  const index = parseInt(e.target.dataset.routeIndex, 10);
+  const i = parseInt(e.target.dataset.actIndex, 10);
+  if (e.target.dataset.mapSource !== undefined) {
+    const entry = mapListFor(owner)[i];
+    let v = parseInt(e.target.value, 10);
+    if (!entry || Number.isNaN(v)) return;
+    v = Math.min(127, Math.max(0, v));
+    e.target.value = v;
+    entry.source = v;
+    markDirty();
+    return;
+  }
+  const act = actionFor(owner, i);
+  const field = e.target.dataset.actField;
+  if (!act || !field) return;
+  const redraw = applyActionField(act, field, e.target.value);
+  if (usesLooper(act)) ensureLooperMode();
   markDirty();
-  if (field === 'type') refreshRouteCard(parseInt(e.target.dataset.routeIndex, 10));
+  if (redraw) refreshRouteCard(index);
+  if (redraw || usesLiveChannel(act)) refreshArpCards();
 });
 
 routesContainer.addEventListener('click', async (e) => {
-  const el = e.target.closest('[data-action="learnLaunchpad"]');
+  const el = e.target.closest('[data-action="addMapEntry"], [data-action="removeMapEntry"], [data-action="learnMapSource"], [data-action="learnActOut"]');
   if (!el) return;
-  if (!device.connected) { toast('Not connected to a device', 'error'); return; }
-  const b = state.launchpad[parseInt(el.dataset.lpIndex, 10)];
-  el.disabled = true;
-  el.textContent = 'Play a note or move a control…';
-  try {
-    const r = await device.learn();
-    b.type = r.type;
-    b.number = r.number;
-    markDirty();
-  } catch (err) {
-    toast('Nothing heard in 10 seconds', 'error');
+  const owner = el.dataset.actOwner;
+  const index = parseInt(el.dataset.routeIndex, 10);
+  const i = parseInt(el.dataset.actIndex, 10);
+  const action = el.dataset.action;
+  if (action === 'addMapEntry') {
+    const list = mapListFor(owner);
+    const last = list[list.length - 1];
+    list.push({ source: last ? Math.min(127, last.source + 1) : (owner === 'cc' ? 20 : 36), action: last ? { ...last.action } : defaultAction(ACT.CC_MOMENTARY) });
+  } else if (action === 'removeMapEntry') {
+    mapListFor(owner).splice(i, 1);
+    refreshArpCards();
+  } else {
+    if (!device.connected) { toast('Not connected to a device', 'error'); return; }
+    const wantCc = action === 'learnActOut' || owner === 'cc';
+    el.disabled = true;
+    el.textContent = wantCc ? 'Move a control…' : 'Play a note…';
+    try {
+      const r = await device.learn();
+      if (wantCc && r.type !== 2) toast('That was a note, move a control', 'error');
+      else if (!wantCc && r.type !== 1) toast('That was a CC, play a note', 'error');
+      else if (action === 'learnActOut') actionFor(owner, i).a = r.number;
+      else mapListFor(owner)[i].source = r.number;
+    } catch (err) {
+      toast('Nothing heard in 10 seconds', 'error');
+    }
   }
-  refreshRouteCard(parseInt(el.dataset.routeIndex, 10));
+  markDirty();
+  refreshRouteCard(index);
 });
+
+// A route with a Live Out Channel mapped on it shows its arp's Follows Live Ch Change switch.
+function routeHasLiveChannel(route) {
+  const inList = (list) => list.some((e) => usesLiveChannel(e.action));
+  return ((route.features & FEATURE.NOTE_TO_CC) && inList(state.noteMap)) ||
+    ((route.features & FEATURE.CC_MAP) && inList(state.ccMap)) ||
+    ((route.features & FEATURE.LAUNCHPAD) && state.lpActions.some(usesLiveChannel));
+}
+
+function refreshArpCards() {
+  state.routes.forEach((r, i) => { if (r.arpSlot) refreshRouteCard(i); });
+}
 
 // Scale: snaps notes to the key set in the yellow Scale row, with this route's Layout for how notes map in.
 function scaleSectionHtml(route, index) {
@@ -1579,22 +1806,7 @@ function arpSectionHtml(route, index) {
   const attrs = (f) => `data-arp-field="${f}" data-arp-slot="${s}" data-route-index="${index}"`;
   const velMode = a.aftertouch ? 2 : (a.velocity ? 1 : 0);
   const chOptions = (cur) => opt(0, cur, 'Off') + Array.from({ length: 16 }, (_, c) => opt(c + 1, cur, c + 1)).join('');
-  const divSelect = (k, cur) => `<select data-arp-square="${k}" data-arp-slot="${s}" data-route-index="${index}">${DIVISIONS.map((d, i) => opt(i, cur, d)).join('')}</select>`;
-  const squares = a.squares.map((sq, k) => sq && `
-      <div class="arp-square">
-        ${divSelect(k, sq.division)}
-        <span class="arp-trigger">${triggerLabel(sq)}</span>
-        <span class="arp-square-actions">
-          <button type="button" class="btn btn-ghost btn-tiny" data-action="learnArpSquare" data-square="${k}" data-arp-slot="${s}" data-route-index="${index}">Learn</button>
-          <button type="button" class="btn btn-ghost btn-tiny" data-action="removeArpSquare" data-square="${k}" data-arp-slot="${s}" data-route-index="${index}" title="Remove">×</button>
-        </span>
-      </div>`).filter(Boolean).join('');
-  const canAdd = a.squares.some((sq) => !sq);
-  const table = `<div class="arp-divisions">
-      <div class="arp-square arp-square-default">${divSelect(-1, a.division)}<span class="arp-trigger">Default</span></div>
-      ${squares}
-      ${canAdd ? `<button type="button" class="arp-square arp-square-add" data-action="addArpSquare" data-arp-slot="${s}" data-route-index="${index}" title="Add a division">+</button>` : ''}
-    </div>`;
+  const table = divisionTableHtml(a, s, index, 'Default, on/off');
   return `<div class="${featureRowClass(true)}">
       ${switchHtml(index, 'arpOn', true, `Arp ${route.arpSlot}`)}
       <div class="arp-fields">
@@ -1603,6 +1815,7 @@ function arpSectionHtml(route, index) {
         ${field('Gate %', `<input type="number" min="5" max="100" value="${a.gate}" ${attrs('gate')}>`)}
         ${field('Velocity', `<select ${attrs('velocityMode')}>${opt(0, velMode, 'Played')}${opt(1, velMode, 'Fixed')}${opt(2, velMode, 'Aftertouch')}</select>
           ${velMode === 1 ? `<input type="number" min="1" max="127" value="${a.velocity}" ${attrs('velocity')}>` : ''}`)}
+        ${routeHasLiveChannel(route) ? field('&nbsp;', `<label class="switch"><input type="checkbox" ${attrs('followsLiveChannel')} ${a.followsLiveChannel ? 'checked' : ''}><span class="switch-track"><span class="switch-thumb"></span></span><span class="switch-label">Follows Live Ch Change</span></label>`) : ''}
         ${field('Bypass ch', `<select ${attrs('bypassChannel')}>${chOptions(a.bypassChannel)}</select>`)}
         ${field('Bass ch', `<select ${attrs('bassChannel')}>${chOptions(a.bassChannel)}</select>`)}
         ${field('Hold', `<select ${attrs('holdType')}>${opt(0, a.holdType, 'None')}${opt(2, a.holdType, 'CC')}</select>
@@ -1615,6 +1828,99 @@ function arpSectionHtml(route, index) {
     </div>`;
 }
 
+// Echo: each note the route sends repeats at the echo division, fading out over its repeats. A
+// division square's trigger latches its division, pressed again it goes back to the default.
+function echoSectionHtml(route, index) {
+  const on = !!(route.features & FEATURE.ECHO);
+  if (!on) return `<div class="${featureRowClass(false)}">${switchHtml(index, 'echoOn', false, 'Echo')}</div>`;
+  const e = state.echo;
+  const attrs = (f) => `data-echo-field="${f}" data-route-index="${index}"`;
+  return `<div class="${featureRowClass(true)}">
+      ${switchHtml(index, 'echoOn', true, 'Echo')}
+      <div class="arp-fields">
+        <div class="arp-field"><label>Repeats</label><input type="number" min="1" max="32" value="${e.repeats}" ${attrs('repeats')}></div>
+        <div class="arp-field"><label>Level %</label><input type="number" min="1" max="100" value="${e.level}" ${attrs('level')}></div>
+      </div>
+      <label class="arp-table-label">Division</label>
+      ${divisionTableHtml(e, 'echo', index, 'Default, on/off')}
+    </div>`;
+}
+
+// Stutter: holding a division square's note or CC loops that length of what the route just played,
+// muting it live, until released or the runout. Every square is momentary, the default too.
+function stutterSectionHtml(route, index) {
+  const on = !!(route.features & FEATURE.STUTTER);
+  if (!on) return `<div class="${featureRowClass(false)}">${switchHtml(index, 'stutterOn', false, 'Stutter')}</div>`;
+  const st = state.stutter;
+  return `<div class="${featureRowClass(true)}">
+      ${switchHtml(index, 'stutterOn', true, 'Stutter')}
+      <div class="arp-fields">
+        <div class="arp-field"><label>Runout bars</label><input type="number" min="1" max="16" value="${st.maxBars}" data-stutter-field="maxBars" data-route-index="${index}"></div>
+      </div>
+      <label class="arp-table-label">Division</label>
+      ${divisionTableHtml(st, 'stutter', index, '')}
+    </div>`;
+}
+
+routesContainer.addEventListener('change', (e) => {
+  if (e.target.dataset.stutterField !== 'maxBars') return;
+  let v = parseInt(e.target.value, 10);
+  v = Math.min(16, Math.max(1, Number.isNaN(v) ? 16 : v));
+  e.target.value = v;
+  state.stutter.maxBars = v;
+  markDirty();
+});
+
+routesContainer.addEventListener('change', (e) => {
+  const field = e.target.dataset.echoField;
+  if (!field) return;
+  const limits = { repeats: [1, 32], level: [1, 100] }[field];
+  let v = parseInt(e.target.value, 10);
+  if (Number.isNaN(v)) v = defaultEcho()[field];
+  v = Math.min(limits[1], Math.max(limits[0], v));
+  e.target.value = v;
+  state.echo[field] = v;
+  markDirty();
+});
+
+// A division table: the default square, then up to 7 squares a learned note or CC switches to. The
+// default square's trigger turns the arp or echo off and on, and stutters like the others.
+// owner is an arp slot's settings (key 0-3), the echo's (key 'echo') or the stutter's (key 'stutter').
+function divisionTableHtml(owner, key, index, defaultLabel) {
+  const opt = (v, cur, label) => `<option value="${v}" ${cur === v ? 'selected' : ''}>${label}</option>`;
+  const ids = `data-arp-slot="${key}" data-route-index="${index}"`;
+  const divSelect = (k, cur) => `<select data-arp-square="${k}" ${ids}>${DIVISIONS.map((d, i) => opt(i, cur, d)).join('')}</select>`;
+  const squares = owner.squares.map((sq, k) => sq && `
+      <div class="arp-square">
+        ${divSelect(k, sq.division)}
+        <span class="arp-trigger">${triggerLabel(sq)}</span>
+        <span class="arp-square-actions">
+          <button type="button" class="btn btn-ghost btn-tiny" data-action="learnArpSquare" data-square="${k}" ${ids}>Learn</button>
+          <button type="button" class="btn btn-ghost btn-tiny" data-action="removeArpSquare" data-square="${k}" ${ids} title="Remove">×</button>
+        </span>
+      </div>`).filter(Boolean).join('');
+  const canAdd = owner.squares.some((sq) => !sq);
+  const def = owner.defaultTrigger || noTrigger();
+  return `<div class="arp-divisions">
+      <div class="arp-square arp-square-default">
+        ${divSelect(-1, owner.division)}
+        <span class="arp-trigger">${[defaultLabel, def.triggerType ? triggerLabel(def) : ''].filter(Boolean).join(' · ') || 'No trigger'}</span>
+        <span class="arp-square-actions">
+          <button type="button" class="btn btn-ghost btn-tiny" data-action="learnArpSquare" data-square="-1" ${ids}>Learn</button>
+          ${def.triggerType ? `<button type="button" class="btn btn-ghost btn-tiny" data-action="removeArpSquare" data-square="-1" ${ids} title="Clear the trigger">×</button>` : ''}
+        </span>
+      </div>
+      ${squares}
+      ${canAdd ? `<button type="button" class="arp-square arp-square-add" data-action="addArpSquare" ${ids} title="Add a division">+</button>` : ''}
+    </div>`;
+}
+
+function tableOwner(key) {
+  if (key === 'echo') return state.echo;
+  if (key === 'stutter') return state.stutter;
+  return state.arps[parseInt(key, 10)];
+}
+
 function triggerLabel(sq) {
   if (!sq.triggerType) return 'No trigger';
   const ch = sq.triggerChannel > 15 ? 'any ch' : `ch ${sq.triggerChannel + 1}`;
@@ -1624,7 +1930,7 @@ function triggerLabel(sq) {
 routesContainer.addEventListener('change', (e) => {
   const k = e.target.dataset.arpSquare;
   if (k === undefined) return;
-  const a = state.arps[parseInt(e.target.dataset.arpSlot, 10)];
+  const a = tableOwner(e.target.dataset.arpSlot);
   const v = parseInt(e.target.value, 10);
   if (k === '-1') a.division = v;
   else a.squares[parseInt(k, 10)].division = v;
@@ -1634,21 +1940,26 @@ routesContainer.addEventListener('change', (e) => {
 routesContainer.addEventListener('click', async (e) => {
   const el = e.target.closest('[data-action="addArpSquare"], [data-action="removeArpSquare"], [data-action="learnArpSquare"]');
   if (!el) return;
-  const a = state.arps[parseInt(el.dataset.arpSlot, 10)];
+  const a = tableOwner(el.dataset.arpSlot);
   const routeIndex = parseInt(el.dataset.routeIndex, 10);
   const action = el.dataset.action;
   if (action === 'addArpSquare') {
     const free = a.squares.findIndex((sq) => !sq);
     if (free >= 0) a.squares[free] = { division: 8, triggerType: 0, triggerChannel: 16, triggerNumber: 0 }; // 1/8
   } else if (action === 'removeArpSquare') {
-    a.squares[parseInt(el.dataset.square, 10)] = null;
+    const k = parseInt(el.dataset.square, 10);
+    if (k < 0) a.defaultTrigger = noTrigger();
+    else a.squares[k] = null;
   } else {
     if (!device.connected) { toast('Not connected to a device', 'error'); return; }
     el.disabled = true;
     el.textContent = 'Play a note or move a control…';
     try {
       const r = await device.learn();
-      Object.assign(a.squares[parseInt(el.dataset.square, 10)], { triggerType: r.type === 1 ? 1 : 2, triggerChannel: r.channel, triggerNumber: r.number });
+      const k = parseInt(el.dataset.square, 10);
+      const trigger = { triggerType: r.type === 1 ? 1 : 2, triggerChannel: r.channel, triggerNumber: r.number };
+      if (k < 0) a.defaultTrigger = trigger;
+      else Object.assign(a.squares[k], trigger);
     } catch (err) {
       toast('Nothing heard in 10 seconds', 'error');
     }
@@ -1663,6 +1974,11 @@ routesContainer.addEventListener('change', (e) => {
   const field = e.target.dataset.arpField;
   if (!field) return;
   const a = state.arps[parseInt(e.target.dataset.arpSlot, 10)];
+  if (a && field === 'followsLiveChannel') {
+    a.followsLiveChannel = e.target.checked;
+    markDirty();
+    return;
+  }
   let v = parseInt(e.target.value, 10);
   if (!a || Number.isNaN(v)) return;
   if (field === 'velocityMode') {
@@ -1698,7 +2014,7 @@ routesContainer.addEventListener('click', async (e) => {
 // A feature switch that's off takes half the column, so off switches sit two to a row. Its section
 // takes the whole width once it's on.
 function featureRowClass(on) {
-  return on ? 'field-row field-row-wide' : 'field-row';
+  return on ? 'field-row field-row-wide feature-open' : 'field-row';
 }
 
 // Turning a single-route feature on in one route turns it off everywhere else.
@@ -1711,43 +2027,6 @@ function claimFeature(index, bit, label) {
     }
   });
 }
-
-routesContainer.addEventListener('change', (e) => {
-  const field = e.target.dataset.noteccField;
-  if (!field) return;
-  const entry = state.noteCc[parseInt(e.target.dataset.noteccIndex, 10)];
-  let v = parseInt(e.target.value, 10);
-  if (!entry || Number.isNaN(v)) return;
-  if (field === 'cc') { v = Math.min(127, Math.max(0, v)); e.target.value = v; }
-  entry[field] = v;
-  markDirty();
-});
-
-routesContainer.addEventListener('click', async (e) => {
-  const el = e.target.closest('[data-action]');
-  if (!el || !['addNoteCc', 'removeNoteCc', 'learnNoteCc'].includes(el.dataset.action)) return;
-  const index = parseInt(el.dataset.routeIndex, 10);
-  const i = parseInt(el.dataset.noteccIndex, 10);
-  if (el.dataset.action === 'addNoteCc') {
-    const last = state.noteCc[state.noteCc.length - 1];
-    state.noteCc.push(last ? { note: Math.min(127, last.note + 1), cc: Math.min(127, last.cc + 1), mode: last.mode } : { note: 36, cc: 20, mode: 0 });
-  } else if (el.dataset.action === 'removeNoteCc') {
-    state.noteCc.splice(i, 1);
-  } else {
-    if (!device.connected) { toast('Not connected to a device', 'error'); return; }
-    el.disabled = true;
-    el.textContent = 'Play a note…';
-    try {
-      const r = await device.learn();
-      if (r.type !== 1) toast('That was a CC, play a note', 'error');
-      else state.noteCc[i].note = r.number;
-    } catch (err) {
-      toast('Nothing heard in 10 seconds', 'error');
-    }
-  }
-  markDirty();
-  refreshRouteCard(index);
-});
 
 function renderRoutes() {
   renderScaleRow();
@@ -1764,7 +2043,7 @@ function refreshRouteCard(index, animateStaple) {
 }
 
 // Structural changes (need a re-render): checkboxes that reveal/hide fields, staple toggle, delete
-const STRUCTURAL_FIELDS = new Set(['note', 'cc', 'ccMapEnabled', 'aftertouch', 'aftertouchMap', 'pressure', 'pressureMap', 'allInputTypes', 'allInputChannels', 'allInPorts', 'allOutPorts', 'roundRobin', 'roundRobinRandom', 'noteToCc', 'launchpad', 'scaleOn', 'autoChord', 'arpOn']);
+const STRUCTURAL_FIELDS = new Set(['note', 'cc', 'ccMapEnabled', 'aftertouch', 'aftertouchMap', 'pressure', 'pressureMap', 'allInputTypes', 'allInputChannels', 'allInPorts', 'allOutPorts', 'roundRobin', 'roundRobinRandom', 'noteToCc', 'ccMapOn', 'launchpad', 'scaleOn', 'autoChord', 'arpOn', 'echoOn', 'stutterOn']);
 
 routesContainer.addEventListener('click', (e) => {
   const actionEl = e.target.closest('[data-action]');
@@ -1874,13 +2153,16 @@ function applyRouteFieldChange(route, field, el) {
     route.clockEnabled = on;
     return;
   }
-  if (field === 'noteToCc') {
-    const index = state.routes.indexOf(route);
+  if (field === 'noteToCc' || field === 'ccMapOn') {
+    const isCc = field === 'ccMapOn';
+    const bit = isCc ? FEATURE.CC_MAP : FEATURE.NOTE_TO_CC;
     if (el.checked) {
-      claimFeature(index, FEATURE.NOTE_TO_CC, 'Note to CC');
-      if (!state.noteCc.length) state.noteCc.push({ note: 36, cc: 20, mode: 0 });
+      claimFeature(state.routes.indexOf(route), bit, isCc ? 'CC to Feature' : 'Note to Feature');
+      const list = mapListFor(isCc ? 'cc' : 'note');
+      if (!list.length) list.push({ source: isCc ? 20 : 36, action: defaultAction(ACT.CC_MOMENTARY) });
     }
-    route.features = el.checked ? (route.features | FEATURE.NOTE_TO_CC) : (route.features & ~FEATURE.NOTE_TO_CC);
+    route.features = el.checked ? (route.features | bit) : (route.features & ~bit);
+    refreshArpCards();
     return;
   }
   if (field === 'scaleOn') {
@@ -1914,6 +2196,22 @@ function applyRouteFieldChange(route, field, el) {
     } else {
       route.features &= ~FEATURE.AUTO_CHORD;
     }
+    return;
+  }
+  if (field === 'stutterOn') {
+    if (el.checked) claimFeature(state.routes.indexOf(route), FEATURE.STUTTER, 'Stutter');
+    route.features = el.checked ? (route.features | FEATURE.STUTTER) : (route.features & ~FEATURE.STUTTER);
+    renderClockRow();
+    return;
+  }
+  if (field === 'echoOn') {
+    if (el.checked) claimFeature(state.routes.indexOf(route), FEATURE.ECHO, 'Echo');
+    route.features = el.checked ? (route.features | FEATURE.ECHO) : (route.features & ~FEATURE.ECHO);
+    renderClockRow();
+    return;
+  }
+  if (field === 'lpOctaveDown') {
+    route.lpOctaveDown = el.checked;
     return;
   }
   if (field === 'launchpad') {
@@ -2011,7 +2309,7 @@ document.getElementById('addRouteBtnTop').addEventListener('click', addRoute);
 document.getElementById('emptyHintAddRoute').addEventListener('click', (e) => { e.preventDefault(); addRoute(); });
 
 document.getElementById('downloadPresetBtn').addEventListener('click', () => {
-  downloadPreset({ name: state.presetName, global: state.global, routes: state.routes, noteCc: state.noteCc, launchpad: state.launchpad, scale: state.scale, arps: state.arps });
+  downloadPreset({ name: state.presetName, global: state.global, routes: state.routes, noteMap: state.noteMap, ccMap: state.ccMap, lpActions: state.lpActions, scale: state.scale, arps: state.arps, echo: state.echo, stutter: state.stutter, looper: state.looper });
   toast('Preset downloaded', 'success');
 });
 
@@ -2023,10 +2321,14 @@ document.getElementById('uploadPresetInput').addEventListener('change', async (e
     const preset = await readPresetFile(file);
     state.presetName = preset.name;
     state.global = { ...defaultGlobal(), ...preset.global };
-    state.noteCc = preset.noteCc || [];
-    state.launchpad = preset.launchpad || defaultLaunchpadButtons();
+    state.noteMap = preset.noteMap || [];
+    state.ccMap = preset.ccMap || [];
+    state.lpActions = preset.lpActions || defaultLpActions();
     state.scale = preset.scale || defaultScale();
     state.arps = preset.arps || Array.from({ length: ARP_SLOTS }, defaultArp);
+    state.echo = preset.echo || defaultEcho();
+    state.stutter = preset.stutter || defaultStutter();
+    state.looper = preset.looper || defaultLooper();
     state.routes = preset.routes.map((r) => ({
       _uid: nextUid++, _collapsed: false, _ccMapEnabled: r.ccMapStart !== r.ccStart, ...r
     }));
@@ -2050,10 +2352,14 @@ async function loadFromDevice(silent) {
   showOverlay('Loading settings from device…');
   try {
     const { global, routes, features } = await device.loadAll((done, total) => setOverlayProgress(done, total));
-    state.noteCc = features.noteCc || [];
-    state.launchpad = features.launchpad || defaultLaunchpadButtons();
+    state.noteMap = features.noteMap || [];
+    state.ccMap = features.ccMap || [];
+    state.lpActions = features.lpActions || defaultLpActions();
     state.scale = features.scale || defaultScale();
     state.arps = features.arps || Array.from({ length: ARP_SLOTS }, defaultArp);
+    state.echo = features.echo || defaultEcho();
+    state.stutter = features.stutter || defaultStutter();
+    state.looper = features.looper || defaultLooper();
     state.global = { ...defaultGlobal(), ...global }; // older firmware sends no clock settings
     state.routes = routes.map((r) => ({
       _uid: nextUid++, _collapsed: false, _ccMapEnabled: r.ccMapStart !== r.ccStart, name: '', ...r
@@ -2077,7 +2383,7 @@ saveToDeviceBtn.addEventListener('click', async () => {
   }
   showOverlay('Sending settings to device…');
   try {
-    await device.saveAll(state.global, state.routes, { noteCc: state.noteCc, launchpad: state.launchpad, scale: state.scale, arps: state.arps }, (done, total) => setOverlayProgress(done, total));
+    await device.saveAll(state.global, state.routes, { noteMap: state.noteMap, ccMap: state.ccMap, lpActions: state.lpActions, scale: state.scale, arps: state.arps, echo: state.echo, stutter: state.stutter, looper: state.looper }, (done, total) => setOverlayProgress(done, total));
     clearDirty();
     toast('Saved to device', 'success');
   } catch (err) {

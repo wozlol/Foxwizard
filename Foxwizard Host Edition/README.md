@@ -16,18 +16,18 @@ The main brain firmware runs the same with or without a host brain attached, so 
 - With no host brain present, the main brain ignores link MIDI and sends none. Flow control frames still go out GP26, to nothing.
 - A host brain plugged in or restarting is picked up within 500 ms.
 
-Untested on hardware. Both sketches compile.
+Tested on hardware: it runs with the host brain disconnected and picks it up when reconnected.
 
 ## Folders
 
 | Folder | Firmware |
 |---|---|
-| `Mini_MIDI_Multitool_Host_Edition` | Main brain. Fork of `../Mini_MIDI_Multitool` for testing. Includes the same firmware update over SysEx. Test builds from 1.5 up, one version per feature step, staying under 2.0. Once tested on hardware, it replaces `../Mini_MIDI_Multitool` as the only FoxWizard firmware, for units with and without a host brain. |
+| `../Mini_MIDI_Multitool` | Main brain, the one FoxWizard firmware, for units with and without a host brain. |
 | `Foxwizard_Host_Edition_Sidecar` | Host brain, on the RP2040-Zero or the Host Edition sidecar board. |
 
 ## Test builds through Patchling
 
-`mmm_web_interface/firmware/build_firmware.sh --host-edition` builds the main brain into `mmm_web_interface/firmware/test/`. Patchling served from this computer (`serve.sh`) or opened with `?test` in its address shows a "Test builds" tag and offers those builds through its update button. The live site only ever offers the live firmware in `firmware/`. Patchling and the firmware share each version number.
+`mmm_web_interface/firmware/build_firmware.sh --test-channel` builds the main brain into `mmm_web_interface/firmware/test/`. Patchling served from this computer (`serve.sh`) or opened with `?test` in its address shows a "Test builds" tag and offers those builds through its update button. The live site only ever offers the live firmware in `firmware/`. Patchling and the firmware share each version number.
 
 The sidecar can't be updated through Patchling. Flash it from the Arduino IDE.
 
@@ -206,6 +206,26 @@ Routes take over from the mode for whatever they match. Each route picks any com
 
 - SysEx replies to FoxWizard commands from the sidecar go back out the port they came in on.
 - USB devices with no MIDI OUT (input-only controllers) are never sent anything.
+
+## Launchpad
+
+For old octave-per-row Launchpads (Mini mk1 and mk2). A route with the Launchpad switch on remaps the grid to a drum pad layout and learns its top and side buttons. Give the route only the Launchpad's port as input, on channel 1. Another controller on channel 1 then needs its own route on its own port.
+
+- **Learning the port:** the first grid or button press on a Launchpad route makes that port a Launchpad port, owned by that route. A save or route change forgets it, and the next press learns it again.
+- **Lights, not notes:** no note reaches a Launchpad port as it is. Every note headed there, from any route and channel (arp, Bypass, Bass, drums, echoes, stutter, looper playback), lights each pad that plays it on the owning route, through the grid, Scale, Auto Chord and transpose. A note no pad plays lights nothing. A route's output switch for that port doesn't matter.
+- **-1 Oct:** a switch in the Launchpad section that moves everything the Launchpad plays down an octave, whatever the Scale and Layout.
+- **Colors by channel:** yellow, orange, green, red, then round again. Channel 10 is always red.
+
+| Channel | Color | Velocity |
+|---|---|---|
+| 1, 5, 9, 13 | Yellow | 62 |
+| 2, 6, 14 | Orange | 47 |
+| 3, 7, 11, 15 | Green | 60 |
+| 4, 8, 10, 12, 16 | Red | 15 |
+
+- **Presses:** each press echoes back at once in its channel's color.
+- **Round buttons:** the top row sends CC 104-111 and the side column sends notes. A button with an action in the Launchpad section runs it. A top button left Off passes its CC on to the route's other features, so a Stutter, Echo or arp square or CC to Feature can use it. Side buttons work as division square triggers either way.
+- **Two Launchpads:** each needs its own Launchpad route, listening only on its own port.
 
 ## Output queues
 
