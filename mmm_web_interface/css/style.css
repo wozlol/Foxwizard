@@ -1001,7 +1001,7 @@ body.dragging-active { overflow: hidden; }
 .lp-buttons { display: grid; grid-template-columns: repeat(auto-fill, minmax(300px, 1fr)); gap: 8px; margin-top: 8px; }
 .lp-button { display: flex; align-items: flex-start; gap: 6px; }
 .lp-button select, .lp-button input { min-width: 60px; }
-.lp-button .action-editor select { flex: 1 1 100px; }
+.lp-button .action-editor select { flex: 0 1 auto; width: auto; min-width: 0; }
 .lp-button-label { font-size: 0.74rem; color: var(--text-dim); width: 46px; flex-shrink: 0; margin-top: 6px; }
 
 /* A number field with a short visible label (CC, Val, Color), instead of a bare unlabeled number. */
