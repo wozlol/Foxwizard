@@ -97,15 +97,15 @@ constexpr uint8_t SYSEX_MFR_ID = 0x7D;   // reserved for non-commercial/educatio
 constexpr uint8_t SYSEX_DEVICE_ID = 0x4D; // 'M'
 constexpr uint8_t PROTOCOL_VERSION = 4; // 2: 45-byte routes with port masks, GET_STATUS. 3: clock settings, LEARN. 4: 53-byte routes with feature fields, feature blocks
 constexpr uint8_t FW_VERSION_MAJOR = 1;
-constexpr uint8_t FW_VERSION_MINOR = 47;
+constexpr uint8_t FW_VERSION_MINOR = 48;
 constexpr uint8_t FW_CHUNK_BYTES = 128;          // firmware bytes per FW_DATA message, 147 once packed
 constexpr uint32_t FW_REBOOT_DELAY_MS = 300;     // lets the FW_END ACK reach the host before rebooting
 const char DEVICE_NAME[] = "FoxWizard Mini MIDI Multitool"; // long name sent in the SysEx IDENTITY_REPLY
 const char USB_DESCRIPTOR_NAME[] = "FoxWizard"; // short name shown by the OS/DAW in the USB MIDI port list
 
-constexpr uint16_t MAX_ROUTES = 64; // leaves each saved route room to grow to 63 bytes, see the EEPROM layout below
+constexpr uint16_t MAX_ROUTES = 60; // lowered from 64 in 1.48 when RouteData grew for Break Off a Quad, see the EEPROM layout below
 constexpr uint8_t ROUTE_NAME_MAX_LEN = 24; // ASCII characters, enforced web-side too
-constexpr uint8_t ROUTE_RAW_BYTES = 17 + ROUTE_NAME_MAX_LEN + 4 + 8; // protocol 1: 41 bytes, protocol 2-3: 45, protocol 4: 53
+constexpr uint8_t ROUTE_RAW_BYTES = 17 + ROUTE_NAME_MAX_LEN + 4 + 10; // protocol 1: 41 bytes, protocol 2-3: 45, protocol 4: 53, 55 from 1.48
 constexpr uint8_t MAX_PENDING = 64;
 
 // ============================================================================================
@@ -218,7 +218,13 @@ struct RouteData {
   uint8_t arpSlot;    // 0 none, 1-4 arp slot
   uint8_t scaleLayout; // LAYOUT_* for a Scale route. Key and scale are global, the Layout is per route
   uint16_t chordMask; // Auto Chord positions: bit k = scale position k+1 on a Scale route, else k semitones
-  uint8_t launchpadFlags; // bit0: a Launchpad route plays an octave down (1.43)
+  uint8_t launchpadOctave; // 0-2 octaves down, a Launchpad route's whole output shifted (1.48, was a bit0 flag)
+  // Break Off a Quad (1.48): one 4x4 grid block reports as if it arrived fresh on its own channel,
+  // starting from its own note, so a route listening on that channel picks it up untouched by
+  // anything else this route does. bit0 on, bits1-2 quadrant (0 lower-left, 1 upper-left, 2
+  // lower-right, 3 upper-right, matching launchpadGridNote's block numbering), bits3-6 channel 0-15.
+  uint8_t launchpadQuad;
+  uint8_t launchpadQuadStart; // the quad's first note, default 36
   uint8_t spare[1];   // room for later route features without changing the wire format again
 };
 
@@ -386,7 +392,8 @@ constexpr uint8_t LAUNCHPAD_BUTTONS = 16;
 //   LIVE_VELOCITY a 0 follows the value (10-200%), 1-20 toggles 10-200% | LOOPER a LOOP_ACT_* | TAP_TEMPO
 enum : uint8_t {
   ACT_NONE = 0, ACT_NOTE, ACT_CC_MOMENTARY, ACT_CC_TOGGLE, ACT_CC_VALUE, ACT_CC_LEVEL, ACT_TRANSPORT,
-  ACT_PROGRAM, ACT_PROGRAM_STEP, ACT_LIVE_CHANNEL, ACT_LIVE_VELOCITY, ACT_LOOPER, ACT_TAP_TEMPO, ACT_COUNT
+  ACT_PROGRAM, ACT_PROGRAM_STEP, ACT_LIVE_CHANNEL, ACT_LIVE_VELOCITY, ACT_LOOPER, ACT_TAP_TEMPO,
+  ACT_LIVE_CHANNEL_STEP, ACT_ARP_DIV_STEP, ACT_STUTTER_LENGTH, ACT_QUAD_TOGGLE, ACT_COUNT // 1.48
 };
 enum : uint8_t {
   TRANSPORT_PLAY = 0, TRANSPORT_STOP, TRANSPORT_CONTINUE, TRANSPORT_PAUSE, TRANSPORT_RECORD,
@@ -525,6 +532,7 @@ uint8_t launchpadOwner[PORT_COUNT]; // route index per port
 // The mapper's live, session-only route changes: an output channel (-1 none) and a velocity percent
 // (0 none, else 10-200 in place of the route's Velocity %), and the last program change sent.
 int8_t liveChannel[MAX_ROUTES];
+bool quadToggleOff[MAX_ROUTES]; // a mapped ACT_QUAD_TOGGLE's live override, session only
 uint8_t liveVelocity[MAX_ROUTES];
 uint8_t liveProgram[MAX_ROUTES];
 bool looperEmitting = false;   // a loop event is going out: not captured again
@@ -533,7 +541,10 @@ uint32_t lastMusicMs = 0;       // last note in or out, a loop save waits for qu
 fw::RollingHistory stutterHistory;
 fw::HistoryRepeater stutterRepeater;
 uint16_t stutterRouteIdx = 0xFFFF;
-uint8_t stutterHeld[ARP_SQUARES + 1]; // squares held, last pressed on top, ARP_SQUARES = the default
+// Squares held, last pressed on top. ARP_SQUARES = the default square. ARP_SQUARES+1 and up = the
+// mapper's Stutter Length action (1/8, 1/4, 1/2, 1, 2 bars), bypassing the route's own squares.
+constexpr uint8_t STUTTER_LENGTH_PRESETS = 5;
+uint8_t stutterHeld[ARP_SQUARES + 1 + STUTTER_LENGTH_PRESETS];
 uint8_t stutterHeldCount = 0;
 uint8_t stutterPlaying = 0xFF;        // the square looping now, 0xFF none
 uint64_t stutterStopUs = 0;
@@ -568,6 +579,7 @@ struct ArpRuntime {
   uint8_t bassCh;        // the channel it's on
 };
 ArpRuntime arps[ARP_SLOTS];
+int8_t liveArpDivision[ARP_SLOTS]; // -1 none, else a fw::MusicalDivision index: a mapped Arp Division Up/Down override
 bool arpOff[ARP_SLOTS];                     // turned off by the default square's trigger
 bool arpCcHeld[ARP_SLOTS][ARP_SQUARES + 1]; // a CC trigger held at 64 and up, so a stream of values acts once
 // Scale and Auto Chord: the notes each held input note plays, so its Note Off releases exactly
@@ -825,6 +837,8 @@ void resetAllRouteNoteTracks() {
   memset(liveChannel, 0xFF, sizeof(liveChannel)); // live changes end with the routes they were on
   memset(liveVelocity, 0, sizeof(liveVelocity));
   memset(liveProgram, 0, sizeof(liveProgram));
+  memset(quadToggleOff, 0, sizeof(quadToggleOff));
+  for (uint8_t s = 0; s < ARP_SLOTS; ++s) liveArpDivision[s] = -1;
   memset(heldPool, 0, sizeof(heldPool));
   arpForgetAll(); // the arps point at routes by index, which a route change can move
   echoRouteChanged();
@@ -896,11 +910,30 @@ uint8_t routeVelocityScale(const RouteData &r) {
   return (i < MAX_ROUTES && liveVelocity[i]) ? liveVelocity[i] : r.velocityScale;
 }
 
-// A route's transpose in semitones, with a Launchpad route's -1 Oct.
+// A route's transpose in semitones, with a Launchpad route's octave-down setting.
 int16_t routeTranspose(const RouteData &r) {
   int16_t t = (int16_t)r.transpose - 64;
-  if ((r.features & FEATURE_LAUNCHPAD) && (r.launchpadFlags & 0x01)) t -= 12;
+  if (r.features & FEATURE_LAUNCHPAD) t -= 12 * min<uint8_t>(r.launchpadOctave, 2);
   return t;
+}
+
+
+// Break Off a Quad accessors. Quadrant 0-3 matches launchpadGridNote's own block numbering.
+bool quadEnabled(const RouteData &r) {
+  if (!(r.launchpadQuad & 0x01)) return false;
+  const uint16_t i = &r - routes;
+  return i >= MAX_ROUTES || !quadToggleOff[i];
+}
+uint8_t quadBlock(const RouteData &r) { return (r.launchpadQuad >> 1) & 0x03; }
+uint8_t quadChannel(const RouteData &r) { return (r.launchpadQuad >> 3) & 0x0F; }
+uint8_t quadBaseNote(const RouteData &r) { return 36 + quadBlock(r) * 16; }
+// -1 if the grid note isn't in this route's broken-off quad.
+int16_t quadRemap(const RouteData &r, uint8_t gridNote) {
+  if (!quadEnabled(r)) return -1;
+  const uint8_t base = quadBaseNote(r);
+  if (gridNote < base || gridNote >= base + 16) return -1;
+  const int16_t out = (int16_t)r.launchpadQuadStart + (gridNote - base);
+  return (out < 0 || out > 127) ? -1 : out;
 }
 
 uint16_t routeOutputsNow(const RouteData &r) {
@@ -2218,6 +2251,25 @@ fw::MusicalDivision stutterDivision(uint8_t square) {
   return arpDivisionFrom(stutterSettings.divisionPlus1);
 }
 
+// The mapper's Stutter Length action (1.48): 0=1/8 bar, 1=1/4, 2=1/2, 3=1 bar, 4=2 bars, measured
+// against the actual time signature rather than a fixed musical division.
+uint32_t stutterPresetLengthUs(uint8_t preset) {
+  const uint32_t barUs = (uint32_t)fw::barDurationUs(clockEngine.bpm(), globalSettings.beatsPerBar ? globalSettings.beatsPerBar : 4,
+                                                     globalSettings.beatUnit ? globalSettings.beatUnit : 4);
+  switch (preset) {
+    case 0: return barUs / 8;
+    case 1: return barUs / 4;
+    case 2: return barUs / 2;
+    case 4: return barUs * 2;
+    default: return barUs; // 1 bar
+  }
+}
+
+uint32_t stutterLengthUsFor(uint8_t square) {
+  if (square >= ARP_SQUARES + 1) return stutterPresetLengthUs(square - (ARP_SQUARES + 1));
+  return (uint32_t)fw::divisionDurationUs(stutterDivision(square), clockEngine.bpm());
+}
+
 void stutterEmitMsg(const fw::EchoEvent &e) {
   if (stutterRouteIdx >= routeCount) return;
   PendingMsg msg;
@@ -2250,7 +2302,7 @@ void stutterUpdate(uint64_t now) {
   if (want == stutterPlaying) return;
   stutterStop();
   if (want == 0xFF || stutterRouteIdx >= routeCount) return;
-  const uint32_t lengthUs = (uint32_t)fw::divisionDurationUs(stutterDivision(want), clockEngine.bpm());
+  const uint32_t lengthUs = stutterLengthUsFor(want);
   if (!stutterRepeater.activate(stutterHistory, now, lengthUs, 0)) return; // nothing played yet, retried while held
   // Live notes still sounding stop, the loop takes over.
   for (uint8_t ch = 0; ch < 16; ++ch) {
@@ -2274,7 +2326,7 @@ void stutterPress(int8_t square, bool down) {
   uint8_t n = 0;
   for (uint8_t k = 0; k < stutterHeldCount; ++k) if (stutterHeld[k] != square) stutterHeld[n++] = stutterHeld[k];
   stutterHeldCount = n;
-  if (down && stutterHeldCount < ARP_SQUARES + 1) stutterHeld[stutterHeldCount++] = square;
+  if (down && stutterHeldCount < sizeof(stutterHeld)) stutterHeld[stutterHeldCount++] = square;
   stutterUpdate(time_us_64());
 }
 
@@ -2315,18 +2367,30 @@ void stutterRouteChanged() {
 // Launchpad reverse lights: a note headed to a Launchpad's port lights every pad that plays it on that
 // port's Launchpad route, through the grid, Scale and Auto Chord and transpose.
 // A Launchpad light's color for the channel its note is on. Velocity = 16 x green + red + 12, from
-// Novation's programmer's reference: yellow, orange, green, red, round again, with channel 10 red.
+// Novation's programmer's reference. Yellow-green, red-orange, green, yellow, red, round again
+// (1.48): channel 10 lands on red on its own, (10-1) % 5 == 4, no special case needed.
 uint8_t launchpadChannelColor(uint8_t channel) {
-  static const uint8_t COLORS[4] = {62, 47, 60, 15}; // yellow, orange, green, red
-  return channel == 9 ? 15 : COLORS[channel & 3];
+  static const uint8_t COLORS[5] = {61, 31, 60, 62, 15}; // yellow-green, red-orange, green, yellow, red
+  return COLORS[(channel) % 5];
 }
 
 void launchpadReverseLight(const RouteData &r, bool on, uint8_t outNote, uint16_t ports, uint8_t channel) {
   const int16_t transpose = routeTranspose(r);
+  const bool quadOn = quadEnabled(r);
+  const uint8_t quadBase = quadBaseNote(r);
+  const uint8_t quadCh = quadChannel(r);
   for (uint8_t row = 0; row < 8; ++row) {
     for (uint8_t col = 0; col < 8; ++col) {
       const uint8_t xy = row * 16 + col;
       const uint8_t grid = launchpadGridNote(xy);
+      // A pad broken off to its own channel lights from whatever plays there now, on that channel,
+      // in that channel's color, instead of this route's own transpose/Scale/Chord mapping.
+      if (quadOn && grid >= quadBase && grid < quadBase + 16 && channel == quadCh) {
+        if ((int16_t)r.launchpadQuadStart + (grid - quadBase) == outNote) {
+          sendToOutputs(ports, on ? 0x90 : 0x80, 0, xy, on ? launchpadChannelColor(channel) : 0, 3);
+        }
+        continue;
+      }
       uint8_t outs[CHORD_MAX];
       uint8_t n = 1;
       outs[0] = grid;
@@ -3053,6 +3117,28 @@ void runAction(uint16_t routeIndex, const MapAction &act, uint8_t phase, uint8_t
     case ACT_TAP_TEMPO:
       if (press) tapTempo();
       break;
+    case ACT_LIVE_CHANNEL_STEP:
+      if (press) {
+        const int8_t cur = liveChannel[routeIndex];
+        setLiveChannel(routeIndex, cur < 0 ? (act.a ? 0 : 15) : (act.a ? (cur + 1) % 16 : (cur + 15) % 16));
+      }
+      break;
+    case ACT_ARP_DIV_STEP:
+      if (press && r.arpSlot && r.arpSlot <= ARP_SLOTS) {
+        const uint8_t slot = r.arpSlot - 1;
+        int16_t cur = liveArpDivision[slot] >= 0 ? liveArpDivision[slot] : (int16_t)arpDivisionOf(arpSettings[slot]);
+        cur += act.a ? 1 : -1; // clamped, not wrapped: a performance control shouldn't jump slow<->fast
+        if (cur < 0) cur = 0;
+        if (cur >= fw::kMusicalDivisionCount) cur = fw::kMusicalDivisionCount - 1;
+        liveArpDivision[slot] = (int8_t)cur;
+      }
+      break;
+    case ACT_STUTTER_LENGTH:
+      if ((press || release) && act.a < STUTTER_LENGTH_PRESETS) stutterPress(ARP_SQUARES + 1 + act.a, press);
+      break;
+    case ACT_QUAD_TOGGLE:
+      if (press) quadToggleOff[routeIndex] = !quadToggleOff[routeIndex];
+      break;
   }
   flushPending();
 }
@@ -3123,8 +3209,10 @@ fw::MusicalDivision arpDivisionFrom(uint8_t divisionPlus1) {
   return static_cast<fw::MusicalDivision>(divisionPlus1 - 1);
 }
 
-// The division playing now: the last held division square, else the default square.
+// The division playing now: a live Arp Division Up/Down override, else the last held division
+// square, else the default square.
 fw::MusicalDivision arpCurrentDivision(uint8_t slot) {
+  if (liveArpDivision[slot] >= 0) return (fw::MusicalDivision)liveArpDivision[slot];
   const ArpRuntime &r = arps[slot];
   const ArpSettings &a = arpSettings[slot];
   if (r.momentCount) {
@@ -3524,6 +3612,12 @@ void dispatchNoteEvent(uint8_t inputDevice, uint8_t channel, bool isNoteOn, uint
       }
       note = launchpadGridNote(rawNote);
       if (note == LP_NOT_GRID) continue;
+      const int16_t quadNote = quadRemap(routes[i], note);
+      if (quadNote >= 0) {
+        matchedAny = true;
+        dispatchNoteEvent(inputDevice, quadChannel(routes[i]), isNoteOn, (uint8_t)quadNote, velocity);
+        continue;
+      }
     }
     if (routeMatches(routes[i], inputDevice, channel, MK_NOTE, note)) {
       matchedAny = true;

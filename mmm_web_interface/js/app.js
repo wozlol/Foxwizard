@@ -1,5 +1,5 @@
 import { ACT, MAP_ENTRIES, defaultAction, defaultLpActions, actionEditorHtml, applyActionField, usesLooper, usesLiveChannel } from './mapper.js';
-import { DeviceLink, DATA_TYPE_BITS, ROUTE_NAME_MAX_LEN, PORTS, PORT_TRS, PORT_USB, SIDECAR_INPUT_PORTS, SIDECAR_OUTPUT_PORTS, SIDECAR_TRS_PORTS, FEATURE, SCALES, LAYOUTS, defaultScale, ARP_SLOTS, ARP_MODES, ARP_MODE_ORDER, ARP_SQUARES, DIVISIONS, defaultArp, defaultEcho, defaultStutter, defaultLooper, noTrigger } from './midi.js';
+import { DeviceLink, DATA_TYPE_BITS, ROUTE_NAME_MAX_LEN, PORTS, PORT_TRS, PORT_USB, SIDECAR_INPUT_PORTS, SIDECAR_OUTPUT_PORTS, SIDECAR_TRS_PORTS, FEATURE, SCALES, LAYOUTS, defaultScale, ARP_SLOTS, ARP_MODES, ARP_MODE_ORDER, ARP_SQUARES, DIVISIONS, defaultArp, defaultEcho, defaultStutter, defaultLooper, defaultLpQuad, noTrigger } from './midi.js';
 import { serializePreset, parsePreset, downloadPreset, readPresetFile, channelsToRangeString } from './presetXml.js';
 import { attachDragReorder } from './dragReorder.js';
 
@@ -1658,18 +1658,43 @@ function mapSectionHtml(route, index, owner) {
 // its 16 round buttons an action.
 const LP_BUTTON_LABELS = [...Array.from({ length: 8 }, (_, i) => `Top ${i + 1}`), ...Array.from({ length: 8 }, (_, i) => `Side ${i + 1}`)];
 
+const QUAD_BLOCK_LABELS = ['Lower Left', 'Upper Left', 'Lower Right', 'Upper Right'];
+
 function launchpadSectionHtml(route, index) {
   const on = !!(route.features & FEATURE.LAUNCHPAD);
   const buttons = state.lpActions.map((act, i) => `<div class="lp-button">
         <span class="lp-button-label">${LP_BUTTON_LABELS[i]}</span>
         ${actionEditorHtml(act, `data-act-owner="lp" data-act-index="${i}" data-route-index="${index}"`, noteSelectOptions)}
       </div>`).join('');
+  const opt = (v, cur, l) => `<option value="${v}" ${cur === v ? 'selected' : ''}>${l}</option>`;
+  const octave = Math.min(2, route.lpOctave || 0);
+  const quad = route.lpQuad || defaultLpQuad();
+  const qAttrs = `data-route-index="${index}"`;
   return `<div class="${featureRowClass(on)}">
       ${switchHtml(index, 'launchpad', on, 'Launchpad')}
-      ${on ? `<div class="lp-options">${switchHtml(index, 'lpOctaveDown', !!route.lpOctaveDown, '-1 Oct')}</div>
+      ${on ? `<div class="lp-options">
+        <div class="arp-field"><label>Octave</label><select data-field="lpOctave" ${qAttrs}>${opt(0, octave, '0')}${opt(1, octave, '-1')}${opt(2, octave, '-2')}</select></div>
+      </div>
+      <div class="arp-fields">
+        ${switchHtml(index, 'lpQuadEnabled', quad.enabled, 'Break Off a Quad')}
+        ${quad.enabled ? `
+          <div class="arp-field"><label>Quadrant</label><select data-lp-quad-field="block" ${qAttrs}>${QUAD_BLOCK_LABELS.map((l, i2) => opt(i2, quad.block, l)).join('')}</select></div>
+          <div class="arp-field"><label>Channel</label><select data-lp-quad-field="channel" ${qAttrs}>${Array.from({ length: 16 }, (_, c) => opt(c, quad.channel, c + 1)).join('')}</select></div>
+          <div class="arp-field"><label>Start Note</label><select data-lp-quad-field="startNote" ${qAttrs}>${noteSelectOptions(quad.startNote)}</select></div>
+        ` : ''}
+      </div>
         <div class="lp-buttons">${buttons}</div>` : ''}
     </div>`;
 }
+
+routesContainer.addEventListener('change', (e) => {
+  const field = e.target.dataset.lpQuadField;
+  if (!field) return;
+  const route = state.routes[parseInt(e.target.dataset.routeIndex, 10)];
+  const quad = (route.lpQuad = route.lpQuad || defaultLpQuad());
+  quad[field] = parseInt(e.target.value, 10);
+  markDirty();
+});
 
 // Mapping anything to a looper action puts the button in Looper mode, the looper only runs there.
 function ensureLooperMode() {
@@ -2058,7 +2083,7 @@ function refreshRouteCard(index, animateStaple) {
 }
 
 // Structural changes (need a re-render): checkboxes that reveal/hide fields, staple toggle, delete
-const STRUCTURAL_FIELDS = new Set(['note', 'cc', 'ccMapEnabled', 'aftertouch', 'aftertouchMap', 'pressure', 'pressureMap', 'allInputTypes', 'allInputChannels', 'allInPorts', 'allOutPorts', 'roundRobin', 'roundRobinRandom', 'noteToCc', 'ccMapOn', 'launchpad', 'scaleOn', 'autoChord', 'arpOn', 'echoOn', 'stutterOn']);
+const STRUCTURAL_FIELDS = new Set(['note', 'cc', 'ccMapEnabled', 'aftertouch', 'aftertouchMap', 'pressure', 'pressureMap', 'allInputTypes', 'allInputChannels', 'allInPorts', 'allOutPorts', 'roundRobin', 'roundRobinRandom', 'noteToCc', 'ccMapOn', 'launchpad', 'scaleOn', 'autoChord', 'arpOn', 'echoOn', 'stutterOn', 'lpQuadEnabled']);
 
 routesContainer.addEventListener('click', (e) => {
   const actionEl = e.target.closest('[data-action]');
@@ -2225,8 +2250,13 @@ function applyRouteFieldChange(route, field, el) {
     renderClockRow();
     return;
   }
-  if (field === 'lpOctaveDown') {
-    route.lpOctaveDown = el.checked;
+  if (field === 'lpOctave') {
+    route.lpOctave = parseInt(el.value, 10);
+    return;
+  }
+  if (field === 'lpQuadEnabled') {
+    const quad = (route.lpQuad = route.lpQuad || defaultLpQuad());
+    quad.enabled = el.checked;
     return;
   }
   if (field === 'launchpad') {

@@ -3,7 +3,8 @@
 
 export const ACT = {
   NONE: 0, NOTE: 1, CC_MOMENTARY: 2, CC_TOGGLE: 3, CC_VALUE: 4, CC_LEVEL: 5, TRANSPORT: 6,
-  PROGRAM: 7, PROGRAM_STEP: 8, LIVE_CHANNEL: 9, LIVE_VELOCITY: 10, LOOPER: 11, TAP_TEMPO: 12
+  PROGRAM: 7, PROGRAM_STEP: 8, LIVE_CHANNEL: 9, LIVE_VELOCITY: 10, LOOPER: 11, TAP_TEMPO: 12,
+  LIVE_CHANNEL_STEP: 13, ARP_DIV_STEP: 14, STUTTER_LENGTH: 15, QUAD_TOGGLE: 16 // 1.48
 };
 
 export const ACTION_TYPES = [
@@ -19,13 +20,21 @@ export const ACTION_TYPES = [
   { v: ACT.LIVE_CHANNEL, l: 'Live Out Channel' },
   { v: ACT.LIVE_VELOCITY, l: 'Live Velocity' },
   { v: ACT.LOOPER, l: 'Looper' },
-  { v: ACT.TAP_TEMPO, l: 'Tap Tempo' }
+  { v: ACT.TAP_TEMPO, l: 'Tap Tempo' },
+  { v: ACT.LIVE_CHANNEL_STEP, l: 'Live Channel Up/Down' },
+  { v: ACT.ARP_DIV_STEP, l: 'Arp Division Up/Down' },
+  { v: ACT.STUTTER_LENGTH, l: 'Stutter Length' },
+  { v: ACT.QUAD_TOGGLE, l: 'Break Off a Quad On/Off' }
 ];
 
 // Sent as MMC, and as MIDI Start, Stop or Continue where MIDI has one.
 export const TRANSPORTS = ['Play', 'Stop', 'Continue', 'Pause', 'Record', 'Record Exit', 'Rewind', 'Fast Forward', 'Return to Start'];
 
 export const LOOPER_ACTIONS = ['Button', 'Play/Arm/Rec', 'Stop/Clear/Undo', 'Play', 'Stop', 'Pause', 'Overdub', 'Clear', 'Undo', 'Rec/Arm'];
+
+// The mapper's Stutter Length action (1.48): bar fractions, measured against the actual time
+// signature, rather than the arp-style musical divisions the route's own Stutter squares use.
+export const STUTTER_LENGTHS = ['1/8 bar', '1/4 bar', '1/2 bar', '1 bar', '2 bars'];
 
 export const MAP_ENTRIES = 16;
 
@@ -35,6 +44,7 @@ export function defaultAction(type = ACT.NONE) {
     case ACT.CC_MOMENTARY: case ACT.CC_TOGGLE: case ACT.CC_VALUE: return { type, a: 20, b: 0 };
     case ACT.CC_LEVEL: return { type, a: 20, b: 64 };
     case ACT.LIVE_VELOCITY: return { type, a: 10, b: 0 }; // 100%
+    case ACT.LIVE_CHANNEL_STEP: case ACT.ARP_DIV_STEP: return { type, a: 1, b: 0 }; // up
     default: return { type, a: 0, b: 0 };
   }
 }
@@ -45,7 +55,7 @@ export function actionToBytes(act) {
 }
 
 export function bytesToAction(b, o) {
-  const type = b[o] <= ACT.TAP_TEMPO ? b[o] : ACT.NONE;
+  const type = b[o] <= ACT.QUAD_TOGGLE ? b[o] : ACT.NONE;
   return { type, a: (b[o + 1] || 0) & 0x7F, b: (b[o + 2] || 0) & 0x7F };
 }
 
@@ -120,6 +130,13 @@ export function actionEditorHtml(act, attrs, noteSelectOptions) {
       break;
     case ACT.LOOPER:
       fields = field('a', `<select>${LOOPER_ACTIONS.map((l, i) => opt(i, act.a, l)).join('')}</select>`);
+      break;
+    case ACT.LIVE_CHANNEL_STEP:
+    case ACT.ARP_DIV_STEP:
+      fields = field('a', `<select>${opt(1, act.a, 'Up')}${opt(0, act.a, 'Down')}</select>`);
+      break;
+    case ACT.STUTTER_LENGTH:
+      fields = field('a', `<select>${STUTTER_LENGTHS.map((l, i) => opt(i, act.a, l)).join('')}</select>`);
       break;
     default:
       break;

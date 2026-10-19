@@ -4,7 +4,7 @@ import { ACTION_TYPES, MAP_ENTRIES, defaultAction, defaultLpActions } from './ma
 // the device's SysEx protocol can set. Numbers are kept human (channel lists as "1,2,4-6", device
 // names as words) rather than raw bitmasks/enums, so the file is meant to be hand-editable.
 
-import { DATA_TYPE_BITS, PORTS, PORT_TRS, PORT_USB, FEATURE, SCALES, LAYOUTS, defaultScale, ARP_SLOTS, ARP_MODES, ARP_SQUARES, DIVISIONS, defaultArp, defaultEcho, defaultStutter, defaultLooper, noTrigger } from './midi.js';
+import { DATA_TYPE_BITS, PORTS, PORT_TRS, PORT_USB, FEATURE, SCALES, LAYOUTS, defaultScale, ARP_SLOTS, ARP_MODES, ARP_SQUARES, DIVISIONS, defaultArp, defaultEcho, defaultStutter, defaultLooper, defaultLpQuad, noTrigger } from './midi.js';
 
 
 const MODE_NAMES = ['usbAdaptor', 'router'];
@@ -186,7 +186,7 @@ export function serializePreset(state) {
     lines.push(`      <passthrough programChange="${!!(r.typeFlags & DATA_TYPE_BITS.programChange)}" pitchBend="${!!(r.typeFlags & DATA_TYPE_BITS.pitchBend)}" aftertouch="${!!(r.typeFlags & DATA_TYPE_BITS.aftertouch)}" aftertouchMapEnabled="${!!(r.typeFlags & DATA_TYPE_BITS.aftertouchMap)}" aftertouchMapCC="${r.atMapCC}" pressure="${!!(r.typeFlags & DATA_TYPE_BITS.pressure)}" pressureMapEnabled="${!!r.cpMapEnabled}" pressureMapCC="${r.cpMapCC}" sysex="${!!(r.typeFlags & DATA_TYPE_BITS.sysex)}" common="${!!r.commonEnabled}" realtime="${!!r.realtimeEnabled}" clock="${!!r.clockEnabled}"/>`);
     lines.push(`      <noteRange enabled="${!!(r.typeFlags & DATA_TYPE_BITS.note)}" start="${r.noteStart}" end="${r.noteEnd}"/>`);
     lines.push(`      <ccRange enabled="${!!(r.typeFlags & DATA_TYPE_BITS.cc)}" start="${r.ccStart}" end="${r.ccEnd}"/>`);
-    lines.push(`      <output ports="${portsToString(r.outPorts)}" device="${legacyDeviceName(r.outPorts, OUT_DEVICE_NAMES)}" channels="${channelsToRangeString(r.outputChannels)}" transpose="${r.transpose}" velocityScale="${r.velocityScale}" ccMapStart="${r.ccMapStart}" monoRetrig="${!!r.monoRetrig}" roundRobin="${!!r.roundRobin}" roundRobinRandom="${!!r.roundRobinRandom}" noteToCc="${!!(r.features & FEATURE.NOTE_TO_CC)}" launchpad="${!!(r.features & FEATURE.LAUNCHPAD)}" launchpadOctaveDown="${!!r.lpOctaveDown}" scale="${!!(r.features & FEATURE.SCALE)}" layout="${esc(LAYOUTS[r.scaleLayout || 0])}" autoChord="${!!(r.features & FEATURE.AUTO_CHORD)}" chord="${Array.from({ length: 12 }, (_, k) => k).filter((k) => (r.chordMask || 0) & (1 << k)).map((k) => k + 1).join(',')}" arp="${r.arpSlot || 0}" echo="${!!(r.features & FEATURE.ECHO)}" stutter="${!!(r.features & FEATURE.STUTTER)}" ccToFeature="${!!(r.features & FEATURE.CC_MAP)}"/>`);
+    lines.push(`      <output ports="${portsToString(r.outPorts)}" device="${legacyDeviceName(r.outPorts, OUT_DEVICE_NAMES)}" channels="${channelsToRangeString(r.outputChannels)}" transpose="${r.transpose}" velocityScale="${r.velocityScale}" ccMapStart="${r.ccMapStart}" monoRetrig="${!!r.monoRetrig}" roundRobin="${!!r.roundRobin}" roundRobinRandom="${!!r.roundRobinRandom}" noteToCc="${!!(r.features & FEATURE.NOTE_TO_CC)}" launchpad="${!!(r.features & FEATURE.LAUNCHPAD)}" launchpadOctave="${r.lpOctave || 0}" quadEnabled="${!!(r.lpQuad || defaultLpQuad()).enabled}" quadBlock="${(r.lpQuad || defaultLpQuad()).block}" quadChannel="${(r.lpQuad || defaultLpQuad()).channel}" quadStartNote="${(r.lpQuad || defaultLpQuad()).startNote}" scale="${!!(r.features & FEATURE.SCALE)}" layout="${esc(LAYOUTS[r.scaleLayout || 0])}" autoChord="${!!(r.features & FEATURE.AUTO_CHORD)}" chord="${Array.from({ length: 12 }, (_, k) => k).filter((k) => (r.chordMask || 0) & (1 << k)).map((k) => k + 1).join(',')}" arp="${r.arpSlot || 0}" echo="${!!(r.features & FEATURE.ECHO)}" stutter="${!!(r.features & FEATURE.STUTTER)}" ccToFeature="${!!(r.features & FEATURE.CC_MAP)}"/>`);
     lines.push('    </route>');
   }
   lines.push('  </routes>');
@@ -334,7 +334,13 @@ export function parsePreset(xmlText) {
       clockEnabled: passEl && passEl.hasAttribute('clock') ? boolAttr(passEl, 'clock') : true,
       chordMask: parseChord(outputEl?.getAttribute('chord')),
       scaleLayout: Math.max(0, LAYOUTS.indexOf(outputEl?.getAttribute('layout'))),
-      lpOctaveDown: outputEl?.getAttribute('launchpadOctaveDown') === 'true',
+      lpOctave: Math.min(2, Math.max(0, parseInt(outputEl?.getAttribute('launchpadOctave') || '0', 10) || 0)),
+      lpQuad: {
+        enabled: outputEl?.getAttribute('quadEnabled') === 'true',
+        block: Math.min(3, Math.max(0, parseInt(outputEl?.getAttribute('quadBlock') || '3', 10) || 0)),
+        channel: Math.min(15, Math.max(0, parseInt(outputEl?.getAttribute('quadChannel') || '9', 10) || 0)),
+        startNote: Math.min(127, Math.max(0, parseInt(outputEl?.getAttribute('quadStartNote') || '36', 10) || 0))
+      },
       arpSlot: Math.min(ARP_SLOTS, Math.max(0, parseInt(outputEl?.getAttribute('arp') || '0', 10) || 0)),
       features: (boolAttr(outputEl || document.createElement('x'), 'noteToCc') ? FEATURE.NOTE_TO_CC : 0) |
         (boolAttr(outputEl || document.createElement('x'), 'launchpad') ? FEATURE.LAUNCHPAD : 0) |

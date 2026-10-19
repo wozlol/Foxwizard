@@ -66,7 +66,7 @@ export const SIDECAR_TRS_PORTS = 0x07C0; // TRS 2-6, wired only when a TRS board
 // switches), arpSlot, and 5 spare bytes.
 const ROUTE_BYTES_V1 = 17 + ROUTE_NAME_MAX_LEN;
 const ROUTE_BYTES_V2 = ROUTE_BYTES_V1 + 4;
-const ROUTE_BYTES_V4 = ROUTE_BYTES_V2 + 8;
+const ROUTE_BYTES_V4 = ROUTE_BYTES_V2 + 10; // +2 in 1.48 for Break Off a Quad
 
 // Route feature switches (route.features), same as FEATURE_* in the firmware.
 export const FEATURE = { NOTE_TO_CC: 1 << 0, LAUNCHPAD: 1 << 1, SCALE: 1 << 2, AUTO_CHORD: 1 << 3, ECHO: 1 << 4, STUTTER: 1 << 5, CC_MAP: 1 << 6 };
@@ -356,7 +356,13 @@ export function routeToBytes(r, protocolVersion = 2) {
     ...encodeName(r.name)
   ];
   if (v2) bytes.push(r.inPorts & 0xFF, (r.inPorts >> 8) & 0xFF, r.outPorts & 0xFF, (r.outPorts >> 8) & 0xFF);
-  if (protocolVersion >= 4) bytes.push((r.features || 0) & 0xFF, ((r.features || 0) >> 8) & 0xFF, r.arpSlot || 0, r.scaleLayout || 0, (r.chordMask || 0) & 0xFF, ((r.chordMask || 0) >> 8) & 0xFF, r.lpOctaveDown ? 1 : 0, 0);
+  if (protocolVersion >= 4) {
+    const q = r.lpQuad || defaultLpQuad();
+    const quadByte = (q.enabled ? 1 : 0) | ((q.block & 0x03) << 1) | ((q.channel & 0x0F) << 3);
+    bytes.push((r.features || 0) & 0xFF, ((r.features || 0) >> 8) & 0xFF, r.arpSlot || 0, r.scaleLayout || 0,
+      (r.chordMask || 0) & 0xFF, ((r.chordMask || 0) >> 8) & 0xFF, Math.min(2, r.lpOctave || 0), quadByte,
+      q.startNote & 0x7F, 0);
+  }
   return bytes;
 }
 
@@ -391,8 +397,20 @@ export function bytesToRoute(b) {
     arpSlot: b.length >= ROUTE_BYTES_V4 ? b[ROUTE_BYTES_V2 + 2] : 0,
     scaleLayout: b.length >= ROUTE_BYTES_V4 && b[ROUTE_BYTES_V2 + 3] < LAYOUTS.length ? b[ROUTE_BYTES_V2 + 3] : 0,
     chordMask: b.length >= ROUTE_BYTES_V4 ? (b[ROUTE_BYTES_V2 + 4] | (b[ROUTE_BYTES_V2 + 5] << 8)) & 0xFFF : 0,
-    lpOctaveDown: b.length >= ROUTE_BYTES_V4 && (b[ROUTE_BYTES_V2 + 6] & 0x01) === 1
+    lpOctave: b.length >= ROUTE_BYTES_V4 ? Math.min(2, b[ROUTE_BYTES_V2 + 6] || 0) : 0,
+    lpQuad: b.length >= ROUTE_BYTES_V4 ? {
+      enabled: (b[ROUTE_BYTES_V2 + 7] & 0x01) === 1,
+      block: (b[ROUTE_BYTES_V2 + 7] >> 1) & 0x03,
+      channel: (b[ROUTE_BYTES_V2 + 7] >> 3) & 0x0F,
+      startNote: b[ROUTE_BYTES_V2 + 8] & 0x7F
+    } : defaultLpQuad()
   };
+}
+
+// Break Off a Quad: block 0-3 matches the firmware's own grid-block numbering (0 lower-left, 1
+// upper-left, 2 lower-right, 3 upper-right), default upper-right, channel 10, note 36.
+export function defaultLpQuad() {
+  return { enabled: false, block: 3, channel: 9, startNote: 36 };
 }
 
 export const DATA_TYPE_BITS = {
