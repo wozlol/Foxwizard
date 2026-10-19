@@ -4,7 +4,7 @@
 export const ACT = {
   NONE: 0, NOTE: 1, CC_MOMENTARY: 2, CC_TOGGLE: 3, CC_VALUE: 4, CC_LEVEL: 5, TRANSPORT: 6,
   PROGRAM: 7, PROGRAM_STEP: 8, LIVE_CHANNEL: 9, LIVE_VELOCITY: 10, LOOPER: 11, TAP_TEMPO: 12,
-  LIVE_CHANNEL_STEP: 13, ARP_DIV_STEP: 14, STUTTER_LENGTH: 15, QUAD_TOGGLE: 16 // 1.48
+  LIVE_CHANNEL_STEP: 13, ARP_DIV_STEP: 14, STUTTER_LENGTH: 15, QUAD_TOGGLE: 16, ECHO_TOGGLE: 17 // 1.48
 };
 
 export const ACTION_TYPES = [
@@ -24,7 +24,8 @@ export const ACTION_TYPES = [
   { v: ACT.LIVE_CHANNEL_STEP, l: 'Live Channel Up/Down' },
   { v: ACT.ARP_DIV_STEP, l: 'Arp Division Up/Down' },
   { v: ACT.STUTTER_LENGTH, l: 'Stutter Length' },
-  { v: ACT.QUAD_TOGGLE, l: 'Break Off a Quad On/Off' }
+  { v: ACT.QUAD_TOGGLE, l: 'Break Off a Quad On/Off' },
+  { v: ACT.ECHO_TOGGLE, l: 'Echo On/Off' }
 ];
 
 // Sent as MMC, and as MIDI Start, Stop or Continue where MIDI has one.
@@ -51,12 +52,12 @@ export function defaultAction(type = ACT.NONE) {
 
 export function actionToBytes(act) {
   const a = act || defaultAction();
-  return [a.type & 0x7F, a.a & 0x7F, a.b & 0x7F, 0];
+  return [a.type & 0x7F, a.a & 0x7F, a.b & 0x7F, (a.c || 0) & 0x7F];
 }
 
 export function bytesToAction(b, o) {
-  const type = b[o] <= ACT.QUAD_TOGGLE ? b[o] : ACT.NONE;
-  return { type, a: (b[o + 1] || 0) & 0x7F, b: (b[o + 2] || 0) & 0x7F };
+  const type = b[o] <= ACT.ECHO_TOGGLE ? b[o] : ACT.NONE;
+  return { type, a: (b[o + 1] || 0) & 0x7F, b: (b[o + 2] || 0) & 0x7F, c: (b[o + 3] || 0) & 0x7F };
 }
 
 // Note to Feature and CC to Feature: 16 entries of source + 1 (0 unused) and an action, 80 bytes.
@@ -89,8 +90,26 @@ export function bytesToLpActions(b) {
   return Array.from({ length: 16 }, (_, i) => bytesToAction(b, i * 4));
 }
 
+// 1.48 defaults, left to right: Top 1-8 then Side 1-8 (indices 0-7, 8-15).
 export function defaultLpActions() {
-  return Array.from({ length: 16 }, () => defaultAction());
+  return [
+    { type: ACT.PROGRAM_STEP, a: 1, b: 0 },       // Top 1: Program Up
+    { type: ACT.PROGRAM_STEP, a: 0, b: 0 },       // Top 2: Program Down
+    { type: ACT.ARP_DIV_STEP, a: 0, b: 0 },       // Top 3: Arp Division Down
+    { type: ACT.ARP_DIV_STEP, a: 1, b: 0 },       // Top 4: Arp Division Up
+    { type: ACT.LIVE_CHANNEL, a: 0, b: 0 },        // Top 5: Live Ch 1
+    { type: ACT.LIVE_CHANNEL, a: 9, b: 0 },        // Top 6: Live Ch 10
+    { type: ACT.LIVE_CHANNEL, a: 1, b: 0 },        // Top 7: Live Ch 2
+    { type: ACT.LIVE_CHANNEL, a: 2, b: 0 },        // Top 8: Live Ch 3
+    { type: ACT.STUTTER_LENGTH, a: 4, b: 0 },      // Side 1: Stutter 2 bars
+    { type: ACT.STUTTER_LENGTH, a: 3, b: 0 },      // Side 2: Stutter 1 bar
+    { type: ACT.STUTTER_LENGTH, a: 2, b: 0 },      // Side 3: Stutter 1/2 bar
+    { type: ACT.STUTTER_LENGTH, a: 1, b: 0 },      // Side 4: Stutter 1/4 bar
+    { type: ACT.STUTTER_LENGTH, a: 0, b: 0 },      // Side 5: Stutter 1/8 bar
+    { type: ACT.ECHO_TOGGLE, a: 0, b: 0 },         // Side 6: Echo On/Off
+    { type: ACT.LOOPER, a: 1, b: 0 },              // Side 7: Looper Play/Arm/Rec
+    { type: ACT.LOOPER, a: 2, b: 0 }               // Side 8: Looper Stop/Clear/Undo
+  ];
 }
 
 export function usesLooper(act) { return act?.type === ACT.LOOPER; }
@@ -98,7 +117,9 @@ export function usesLiveChannel(act) { return act?.type === ACT.LIVE_CHANNEL; }
 export function usesCc(act) { return [ACT.CC_MOMENTARY, ACT.CC_TOGGLE, ACT.CC_VALUE, ACT.CC_LEVEL].includes(act?.type); }
 
 // The editor for one action. attrs identifies it: data-act-owner, data-act-index, data-route-index.
-export function actionEditorHtml(act, attrs, noteSelectOptions) {
+// showColor is true only for Launchpad buttons: a's type byte c is a raw Launchpad velocity color
+// (0 = the usual channel-color indicator), meaningless for Note/CC to Feature entries.
+export function actionEditorHtml(act, attrs, noteSelectOptions, showColor) {
   const opt = (v, cur, l) => `<option value="${v}" ${cur === v ? 'selected' : ''}>${l}</option>`;
   const field = (f, html) => html.replace('<select', `<select data-act-field="${f}" ${attrs}`).replace('<input', `<input data-act-field="${f}" ${attrs}`);
   const num = (f, v, min, max, title) => field(f, `<input type="number" min="${min}" max="${max}" value="${v}" title="${title}">`);
@@ -142,7 +163,10 @@ export function actionEditorHtml(act, attrs, noteSelectOptions) {
       break;
   }
   const learnOut = usesCc(act) ? `<button type="button" class="btn btn-ghost btn-tiny" data-action="learnActOut" ${attrs} title="Learn the CC number">Learn</button>` : '';
-  return `<span class="action-editor">${field('type', `<select title="Action">${ACTION_TYPES.map((t) => opt(t.v, act.type, t.l)).join('')}</select>`)}${fields}${learnOut}</span>`;
+  const color = showColor && act.type !== ACT.NONE
+    ? num('c', act.c || 0, 0, 127, 'Button light color: a raw Launchpad velocity color, 0 = the usual channel-color indicator')
+    : '';
+  return `<span class="action-editor">${field('type', `<select title="Action">${ACTION_TYPES.map((t) => opt(t.v, act.type, t.l)).join('')}</select>`)}${fields}${color}${learnOut}</span>`;
 }
 
 // Clamps and stores a changed action field. Returns true when the editor needs redrawing.

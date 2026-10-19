@@ -606,7 +606,7 @@ const globalCard = document.getElementById('globalSettingsCard');
 
 const BUTTON_ACTIONS = [
   { value: 0, label: 'Panic (default)' },
-  { value: 11, label: 'LOOPER', protocol: 4 },
+  { value: 11, label: 'Looper', protocol: 4 },
   { value: 1, label: 'Pitch Up' },
   { value: 2, label: 'Pitch Down' },
   { value: 3, label: 'Mod' },
@@ -1664,7 +1664,7 @@ function launchpadSectionHtml(route, index) {
   const on = !!(route.features & FEATURE.LAUNCHPAD);
   const buttons = state.lpActions.map((act, i) => `<div class="lp-button">
         <span class="lp-button-label">${LP_BUTTON_LABELS[i]}</span>
-        ${actionEditorHtml(act, `data-act-owner="lp" data-act-index="${i}" data-route-index="${index}"`, noteSelectOptions)}
+        ${actionEditorHtml(act, `data-act-owner="lp" data-act-index="${i}" data-route-index="${index}"`, noteSelectOptions, true)}
       </div>`).join('');
   const opt = (v, cur, l) => `<option value="${v}" ${cur === v ? 'selected' : ''}>${l}</option>`;
   const octave = Math.min(2, route.lpOctave || 0);

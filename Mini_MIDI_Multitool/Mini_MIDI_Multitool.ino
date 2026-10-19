@@ -393,7 +393,7 @@ constexpr uint8_t LAUNCHPAD_BUTTONS = 16;
 enum : uint8_t {
   ACT_NONE = 0, ACT_NOTE, ACT_CC_MOMENTARY, ACT_CC_TOGGLE, ACT_CC_VALUE, ACT_CC_LEVEL, ACT_TRANSPORT,
   ACT_PROGRAM, ACT_PROGRAM_STEP, ACT_LIVE_CHANNEL, ACT_LIVE_VELOCITY, ACT_LOOPER, ACT_TAP_TEMPO,
-  ACT_LIVE_CHANNEL_STEP, ACT_ARP_DIV_STEP, ACT_STUTTER_LENGTH, ACT_QUAD_TOGGLE, ACT_COUNT // 1.48
+  ACT_LIVE_CHANNEL_STEP, ACT_ARP_DIV_STEP, ACT_STUTTER_LENGTH, ACT_QUAD_TOGGLE, ACT_ECHO_TOGGLE, ACT_COUNT // 1.48
 };
 enum : uint8_t {
   TRANSPORT_PLAY = 0, TRANSPORT_STOP, TRANSPORT_CONTINUE, TRANSPORT_PAUSE, TRANSPORT_RECORD,
@@ -3139,6 +3139,9 @@ void runAction(uint16_t routeIndex, const MapAction &act, uint8_t phase, uint8_t
     case ACT_QUAD_TOGGLE:
       if (press) quadToggleOff[routeIndex] = !quadToggleOff[routeIndex];
       break;
+    case ACT_ECHO_TOGGLE:
+      if (press) echoOff = !echoOff;
+      break;
   }
   flushPending();
 }
@@ -3603,7 +3606,14 @@ void dispatchNoteEvent(uint8_t inputDevice, uint8_t channel, bool isNoteOn, uint
       if (!routeAcceptsSource(routes[i], inputDevice, channel)) continue;
       launchpadExcludePorts = sourcePort(inputDevice);
       launchpadLearnPort(launchpadExcludePorts, i);
-      sendToOutputs(launchpadExcludePorts, isNoteOn ? 0x90 : 0x80, channel, rawNote, isNoteOn ? launchpadChannelColor(channel) : 0, 3);
+      {
+        const uint8_t side = launchpadSideButton(rawNote);
+        // A mapped side button with a custom color (1.48) lights with that instead of the usual
+        // channel-color echo, so a button's mapping is visible on the hardware at a glance.
+        const uint8_t litColor = (side != 0xFF && side < LAUNCHPAD_BUTTONS && lpActions[side].c)
+          ? lpActions[side].c : launchpadChannelColor(channel);
+        sendToOutputs(launchpadExcludePorts, isNoteOn ? 0x90 : 0x80, channel, rawNote, isNoteOn ? litColor : 0, 3);
+      }
       const uint8_t side = launchpadSideButton(rawNote);
       if (side != 0xFF) {
         matchedAny = true;
@@ -3763,7 +3773,9 @@ void processIncomingEvent(uint8_t inputDevice, uint8_t statusHi, uint8_t channel
       const uint8_t button = number - LP_TOP_BUTTON_CC;
       if (routeAcceptsSource(routes[i], inputDevice, channel)) {
         launchpadLearnPort(sourcePort(inputDevice), i);
-        sendToOutputs(sourcePort(inputDevice), 0xB0, channel, number, data2, 3); // lights the button
+        // A mapped top button with a custom color (1.48) lights with that instead of echoing the
+        // Launchpad's own CC value back.
+        sendToOutputs(sourcePort(inputDevice), 0xB0, channel, number, lpActions[button].c ? lpActions[button].c : data2, 3);
         if (lpActions[button].type != ACT_NONE) {
           matchedAny = true;
           handleLaunchpadButton(i, button, data2 > 0);
