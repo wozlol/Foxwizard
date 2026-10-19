@@ -97,7 +97,7 @@ constexpr uint8_t SYSEX_MFR_ID = 0x7D;   // reserved for non-commercial/educatio
 constexpr uint8_t SYSEX_DEVICE_ID = 0x4D; // 'M'
 constexpr uint8_t PROTOCOL_VERSION = 4; // 2: 45-byte routes with port masks, GET_STATUS. 3: clock settings, LEARN. 4: 53-byte routes with feature fields, feature blocks
 constexpr uint8_t FW_VERSION_MAJOR = 1;
-constexpr uint8_t FW_VERSION_MINOR = 43;
+constexpr uint8_t FW_VERSION_MINOR = 44;
 constexpr uint8_t FW_CHUNK_BYTES = 128;          // firmware bytes per FW_DATA message, 147 once packed
 constexpr uint32_t FW_REBOOT_DELAY_MS = 300;     // lets the FW_END ACK reach the host before rebooting
 const char DEVICE_NAME[] = "FoxWizard Mini MIDI Multitool"; // long name sent in the SysEx IDENTITY_REPLY
@@ -326,6 +326,8 @@ uint32_t lastFlowSentMs = 0;
 SysexState hostSysex[LINK_PORT_COUNT]; // per host port, so two devices' SysEx never mix on input
 uint8_t currentHostPort = 1;             // hub port (1-4) of the USB Host message being handled
 uint8_t hostPortMask = 0;                // bit n = USB MIDI device mounted on hub port n+1
+bool hostHasTrs = true;                  // bit 4 of the port map byte: the sidecar has TRS 2-6 wired
+                                          // (a board added on top of it), not just a bare module
 uint8_t hostFwVersion = 0;
 uint8_t hostDropCount = 0;               // host brain's dropped-message count, saturates at 127
 uint8_t hostRestartReason = 0;           // RESTART_* from the host brain's last start
@@ -1695,7 +1697,7 @@ void serviceLearnTimeout() {
 // ============================================================================================
 // Every port that exists right now. The sidecar's ports only while it's present.
 uint16_t availablePorts() {
-  return PORT_TRS | PORT_USB | (hostPresent() ? (PORT_HOST_ALL | PORT_TRS2_6) : 0);
+  return PORT_TRS | PORT_USB | (hostPresent() ? (PORT_HOST_ALL | (hostHasTrs ? PORT_TRS2_6 : 0)) : 0);
 }
 
 // Link ports for an output mask: USB Host 1-4 are link ports 1-4 (only hub ports with a device
@@ -4017,6 +4019,7 @@ void handleSysexCommand(uint8_t sourcePort, const uint8_t *cmdBuf, uint8_t cmdLe
       appendReply(bpmNow & 0x7F);
       appendReply((bpmNow >> 7) & 0x7F);
       appendReply(clockStatus());
+      appendReply(hostHasTrs ? 1 : 0); // 1.44: whether the host brain has TRS 2-6 wired (Patchling only cares while sidecar is present)
       sendReply(sourcePort);
       break;
     }
@@ -4413,7 +4416,8 @@ void releaseSidecarNotes(uint8_t onlyPort = 0) {
 // After the host brain restarts or comes back, its outputs may have missed Note Offs while it was
 // gone. All Notes Off on its ports only, the main brain's own ports are left alone.
 void silenceSidecarOutputs() {
-  for (uint8_t ch = 0; ch < 16; ++ch) sendToOutputs(PORT_HOST_ALL | PORT_TRS2_6, 0xB0, ch, 123, 0, 3);
+  const uint16_t ports = PORT_HOST_ALL | (hostHasTrs ? PORT_TRS2_6 : 0);
+  for (uint8_t ch = 0; ch < 16; ++ch) sendToOutputs(ports, 0xB0, ch, 123, 0, 3);
 }
 
 void serviceStuckNoteGuard() {
@@ -4443,9 +4447,11 @@ void pumpHostIn() {
       uint8_t type = packet[0] & 0x0F;
       if (type == CONTROL_PORT_MAP) {
         // A device unplugged mid-note never sends its Note Offs, so its held notes (and any arp they
-        // feed) are released here.
-        const uint8_t gone = hostPortMask & ~packet[1];
-        hostPortMask = packet[1];
+        // feed) are released here. Bit 4 says whether TRS 2-6 are wired, not a hub port, masked off
+        // before comparing mounted ports.
+        const uint8_t gone = hostPortMask & ~packet[1] & 0x0F;
+        hostPortMask = packet[1] & 0x0F;
+        hostHasTrs = (packet[1] & 0x10) != 0;
         for (uint8_t p = 1; p <= 4; ++p) if (gone & (1 << (p - 1))) releaseSidecarNotes(p);
         hostFwVersion = packet[2];
         hostDropCount = packet[3];

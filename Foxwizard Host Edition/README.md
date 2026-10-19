@@ -79,6 +79,7 @@ Same as the FoxWizard, plus:
 | GP5 | DIN/TRS MIDI IN (UART1 RX) |
 | GP6, GP7, GP8, GP9 | DIN/TRS MIDI OUT 2-5 (PIO serial TX) |
 | GP10, GP11, GP12, GP13 | Hub port 1-4 status lights, active HIGH |
+| GP14 | TRS board detection, internal pull-up. Floating: a bare sidecar module, no TRS. Grounded: a board with TRS 2-6 added |
 | Native USB | USB host to the hub upstream port |
 
 Both brains share ground.
@@ -94,6 +95,20 @@ Status lights stay on while a USB MIDI device is mounted on that port and blink 
 - **Downstream USB-A ports:** no CC.
 - **Power:** all ports share one 5 V bus, each through its own polyfuse or current-limit switch.
 - **Programming:** SWD pads, no BOOT button needed. See Flashing the host brain.
+
+## TRS 2-6 detection
+
+The sidecar is a bare module with 4 USB host ports and nothing else, or that module with a board
+added on top of it that wires up TRS 2-6 (shares the main brain's DIN/TRS pin layout: one shared
+DIN IN/TRS OUT 1 plus four more TRS OUTs). GP14 tells the firmware which:
+
+- **Floating** (its internal pull-up, nothing wired to it): a bare module. USB Host 1-4 only.
+- **Grounded:** a TRS board is present. USB Host 1-4 plus TRS 2-6.
+
+The sidecar reads GP14 once at power on and sends it to the main brain as bit 4 of the port map
+frame (`CONTROL_PORT_MAP`, alongside the hub's mounted-device bits). The main brain reports it to
+Patchling over `GET_STATUS`, which shows the TRS 2-6 switches only when the sidecar has them wired.
+A board adding TRS 2-6 grounds GP14; nothing else changes in the firmware.
 
 ## Testing on an RP2040-Zero
 
@@ -140,7 +155,7 @@ Port 15 carries control frames, with the frame type in the CIN field:
 
 | Type | Direction | Contents |
 |---|---|---|
-| 1, port map | Host to main | Byte 1 = connected port mask (bit 0 = hub port 1), byte 2 = host firmware version, byte 3 = drop count (max 127). Sent on any plug or unplug and every 500 ms. |
+| 1, port map | Host to main | Byte 1 = connected port mask (bit 0 = hub port 1, bit 4 = TRS 2-6 present, 1.44), byte 2 = host firmware version, byte 3 = drop count (max 127). Sent on any plug or unplug and every 500 ms. |
 | 2, flow | Both ways | Byte 1 = 1 pause, 0 resume. Sent on change and every 100 ms. |
 
 `foxwizard_link.h` holds the frame code and queue rules. Both sketch folders carry an identical copy.

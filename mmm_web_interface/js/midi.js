@@ -49,16 +49,17 @@ export const PORTS = [
   { bit: 3, key: 'host2', label: 'USB Host 2', short: 'Host2', input: true, sidecar: true },
   { bit: 4, key: 'host3', label: 'USB Host 3', short: 'Host3', input: true, sidecar: true },
   { bit: 5, key: 'host4', label: 'USB Host 4', short: 'Host4', input: true, sidecar: true },
-  { bit: 6, key: 'trs2', label: 'TRS 2', short: 'TRS2', input: true, sidecar: true },
-  { bit: 7, key: 'trs3', label: 'TRS 3', short: 'TRS3', input: false, sidecar: true },
-  { bit: 8, key: 'trs4', label: 'TRS 4', short: 'TRS4', input: false, sidecar: true },
-  { bit: 9, key: 'trs5', label: 'TRS 5', short: 'TRS5', input: false, sidecar: true },
-  { bit: 10, key: 'trs6', label: 'TRS 6', short: 'TRS6', input: false, sidecar: true }
+  { bit: 6, key: 'trs2', label: 'TRS 2', short: 'TRS2', input: true, sidecar: true, trs: true },
+  { bit: 7, key: 'trs3', label: 'TRS 3', short: 'TRS3', input: false, sidecar: true, trs: true },
+  { bit: 8, key: 'trs4', label: 'TRS 4', short: 'TRS4', input: false, sidecar: true, trs: true },
+  { bit: 9, key: 'trs5', label: 'TRS 5', short: 'TRS5', input: false, sidecar: true, trs: true },
+  { bit: 10, key: 'trs6', label: 'TRS 6', short: 'TRS6', input: false, sidecar: true, trs: true }
 ];
 export const PORT_TRS = 1 << 0;
 export const PORT_USB = 1 << 1;
 export const SIDECAR_INPUT_PORTS = 0x007C;
 export const SIDECAR_OUTPUT_PORTS = 0x07FC;
+export const SIDECAR_TRS_PORTS = 0x07C0; // TRS 2-6, wired only when a TRS board is added on top of the bare sidecar module
 
 // Protocol 1 routes are 41 raw bytes. Protocol 2 adds inPorts and outPorts (2 bytes each, little
 // endian) at the end, used when flags bit6 is set. Protocol 4 adds features (2 bytes, FEATURE_*
@@ -604,17 +605,19 @@ export class DeviceLink extends EventTarget {
   /**
    * Sidecar state, protocol 2 only: { sidecar, hostPortMask (bit 0 = USB Host 1), drops,
    * restartReason (0 none, 1 hang, 2 USB Host port stalled, 3-5 USB driver faults), restartPort,
-   * restartCount }.
+   * restartCount, hasTrs (true when a TRS board is added on top of the bare sidecar module) }.
    */
   async getStatus() {
-    if (this.protocolVersion < 2) return { sidecar: false, hostPortMask: 0, drops: 0, restartReason: 0, restartPort: 0, restartCount: 0, bpm: null, clockStatus: 0 };
+    if (this.protocolVersion < 2) return { sidecar: false, hostPortMask: 0, drops: 0, restartReason: 0, restartPort: 0, restartCount: 0, bpm: null, clockStatus: 0, hasTrs: true };
     const reply = await this._sendAndWait([CMD.GET_STATUS], CMD.STATUS_DATA, DEFAULT_TIMEOUT_MS);
     return {
       sidecar: reply[0] === 1, hostPortMask: reply[1], drops: reply[2],
       restartReason: reply[3] ?? 0, restartPort: reply[4] ?? 0, restartCount: reply[5] ?? 0,
       // Protocol 3: current BPM, and 0 clock unused, 1 master, 2 following, 3 following with no clock.
       bpm: reply.length >= 9 ? reply[6] | (reply[7] << 7) : null,
-      clockStatus: reply[8] ?? 0
+      clockStatus: reply[8] ?? 0,
+      // Firmware before 1.44 never sends byte 9: assume TRS 2-6 exist (every deployed sidecar so far).
+      hasTrs: reply[9] === undefined ? true : reply[9] === 1
     };
   }
 

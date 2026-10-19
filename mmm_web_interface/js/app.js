@@ -1,5 +1,5 @@
 import { ACT, MAP_ENTRIES, defaultAction, defaultLpActions, actionEditorHtml, applyActionField, usesLooper, usesLiveChannel } from './mapper.js';
-import { DeviceLink, DATA_TYPE_BITS, ROUTE_NAME_MAX_LEN, PORTS, PORT_TRS, PORT_USB, SIDECAR_INPUT_PORTS, SIDECAR_OUTPUT_PORTS, FEATURE, SCALES, LAYOUTS, defaultScale, ARP_SLOTS, ARP_MODES, ARP_MODE_ORDER, ARP_SQUARES, DIVISIONS, defaultArp, defaultEcho, defaultStutter, defaultLooper, noTrigger } from './midi.js';
+import { DeviceLink, DATA_TYPE_BITS, ROUTE_NAME_MAX_LEN, PORTS, PORT_TRS, PORT_USB, SIDECAR_INPUT_PORTS, SIDECAR_OUTPUT_PORTS, SIDECAR_TRS_PORTS, FEATURE, SCALES, LAYOUTS, defaultScale, ARP_SLOTS, ARP_MODES, ARP_MODE_ORDER, ARP_SQUARES, DIVISIONS, defaultArp, defaultEcho, defaultStutter, defaultLooper, noTrigger } from './midi.js';
 import { serializePreset, parsePreset, downloadPreset, readPresetFile, channelsToRangeString } from './presetXml.js';
 import { attachDragReorder } from './dragReorder.js';
 
@@ -98,7 +98,7 @@ function defaultRoute() {
     name: '',
     enabled: true,
     // Every port this FoxWizard has right now, so a fresh route is a full passthrough.
-    inPorts: PORT_TRS | PORT_USB | (sidecarPresent ? SIDECAR_INPUT_PORTS : 0),
+    inPorts: PORT_TRS | PORT_USB | (sidecarPresent ? sidecarInputPorts() : 0),
     inputChannels: 0x0001, // ch1 only
     // All top-level input data types on by default (every bit except bit7/aftertouchMap, which is
     // a sub-switch under Poly Aftertouch, not one of the top-level switches the master toggle
@@ -106,7 +106,7 @@ function defaultRoute() {
     typeFlags: 0x7F,
     noteStart: 0, noteEnd: 127,
     ccStart: 0, ccEnd: 127,
-    outPorts: PORT_TRS | PORT_USB | (sidecarPresent ? SIDECAR_OUTPUT_PORTS : 0),
+    outPorts: PORT_TRS | PORT_USB | (sidecarPresent ? sidecarOutputPorts() : 0),
     outputChannels: 0x0001, // ch1 only
     transpose: 0,
     velocityScale: 100,
@@ -470,6 +470,7 @@ let connectionState = 'disconnected';
 // "Host Edition", never "sidecar".
 const SIDECAR_POLL_MS = 2000;
 let sidecarPresent = false;
+let sidecarHasTrs = true; // true once a TRS board is added on top of the bare sidecar module
 let hostPortMask = 0; // bit 0 = a device on USB Host 1
 let hostRestartCount = null; // null until the first status after connecting, so only new restarts are announced
 let lastHostStatus = null;   // newest GET_STATUS reply, for the badge click
@@ -489,8 +490,10 @@ async function refreshSidecarStatus() {
   let status;
   try { status = await device.getStatus(); } catch (err) { return; }
   const sidecarChanged = status.sidecar !== sidecarPresent;
+  const trsChanged = status.hasTrs !== sidecarHasTrs;
   const portsChanged = status.hostPortMask !== hostPortMask;
   sidecarPresent = status.sidecar;
+  sidecarHasTrs = status.hasTrs;
   hostPortMask = status.hostPortMask;
   lastHostStatus = status;
   if (status.sidecar) {
@@ -507,11 +510,11 @@ async function refreshSidecarStatus() {
     hostRestartCount = status.restartCount;
   }
   updateClockReadout(status);
-  if (sidecarChanged) {
+  if (sidecarChanged || trsChanged) {
     renderRoutes();
     renderClockRow();
     renderConnectionPill();
-    toast(sidecarPresent ? 'Host Edition ports connected' : 'Host Edition ports disconnected', sidecarPresent ? 'success' : 'error');
+    if (sidecarChanged) toast(sidecarPresent ? 'Host Edition ports connected' : 'Host Edition ports disconnected', sidecarPresent ? 'success' : 'error');
   } else if (portsChanged) {
     updatePortChipsLive();
   }
@@ -804,7 +807,7 @@ function clockRowActive() {
 }
 
 function clockSourceOptions(g) {
-  const ports = PORTS.filter((p) => p.input && (!p.sidecar || sidecarPresent || g.clockSource === p.bit + 1));
+  const ports = PORTS.filter((p) => p.input && (!p.sidecar || (sidecarPresent && (!p.trs || sidecarHasTrs)) || g.clockSource === p.bit + 1));
   return [`<option value="0" ${g.clockSource === 0 ? 'selected' : ''}>FoxWizard is master</option>`]
     .concat(ports.map((p) => `<option value="${p.bit + 1}" ${g.clockSource === p.bit + 1 ? 'selected' : ''}>Follow ${p.label}</option>`))
     .join('');
@@ -1298,8 +1301,13 @@ const emptyHint = document.getElementById('emptyRoutesHint');
 // goes with which switch. Sidecar ports (USB Host 1-4, TRS 2-6) only show while a sidecar is
 // detected, or when the route already uses them.
 function visiblePorts(route, field) {
-  return PORTS.filter((p) => (field === 'outPorts' || p.input) && (!p.sidecar || sidecarPresent || (route[field] & (1 << p.bit))));
+  return PORTS.filter((p) => (field === 'outPorts' || p.input) && (!p.sidecar || (sidecarPresent && (!p.trs || sidecarHasTrs)) || (route[field] & (1 << p.bit))));
 }
+
+// Sidecar port masks this board actually has: Host 1-4 always, TRS 2-6 only when a TRS board is
+// added on top of the bare sidecar module.
+function sidecarInputPorts() { return sidecarHasTrs ? SIDECAR_INPUT_PORTS : (SIDECAR_INPUT_PORTS & ~SIDECAR_TRS_PORTS); }
+function sidecarOutputPorts() { return sidecarHasTrs ? SIDECAR_OUTPUT_PORTS : (SIDECAR_OUTPUT_PORTS & ~SIDECAR_TRS_PORTS); }
 
 function visiblePortMask(route, field) {
   return visiblePorts(route, field).reduce((mask, p) => mask | (1 << p.bit), 0);

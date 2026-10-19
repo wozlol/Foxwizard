@@ -60,6 +60,9 @@ constexpr uint8_t PIN_DIN_OUT4 = 8;
 constexpr uint8_t PIN_DIN_OUT5 = 9;
 constexpr uint8_t PIN_PORT_LED[4] = {10, 11, 12, 13};
 constexpr uint8_t PIN_STATUS_RGB = 16;
+constexpr uint8_t PIN_TRS_BOARD = 14; // floating (its internal pull-up): a bare sidecar module, USB
+                                       // hub ports only, no TRS. Grounded: a board with TRS 2-6 added.
+                                       // Tells the main brain whether TRS 2-6 physically exist.
 
 constexpr uint32_t DIN_BAUD = 31250;
 constexpr uint8_t HOST_FW_VERSION = 2;
@@ -198,6 +201,7 @@ uint32_t lastFlowSentMs = 0;
 DinInParser dinIn;
 
 bool portMapDirty = true;
+bool trsBoard = false; // read once in setup(): PIN_TRS_BOARD grounded, so TRS 2-6 are wired
 uint32_t lastPortMapMs = 0;
 uint32_t usbStallDrops = 0;
 
@@ -250,6 +254,7 @@ void serviceControlOut() {
     uint8_t mask = 0;
     for (uint8_t p = 0; p < HUB_PORTS; ++p) if (hubPorts[p].mounted) mask |= 1 << p;
     uint32_t drops = totalDrops();
+    if (trsBoard) mask |= 0x10; // bit 4: this board has TRS 2-6 wired, bits 0-3 stay hub ports only
     uint8_t pkt[4] = {CONTROL_PORT_MAP, mask, HOST_FW_VERSION, (uint8_t)(drops > 127 ? 127 : drops)};
     sendToMain(LINK_PORT_CONTROL, pkt);
     uint8_t restart[4] = {CONTROL_HOST_RESTART, restartReason, restartPort, (uint8_t)(restartCount > 127 ? 127 : restartCount)};
@@ -640,6 +645,9 @@ void serviceLeds() {
 // Setup / loop
 // ============================================================================================
 void setup() {
+  pinMode(PIN_TRS_BOARD, INPUT_PULLUP);
+  trsBoard = digitalRead(PIN_TRS_BOARD) == LOW;
+
   for (uint8_t p = 0; p < HUB_PORTS; ++p) {
     pinMode(PIN_PORT_LED[p], OUTPUT);
     digitalWrite(PIN_PORT_LED[p], LOW);
