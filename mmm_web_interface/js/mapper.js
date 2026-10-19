@@ -52,9 +52,9 @@ export function defaultAction(type = ACT.NONE) {
     case ACT.LIVE_VELOCITY: return { type, a: 10, b: 0 }; // 100%
     case ACT.LIVE_CHANNEL_STEP: case ACT.ARP_DIV_STEP: return { type, a: 1, b: 0 }; // up
     case ACT.NOTE_TOGGLE: return { type, a: 36, b: 0 };
-    case ACT.PITCH_RAMP: return { type, a: 1, b: 64 }; // up, half speed
-    case ACT.MOD_RAMP: return { type, a: 0, b: 64 };
-    case ACT.CC_RAMP: return { type, a: 20, b: 64 };
+    case ACT.PITCH_RAMP: return { type, a: 1, b: 6 }; // up, a quarter note sweep
+    case ACT.MOD_RAMP: return { type, a: 0, b: 6 };
+    case ACT.CC_RAMP: return { type, a: 20, b: 6 };
     default: return { type, a: 0, b: 0 };
   }
 }
@@ -121,14 +121,23 @@ export function defaultLpActions() {
   ];
 }
 
+// The ramp's full sweep length: Instant (0), or a musical division (1 = divisions[0], matching the
+// firmware's divisionPlus1 convention, same as Echo and Stutter).
+function rampLengthSelect(cur, divisions) {
+  const opt = (v, l) => `<option value="${v}" ${cur === v ? 'selected' : ''}>${l}</option>`;
+  return `<select title="Ramp length">${opt(0, 'Instant')}${(divisions || []).map((d, i) => opt(i + 1, d)).join('')}</select>`;
+}
+
 export function usesLooper(act) { return act?.type === ACT.LOOPER; }
 export function usesLiveChannel(act) { return act?.type === ACT.LIVE_CHANNEL; }
 export function usesCc(act) { return [ACT.CC_MOMENTARY, ACT.CC_TOGGLE, ACT.CC_VALUE, ACT.CC_LEVEL].includes(act?.type); }
 
 // The editor for one action. attrs identifies it: data-act-owner, data-act-index, data-route-index.
 // showColor is true only for Launchpad buttons: a's type byte c is a raw Launchpad velocity color
-// (0 = the usual channel-color indicator), meaningless for Note/CC to Feature entries.
-export function actionEditorHtml(act, attrs, noteSelectOptions, showColor) {
+// (0 = the usual channel-color indicator), meaningless for Note/CC to Feature entries. divisions is
+// midi.js's DIVISIONS list, passed in rather than imported to avoid a circular import (midi.js
+// already imports this module for the route/lpActions byte packing).
+export function actionEditorHtml(act, attrs, noteSelectOptions, showColor, divisions) {
   const opt = (v, cur, l) => `<option value="${v}" ${cur === v ? 'selected' : ''}>${l}</option>`;
   const field = (f, html) => html.replace('<select', `<select data-act-field="${f}" ${attrs}`).replace('<input', `<input data-act-field="${f}" ${attrs}`);
   // A short visible label next to the number (CC, Val, Color...) since these fields otherwise look
@@ -174,13 +183,13 @@ export function actionEditorHtml(act, attrs, noteSelectOptions, showColor) {
       fields = field('a', `<select title="Note">${noteSelectOptions(act.a)}</select>`);
       break;
     case ACT.PITCH_RAMP:
-      fields = field('a', `<select>${opt(1, act.a, 'Up')}${opt(0, act.a, 'Down')}</select>`) + num('b', act.b, 0, 127, 'Speed', 'Ramp speed, 127 is instant, 0 is slowest');
+      fields = field('a', `<select>${opt(1, act.a, 'Up')}${opt(0, act.a, 'Down')}</select>`) + field('b', rampLengthSelect(act.b, divisions));
       break;
     case ACT.MOD_RAMP:
-      fields = num('b', act.b, 0, 127, 'Speed', 'Ramp speed, 127 is instant, 0 is slowest');
+      fields = field('b', rampLengthSelect(act.b, divisions));
       break;
     case ACT.CC_RAMP:
-      fields = num('a', act.a, 0, 127, 'CC', 'CC number') + num('b', act.b, 0, 127, 'Speed', 'Ramp speed, 127 is instant, 0 is slowest');
+      fields = num('a', act.a, 0, 127, 'CC', 'CC number') + field('b', rampLengthSelect(act.b, divisions));
       break;
     default:
       break;

@@ -3152,13 +3152,13 @@ void runAction(uint16_t routeIndex, const MapAction &act, uint8_t phase, uint8_t
     case ACT_NOTE_TOGGLE:
       if (press) { toggle = !toggle; each(toggle ? 0x90 : 0x80, MK_NOTE, act.a, toggle ? 127 : 0, 3); }
       break;
-    case ACT_PITCH_RAMP: // a: 0 down, 1 up. b: speed, same 0-127 curve as the front button's
+    case ACT_PITCH_RAMP: // a: 0 down, 1 up. b: divisionPlus1, the full sweep's length
       if (press || release) startMapperRamp(&act, press, true, act.a == 0, 0, chans, ports, act.b);
       break;
-    case ACT_MOD_RAMP: // b: speed. Mod is a CC Ramp fixed to CC 1, matching the front button's Mod
+    case ACT_MOD_RAMP: // b: divisionPlus1. Mod is a CC Ramp fixed to CC 1, matching the button's Mod
       if (press || release) startMapperRamp(&act, press, false, false, 1, chans, ports, act.b);
       break;
-    case ACT_CC_RAMP: // a: CC number, b: speed
+    case ACT_CC_RAMP: // a: CC number, b: divisionPlus1
       if (press || release) startMapperRamp(&act, press, false, false, act.a, chans, ports, act.b);
       break;
   }
@@ -4801,8 +4801,11 @@ int8_t findMapperRampSlot(const void *owner) {
 }
 
 // rising: a press ramps toward the max, a release ramps back to 0, same as the front button.
+// divisionPlus1: 0 is instant, 1-19 is a fw::MusicalDivision + 1 — same "divisionPlus1" convention
+// Echo and Stutter use, picked from the same dropdown, rather than the front button's raw 0-127
+// speed dial (confusing here, with no visible unit).
 void startMapperRamp(const void *owner, bool rising, bool isPitch, bool pitchDown, uint8_t ccNumber,
-                      uint16_t chans, uint16_t ports, uint8_t speed) {
+                      uint16_t chans, uint16_t ports, uint8_t divisionPlus1) {
   int8_t slot = findMapperRampSlot(owner);
   if (slot < 0) {
     if (!rising) return; // a release with nothing actively ramping: nothing to fall from
@@ -4823,13 +4826,10 @@ void startMapperRamp(const void *owner, bool rising, bool isPitch, bool pitchDow
   r.owner = owner;
   r.startValue = r.value;
   r.startMs = millis();
-  // Same speed curve as the front button's ramp: buttonParamA/speed 127 is instant, 0 is the
-  // slowest, squared so the low end of the dial still feels usable instead of all bunching up fast.
-  float x = (127.0f - speed) / 127.0f;
-  float fullSweepSeconds = RAMP_MAX_SECONDS * x * x;
-  uint32_t fullSweepMs = (uint32_t)(fullSweepSeconds * 1000.0f + 0.5f);
+  const uint32_t fullSweepMs = (divisionPlus1 == 0 || divisionPlus1 > fw::kMusicalDivisionCount) ? 0
+    : (uint32_t)(fw::divisionDurationUs(arpDivisionFrom(divisionPlus1), clockEngine.bpm()) / 1000);
   int32_t remainingDistance = abs((int32_t)target - (int32_t)r.startValue);
-  r.durationMs = (uint32_t)((int64_t)remainingDistance * fullSweepMs / maxVal);
+  r.durationMs = fullSweepMs == 0 ? 0 : (uint32_t)((int64_t)remainingDistance * fullSweepMs / maxVal);
 }
 
 void serviceMapperRamps() {

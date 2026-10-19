@@ -1589,19 +1589,19 @@ function renderRouteCard(route, index, animateStaple) {
               <p class="note-hint">CC range now begins with this CC.</p>
             </div>
             <div class="field-row">
-              ${switchHtml(index, 'monoRetrig', !!route.monoRetrig, 'Mono Retrig')}
-              <p class="note-hint">Poly to Mono. Helps samplers play more like analog CV synths. Lifting a key recalls the next still-held key.</p>
+              ${switchHtml(index, 'looperEnabled', route.looperEnabled !== false, 'Looper')}
+              ${route.looperEnabled !== false ? '<p class="note-hint">Whether this route\'s notes can be recorded by the looper.</p>' : ''}
             </div>
             <div class="field-row">
-              ${switchHtml(index, 'looperEnabled', route.looperEnabled !== false, 'Looper')}
-              <p class="note-hint">Whether this route's notes can be recorded by the looper.</p>
+              ${switchHtml(index, 'monoRetrig', !!route.monoRetrig, 'Mono Retrig')}
+              ${route.monoRetrig ? '<p class="note-hint">Poly to Mono. Helps samplers play more like analog CV synths. Lifting a key recalls the next still-held key.</p>' : ''}
             </div>
             <div class="field-row">
               <div class="round-robin-row">
                 ${switchHtml(index, 'roundRobin', !!route.roundRobin, 'Round Robin')}
                 ${route.roundRobin ? switchHtml(index, 'roundRobinRandom', !!route.roundRobinRandom, 'Rand', 'cc-map-row-indent') : ''}
               </div>
-              <p class="note-hint">Mono to Poly. ${route.roundRobin && route.roundRobinRandom ? 'Picks a random selected channel for each new note.' : 'Cycles each new note to a different selected channel.'}</p>
+              ${route.roundRobin ? `<p class="note-hint">Mono to Poly. ${route.roundRobinRandom ? 'Picks a random selected channel for each new note.' : 'Cycles each new note to a different selected channel.'}</p>` : ''}
             </div>
             ${featuresSupported() ? mapSectionHtml(route, index, 'note') + mapSectionHtml(route, index, 'cc') + launchpadSectionHtml(route, index) + scaleSectionHtml(route, index) + autoChordSectionHtml(route, index) + arpSectionHtml(route, index) + echoSectionHtml(route, index) + stutterSectionHtml(route, index) : ''}
           </div>
@@ -1677,7 +1677,7 @@ function mapSectionHtml(route, index, owner) {
         ${source}
         <button type="button" class="btn btn-ghost btn-tiny" data-action="learnMapSource" ${ids}>Learn</button>
         <span class="notecc-arrow">→</span>
-        ${actionEditorHtml(e.action, ids, noteSelectOptions)}
+        ${actionEditorHtml(e.action, ids, noteSelectOptions, false, DIVISIONS)}
         <button type="button" class="btn btn-icon btn-danger btn-tiny" data-action="removeMapEntry" ${ids} title="Remove">${TRASH_SVG}</button>
       </div>`;
   }).join('');
@@ -1699,7 +1699,7 @@ function launchpadSectionHtml(route, index) {
   const on = !!(route.features & FEATURE.LAUNCHPAD);
   const buttons = state.lpActions.map((act, i) => `<div class="lp-button">
         <span class="lp-button-label">${LP_BUTTON_LABELS[i]}</span>
-        ${actionEditorHtml(act, `data-act-owner="lp" data-act-index="${i}" data-route-index="${index}"`, noteSelectOptions, true)}
+        ${actionEditorHtml(act, `data-act-owner="lp" data-act-index="${i}" data-route-index="${index}"`, noteSelectOptions, true, DIVISIONS)}
       </div>`).join('');
   const opt = (v, cur, l) => `<option value="${v}" ${cur === v ? 'selected' : ''}>${l}</option>`;
   const octave = Math.min(2, route.lpOctave || 0);
