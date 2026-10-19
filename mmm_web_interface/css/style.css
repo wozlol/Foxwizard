@@ -1036,8 +1036,16 @@ body.dragging-active { overflow: hidden; }
 .looper-row-idle .looper-row-heading { color: rgba(134, 239, 172, 0.55); }
 .switch-green input:checked + .switch-track { background: var(--green); }
 /* Six equal-weight settings (2 selects, 4 switches), up to 6 across, narrowing responsively. */
-.looper-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(150px, 1fr)); gap: 10px; }
+.looper-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(150px, 1fr)); gap: 10px; align-items: start; }
 .looper-switch { display: inline-flex; }
+/* The default .mini-box-main centers its label+control as a unit when the grid stretches a box
+   taller than its content — fine when every label is one line, but a label that wraps to two
+   lines (Loop Unrouted Channels) then pushes its own control down while one-line labels' controls
+   stay higher, so nothing lines up row to row. Pinning to the top and reserving two lines' worth
+   of label height on every box, whether its own text wraps or not, keeps every title's top edge
+   and every control's top edge each at one consistent height instead. */
+.looper-grid .mini-box-main { margin-top: 0; margin-bottom: 0; }
+.looper-grid .mini-box-label { min-height: 2.2em; }
 @media (max-width: 640px) {
   .looper-grid { grid-template-columns: repeat(2, 1fr); }
 }
