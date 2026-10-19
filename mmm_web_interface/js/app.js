@@ -804,7 +804,7 @@ function renderLooperRow() {
   looperRow.innerHTML = `
     <div class="looper-row-header">
       <h2 class="looper-row-heading">LOOPER</h2>
-      <p class="note-hint">Set button to Looper, or use Note/CC to Feature and select Looper.</p>
+      <p class="note-hint">Set Button Action to Looper, or use 'Note/CC to Feature' and select Looper.</p>
     </div>
     ${mapped ? `<div class="looper-settings">${[
       ['Length', `<select data-looper-field="bars">${opt(0, l.bars, 'Free')}${Array.from({ length: 16 }, (_, k) => opt(k + 1, l.bars, `${k + 1} bar${k ? 's' : ''}`)).join('')}</select>`],
