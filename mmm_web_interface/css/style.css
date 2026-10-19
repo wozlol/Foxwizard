@@ -1103,6 +1103,14 @@ body.dragging-active { overflow: hidden; }
 .action-editor input[type="number"], .notecc-row > input[type="number"] { flex: 0 0 64px; width: 64px; min-width: 0; }
 .notecc-row > select { flex: 0 0 auto; }
 .notecc-row input[type="number"] { flex: 0 0 50px; width: 50px; padding-left: 6px; padding-right: 4px; }
+/* Below 640px the row (source, Learn, arrow, action editor, trash) no longer fits on one line at
+   any width, and nowrap on the action editor was stopping it from dropping its own fields to a
+   second line to make room — instead of wrapping, its content just overflowed past the shrunk box,
+   over the trash button and off the edge of the screen. Letting it wrap here keeps every field
+   within the row's own width, same as the row around it already does. */
+@media (max-width: 640px) {
+  .notecc-row .action-editor { flex-wrap: wrap; min-width: 100%; }
+}
 
 /* Looper Length and Quantize, side by side in one box. */
 /* A feature that's on and open sits in its own box, apart from the others. */
