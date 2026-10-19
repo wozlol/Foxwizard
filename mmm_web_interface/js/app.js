@@ -1612,7 +1612,6 @@ function renderRouteCard(route, index, animateStaple) {
             </div>
             ${looperMapped() ? `<div class="field-row">
               ${switchHtml(index, 'looperEnabled', route.looperEnabled !== false, 'Looper')}
-              ${route.looperEnabled !== false ? '<p class="note-hint">Whether this route\'s notes can be recorded by the looper.</p>' : ''}
             </div>` : ''}
             <div class="field-row">
               ${switchHtml(index, 'monoRetrig', !!route.monoRetrig, 'Mono Retrig')}
