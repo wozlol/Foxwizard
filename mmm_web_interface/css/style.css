@@ -37,6 +37,37 @@ html, body {
   color: var(--text);
 }
 
+/* Every select and number/text input gets the same dark, rounded look, everywhere in the app —
+   without this, a plain <select> renders with the browser's native white dropdown, clashing hard
+   against the dark cards it sits in. color-scheme: dark also pushes native UI we can't restyle
+   directly (the open dropdown list, spin-button arrows) toward a dark variant where the browser
+   supports it. More specific rules elsewhere (flex, width, padding per context) layer on top. */
+:root { color-scheme: dark; }
+select, input[type="number"], input[type="text"] {
+  appearance: none;
+  background: var(--box);
+  border: 1px solid var(--box-border);
+  border-radius: var(--radius-sm);
+  color: var(--text);
+  padding: 7px 10px;
+  font-family: inherit;
+}
+select {
+  padding-right: 28px;
+  background-image: url("data:image/svg+xml;charset=UTF-8,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 12 12'%3E%3Cpath d='M2.5 4.5l3.5 3.5 3.5-3.5' stroke='%2394a3b8' stroke-width='1.5' fill='none' stroke-linecap='round' stroke-linejoin='round'/%3E%3C/svg%3E");
+  background-repeat: no-repeat;
+  background-position: right 8px center;
+  background-size: 14px;
+}
+select:focus, input[type="number"]:focus, input[type="text"]:focus {
+  outline: none;
+  border-color: var(--accent);
+}
+select:disabled, input:disabled {
+  opacity: 0.55;
+  cursor: not-allowed;
+}
+
 body {
   font-family: 'Inter', -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
   background:
@@ -329,20 +360,22 @@ button.connection-pill.connecting { cursor: default; transform: none; }
   .speed-seconds-input { flex-basis: 100%; }
 }
 
-/* Below 500px the toolbar's buttons no longer just clump to the left: Load/Save/Download/Upload
-   fill a 2x2 grid. Add Route is dropped here rather than becoming its own full-width third row —
-   the .add-route-row-top button (right under Main Mode, or under the route list once any exist)
-   already covers that need on mobile, so this just keeps the toolbar to two rows instead of three.
-   Desktop/tablet is untouched — Add Route stays in the toolbar there. */
+/* Below 500px: Load/Save/Autosave as one row of 3 equal columns, Download/Upload as a second row
+   of 2, each group keeping its own column count instead of flattening into one grid (that made
+   Autosave's switch, a different shape than a button, land crammed next to Download). Add Route
+   is dropped here rather than becoming its own full-width third row — the .add-route-row-top
+   button (right under Main Mode, or under the route list once any exist) already covers that need
+   on mobile. Desktop/tablet is untouched — Add Route stays in the toolbar there, and the full
+   button text shows instead of the shortened mobile-only labels. */
+.label-short { display: none; }
 @media (max-width: 500px) {
-  .toolbar {
-    display: grid;
-    grid-template-columns: 1fr 1fr;
-    gap: 8px;
-  }
-  .toolbar-group { display: contents; }
+  .toolbar { display: flex; flex-direction: column; gap: 8px; }
+  .toolbar-group:first-of-type { display: grid; grid-template-columns: repeat(3, 1fr); gap: 8px; }
+  .toolbar-group:nth-of-type(2) { display: grid; grid-template-columns: repeat(2, 1fr); gap: 8px; }
   .toolbar-group:last-of-type { display: none; }
-  .toolbar .btn, .toolbar .file-btn { width: 100%; justify-content: center; }
+  .toolbar .btn, .toolbar .file-btn, .toolbar .autosave-switch { width: 100%; justify-content: center; }
+  .label-full { display: none; }
+  .label-short { display: inline; }
 }
 
 /* ---------------------------------------------------------------------------------------------
@@ -963,11 +996,19 @@ body.dragging-active { overflow: hidden; }
 .field-row-cols { grid-auto-flow: row dense; } /* off feature switches pack two to a row */
 .chord-positions { margin-top: 8px; }
 
-/* Launchpad round buttons, inside a route's output column. */
-.lp-buttons { display: grid; grid-template-columns: repeat(auto-fill, minmax(200px, 1fr)); gap: 6px; margin-top: 8px; }
-.lp-button { display: flex; align-items: center; gap: 6px; }
-.lp-button select, .lp-button input { flex: 1; min-width: 60px; }
-.lp-button-label { font-size: 0.74rem; color: var(--text-dim); width: 46px; flex-shrink: 0; }
+/* Launchpad round buttons, inside a route's output column. Each button's action can carry a value
+   field and, here only, a color field too, so these need more room than a plain mapping row. */
+.lp-buttons { display: grid; grid-template-columns: repeat(auto-fill, minmax(300px, 1fr)); gap: 8px; margin-top: 8px; }
+.lp-button { display: flex; align-items: flex-start; gap: 6px; }
+.lp-button select, .lp-button input { min-width: 60px; }
+.lp-button .action-editor select { flex: 1 1 100px; }
+.lp-button-label { font-size: 0.74rem; color: var(--text-dim); width: 46px; flex-shrink: 0; margin-top: 6px; }
+
+/* A number field with a short visible label (CC, Val, Color), instead of a bare unlabeled number. */
+/* Inline, same height as the dropdowns beside it — a stacked label-above-input would make this
+   box 2-3x taller than everything else in the row and throw off the whole line's alignment. */
+.field-mini { display: inline-flex; align-items: center; gap: 4px; }
+.field-mini-label { font-size: 0.64rem; color: var(--text-dim); text-transform: uppercase; letter-spacing: 0.04em; white-space: nowrap; }
 
 /* ---------------------------------------------------------------------------------------------
    Scale row: yellow, same card style as a route. The key, and the scale on a piano and a guitar.
@@ -996,7 +1037,7 @@ body.dragging-active { overflow: hidden; }
 .switch-green input:checked + .switch-track { background: var(--green); }
 /* Six equal-weight settings (2 selects, 4 switches), up to 6 across, narrowing responsively. */
 .looper-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(150px, 1fr)); gap: 10px; }
-.looper-switch-cell { display: flex; align-items: center; }
+.looper-switch { display: inline-flex; }
 @media (max-width: 640px) {
   .looper-grid { grid-template-columns: repeat(2, 1fr); }
 }

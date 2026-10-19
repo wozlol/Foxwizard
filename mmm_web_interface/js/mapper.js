@@ -17,14 +17,14 @@ export const ACTION_TYPES = [
   { v: ACT.TRANSPORT, l: 'Transport' },
   { v: ACT.PROGRAM, l: 'Program Change' },
   { v: ACT.PROGRAM_STEP, l: 'Program Up/Down' },
-  { v: ACT.LIVE_CHANNEL, l: 'Live Out Channel' },
+  { v: ACT.LIVE_CHANNEL, l: 'Live Ch' },
   { v: ACT.LIVE_VELOCITY, l: 'Live Velocity' },
   { v: ACT.LOOPER, l: 'Looper' },
   { v: ACT.TAP_TEMPO, l: 'Tap Tempo' },
-  { v: ACT.LIVE_CHANNEL_STEP, l: 'Live Channel Up/Down' },
-  { v: ACT.ARP_DIV_STEP, l: 'Arp Division Up/Down' },
+  { v: ACT.LIVE_CHANNEL_STEP, l: 'Live Ch Up/Down' },
+  { v: ACT.ARP_DIV_STEP, l: 'Arp Div Up/Down' },
   { v: ACT.STUTTER_LENGTH, l: 'Stutter Length' },
-  { v: ACT.QUAD_TOGGLE, l: 'Break Off a Quad On/Off' },
+  { v: ACT.QUAD_TOGGLE, l: 'LP Quad' },
   { v: ACT.ECHO_TOGGLE, l: 'Echo On/Off' }
 ];
 
@@ -122,23 +122,25 @@ export function usesCc(act) { return [ACT.CC_MOMENTARY, ACT.CC_TOGGLE, ACT.CC_VA
 export function actionEditorHtml(act, attrs, noteSelectOptions, showColor) {
   const opt = (v, cur, l) => `<option value="${v}" ${cur === v ? 'selected' : ''}>${l}</option>`;
   const field = (f, html) => html.replace('<select', `<select data-act-field="${f}" ${attrs}`).replace('<input', `<input data-act-field="${f}" ${attrs}`);
-  const num = (f, v, min, max, title) => field(f, `<input type="number" min="${min}" max="${max}" value="${v}" title="${title}">`);
+  // A short visible label next to the number (CC, Val, Color...) since these fields otherwise look
+  // like bare unlabeled numbers, especially on a Launchpad button where several sit side by side.
+  const num = (f, v, min, max, label, title) => `<span class="field-mini"><span class="field-mini-label">${label}</span>${field(f, `<input type="number" min="${min}" max="${max}" value="${v}" title="${title || label}">`)}</span>`;
   let fields = '';
   switch (act.type) {
     case ACT.NOTE:
       fields = field('a', `<select title="Note">${noteSelectOptions(act.a)}</select>`);
       break;
     case ACT.CC_MOMENTARY: case ACT.CC_TOGGLE: case ACT.CC_VALUE:
-      fields = num('a', act.a, 0, 127, 'CC number');
+      fields = num('a', act.a, 0, 127, 'CC', 'CC number');
       break;
     case ACT.CC_LEVEL:
-      fields = num('a', act.a, 0, 127, 'CC number') + num('b', act.b, 0, 127, 'Level');
+      fields = num('a', act.a, 0, 127, 'CC', 'CC number') + num('b', act.b, 0, 127, 'Val', 'Level');
       break;
     case ACT.TRANSPORT:
       fields = field('a', `<select>${TRANSPORTS.map((t, i) => opt(i, act.a, t)).join('')}</select>`);
       break;
     case ACT.PROGRAM:
-      fields = num('a', act.a, 0, 127, 'Program');
+      fields = num('a', act.a, 0, 127, 'Pgm', 'Program');
       break;
     case ACT.PROGRAM_STEP:
       fields = field('a', `<select>${opt(1, act.a, 'Up')}${opt(0, act.a, 'Down')}</select>`);
@@ -164,7 +166,7 @@ export function actionEditorHtml(act, attrs, noteSelectOptions, showColor) {
   }
   const learnOut = usesCc(act) ? `<button type="button" class="btn btn-ghost btn-tiny" data-action="learnActOut" ${attrs} title="Learn the CC number">Learn</button>` : '';
   const color = showColor && act.type !== ACT.NONE
-    ? num('c', act.c || 0, 0, 127, 'Button light color: a raw Launchpad velocity color, 0 = the usual channel-color indicator')
+    ? num('c', act.c || 0, 0, 127, 'Color', 'Button light color: a raw Launchpad velocity color, 0 = the usual channel-color indicator')
     : '';
   return `<span class="action-editor">${field('type', `<select title="Action">${ACTION_TYPES.map((t) => opt(t.v, act.type, t.l)).join('')}</select>`)}${fields}${color}${learnOut}</span>`;
 }

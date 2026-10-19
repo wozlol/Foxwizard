@@ -707,7 +707,7 @@ function renderGlobalCard() {
       <div class="mini-box">${miniBoxMain('Note', `<select data-global-field="buttonParamA">${noteSelectOptions(g.buttonParamA)}</select>`)}</div>
       <div class="mini-box">${miniBoxMain('Channel', `<select data-global-field="buttonParamB">${channelSelectOptions(g.buttonParamB)}</select>`)}</div>`;
   } else if (g.buttonAction === 11) {
-    buttonExtraFields = `<p class="note-hint">Looper settings moved to their own row below.</p>`;
+    buttonExtraFields = '';
   }
 
   const brightnessPct = g.ledBrightnessStep * 10;
@@ -782,10 +782,11 @@ function renderLooperRow() {
   const active = looperRowActive();
   looperRow.classList.toggle('looper-row-idle', !active);
   const opt = (v, cur, label) => `<option value="${v}" ${cur === v ? 'selected' : ''}>${label}</option>`;
-  const sw = (field, on, label) => `<label class="switch switch-green">
+  // Title at top, control under — same shape as the Length/Quantize boxes beside them, instead of
+  // the switch's own inline label making these four look like a different kind of control.
+  const sw = (field, on) => `<label class="switch switch-green looper-switch">
       <input type="checkbox" data-looper-field="${field}" ${on ? 'checked' : ''}>
       <span class="switch-track"><span class="switch-thumb"></span></span>
-      <span class="switch-label">${label}</span>
     </label>`;
   looperRow.innerHTML = `
     <div class="looper-row-header">
@@ -795,10 +796,10 @@ function renderLooperRow() {
     <div class="looper-grid">
       <div class="mini-box">${miniBoxMain('Length', `<select data-looper-field="bars">${opt(0, l.bars, 'Free')}${Array.from({ length: 16 }, (_, k) => opt(k + 1, l.bars, `${k + 1} bar${k ? 's' : ''}`)).join('')}</select>`)}</div>
       <div class="mini-box">${miniBoxMain('Quantize', `<select data-looper-field="quantize">${opt(-1, l.quantize, 'Off')}${DIVISIONS.map((d, i) => opt(i, l.quantize, d)).join('')}</select>`)}</div>
-      <div class="mini-box looper-switch-cell">${sw('autoOverdub', l.autoOverdub, 'Auto Overdub')}</div>
-      <div class="mini-box looper-switch-cell">${sw('recordAfter', !l.recordInputs, 'Record After Routes')}</div>
-      <div class="mini-box looper-switch-cell">${sw('holdClears', l.holdClears, 'Hold Clears')}</div>
-      <div class="mini-box looper-switch-cell">${sw('loopUnrouted', l.loopUnrouted, 'Loop Unrouted Channels')}</div>
+      <div class="mini-box">${miniBoxMain('Auto Overdub', sw('autoOverdub', l.autoOverdub))}</div>
+      <div class="mini-box">${miniBoxMain('Record After Routes', sw('recordAfter', !l.recordInputs))}</div>
+      <div class="mini-box">${miniBoxMain('Hold Clears', sw('holdClears', l.holdClears))}</div>
+      <div class="mini-box">${miniBoxMain('Loop Unrouted Channels', sw('loopUnrouted', l.loopUnrouted))}</div>
     </div>`;
 }
 
