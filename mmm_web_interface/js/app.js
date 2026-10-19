@@ -807,7 +807,7 @@ function clockRowActive() {
 }
 
 function clockSourceOptions(g) {
-  const ports = PORTS.filter((p) => p.input && (!p.sidecar || (sidecarPresent && (!p.trs || sidecarHasTrs)) || g.clockSource === p.bit + 1));
+  const ports = PORTS.filter((p) => p.input && (!p.sidecar || (!trsUnavailable(p) && (sidecarPresent || g.clockSource === p.bit + 1))));
   return [`<option value="0" ${g.clockSource === 0 ? 'selected' : ''}>FoxWizard is master</option>`]
     .concat(ports.map((p) => `<option value="${p.bit + 1}" ${g.clockSource === p.bit + 1 ? 'selected' : ''}>Follow ${p.label}</option>`))
     .join('');
@@ -1297,11 +1297,18 @@ function syncGlobalLive() {
 const routesContainer = document.getElementById('routesContainer');
 const emptyHint = document.getElementById('emptyRoutesHint');
 
+// A TRS port is a hardware fact about the attached sidecar, not a transient "unplugged" state: it
+// never shows while this exact sidecar is connected without one, even for a route already using it
+// (every route defaults to every port on, so that fallback would otherwise defeat this entirely).
+function trsUnavailable(p) {
+  return p.trs && sidecarPresent && !sidecarHasTrs;
+}
+
 // Port switches. Each switch and its label sit inside one chip, so it's always clear which label
 // goes with which switch. Sidecar ports (USB Host 1-4, TRS 2-6) only show while a sidecar is
-// detected, or when the route already uses them.
+// detected, or when the route already uses them (TRS 2-6 excepted, see trsUnavailable above).
 function visiblePorts(route, field) {
-  return PORTS.filter((p) => (field === 'outPorts' || p.input) && (!p.sidecar || (sidecarPresent && (!p.trs || sidecarHasTrs)) || (route[field] & (1 << p.bit))));
+  return PORTS.filter((p) => (field === 'outPorts' || p.input) && (!p.sidecar || (!trsUnavailable(p) && (sidecarPresent || (route[field] & (1 << p.bit))))));
 }
 
 // Sidecar port masks this board actually has: Host 1-4 always, TRS 2-6 only when a TRS board is
