@@ -993,8 +993,13 @@ body.dragging-active { overflow: hidden; }
 .looper-row-heading { font-family: 'Russo One', sans-serif; font-size: 1.25rem; color: #86efac; margin: 0; white-space: nowrap; }
 .looper-row-idle { opacity: 0.6; }
 .looper-row-idle .looper-row-heading { color: rgba(134, 239, 172, 0.55); }
-.looper-switches { display: flex; flex-direction: column; gap: 6px; justify-content: center; }
 .switch-green input:checked + .switch-track { background: var(--green); }
+/* Six equal-weight settings (2 selects, 4 switches), up to 6 across, narrowing responsively. */
+.looper-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(150px, 1fr)); gap: 10px; }
+.looper-switch-cell { display: flex; align-items: center; }
+@media (max-width: 640px) {
+  .looper-grid { grid-template-columns: repeat(2, 1fr); }
+}
 
 /* Arp settings, inside a route's output column. */
 .arp-fields { display: grid; grid-template-columns: repeat(auto-fill, minmax(150px, 1fr)); gap: 8px 12px; margin-top: 8px; }
@@ -1016,9 +1021,6 @@ body.dragging-active { overflow: hidden; }
 .arp-square-actions { display: flex; gap: 4px; }
 .arp-square-add { align-items: center; justify-content: center; font-size: 1.4rem; color: var(--text-dim); cursor: pointer; }
 .arp-square-add:hover { color: var(--text); border-color: var(--text-dim); }
-
-/* Looper mode's switches, stacked in one box. */
-.looper-switches { display: flex; flex-direction: column; gap: 8px; justify-content: center; }
 
 /* Patchling's piano plays its keys. */
 .scale-piano [data-note] { cursor: pointer; }

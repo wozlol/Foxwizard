@@ -792,15 +792,13 @@ function renderLooperRow() {
       <h2 class="looper-row-heading">LOOPER</h2>
       <p class="note-hint">Map Note/CC to Feature or a Launchpad button for more looper control.</p>
     </div>
-    <div class="settings-grid">
+    <div class="looper-grid">
       <div class="mini-box">${miniBoxMain('Length', `<select data-looper-field="bars">${opt(0, l.bars, 'Free')}${Array.from({ length: 16 }, (_, k) => opt(k + 1, l.bars, `${k + 1} bar${k ? 's' : ''}`)).join('')}</select>`)}</div>
       <div class="mini-box">${miniBoxMain('Quantize', `<select data-looper-field="quantize">${opt(-1, l.quantize, 'Off')}${DIVISIONS.map((d, i) => opt(i, l.quantize, d)).join('')}</select>`)}</div>
-      <div class="mini-box looper-switches">
-        ${sw('autoOverdub', l.autoOverdub, 'Auto Overdub')}
-        ${sw('recordAfter', !l.recordInputs, 'Record After Routes')}
-        ${sw('holdClears', l.holdClears, 'Hold Clears')}
-        ${sw('loopUnrouted', l.loopUnrouted, 'Loop Unrouted Channels')}
-      </div>
+      <div class="mini-box looper-switch-cell">${sw('autoOverdub', l.autoOverdub, 'Auto Overdub')}</div>
+      <div class="mini-box looper-switch-cell">${sw('recordAfter', !l.recordInputs, 'Record After Routes')}</div>
+      <div class="mini-box looper-switch-cell">${sw('holdClears', l.holdClears, 'Hold Clears')}</div>
+      <div class="mini-box looper-switch-cell">${sw('loopUnrouted', l.loopUnrouted, 'Loop Unrouted Channels')}</div>
     </div>`;
 }
 
