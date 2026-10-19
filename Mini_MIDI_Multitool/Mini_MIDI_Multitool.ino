@@ -393,7 +393,8 @@ constexpr uint8_t LAUNCHPAD_BUTTONS = 16;
 enum : uint8_t {
   ACT_NONE = 0, ACT_NOTE, ACT_CC_MOMENTARY, ACT_CC_TOGGLE, ACT_CC_VALUE, ACT_CC_LEVEL, ACT_TRANSPORT,
   ACT_PROGRAM, ACT_PROGRAM_STEP, ACT_LIVE_CHANNEL, ACT_LIVE_VELOCITY, ACT_LOOPER, ACT_TAP_TEMPO,
-  ACT_LIVE_CHANNEL_STEP, ACT_ARP_DIV_STEP, ACT_STUTTER_LENGTH, ACT_QUAD_TOGGLE, ACT_ECHO_TOGGLE, ACT_COUNT // 1.48
+  ACT_LIVE_CHANNEL_STEP, ACT_ARP_DIV_STEP, ACT_STUTTER_LENGTH, ACT_QUAD_TOGGLE, ACT_ECHO_TOGGLE,
+  ACT_NOTE_TOGGLE, ACT_PITCH_RAMP, ACT_MOD_RAMP, ACT_CC_RAMP, ACT_COUNT // 1.48
 };
 enum : uint8_t {
   TRANSPORT_PLAY = 0, TRANSPORT_STOP, TRANSPORT_CONTINUE, TRANSPORT_PAUSE, TRANSPORT_RECORD,
@@ -3148,6 +3149,18 @@ void runAction(uint16_t routeIndex, const MapAction &act, uint8_t phase, uint8_t
     case ACT_ECHO_TOGGLE:
       if (press) echoOff = !echoOff;
       break;
+    case ACT_NOTE_TOGGLE:
+      if (press) { toggle = !toggle; each(toggle ? 0x90 : 0x80, MK_NOTE, act.a, toggle ? 127 : 0, 3); }
+      break;
+    case ACT_PITCH_RAMP: // a: 0 down, 1 up. b: speed, same 0-127 curve as the front button's
+      if (press || release) startMapperRamp(&act, press, true, act.a == 0, 0, chans, ports, act.b);
+      break;
+    case ACT_MOD_RAMP: // b: speed. Mod is a CC Ramp fixed to CC 1, matching the front button's Mod
+      if (press || release) startMapperRamp(&act, press, false, false, 1, chans, ports, act.b);
+      break;
+    case ACT_CC_RAMP: // a: CC number, b: speed
+      if (press || release) startMapperRamp(&act, press, false, false, act.a, chans, ports, act.b);
+      break;
   }
   flushPending();
 }
@@ -4759,6 +4772,94 @@ void sendCc(uint8_t value) {
   sendToOutputs(availablePorts(), 0xB0, channel, globalSettings.buttonParamA, value, 3);
 }
 
+// ============================================================================================
+// Mapper ramps (1.48): the same Pitch/Mod ramp the front button has (see startRamp/serviceRamp
+// above), reachable from any mapping instead of only the one front button. Several can run at
+// once, in a small pool of slots rather than one per mapping entry, since a ramp mapped to an
+// arbitrary note or CC is rarely held on more than a handful of sources at the same time.
+// ============================================================================================
+constexpr uint8_t MAPPER_RAMP_SLOTS = 8;
+struct MapperRamp {
+  bool active = false;
+  bool rising = false;
+  bool isPitch = false;
+  bool pitchDown = false; // only meaningful when isPitch
+  uint8_t ccNumber = 0;   // CC and Mod ramps (Mod is a CC Ramp fixed to CC 1)
+  uint16_t chans = 0;
+  uint16_t ports = 0;
+  int16_t startValue = 0;
+  int16_t value = 0;
+  uint32_t startMs = 0;
+  uint32_t durationMs = 0;
+  const void *owner = nullptr; // the MapAction this ramp belongs to, so a release finds it again
+};
+MapperRamp mapperRamps[MAPPER_RAMP_SLOTS];
+
+int8_t findMapperRampSlot(const void *owner) {
+  for (uint8_t i = 0; i < MAPPER_RAMP_SLOTS; ++i) if (mapperRamps[i].active && mapperRamps[i].owner == owner) return i;
+  return -1;
+}
+
+// rising: a press ramps toward the max, a release ramps back to 0, same as the front button.
+void startMapperRamp(const void *owner, bool rising, bool isPitch, bool pitchDown, uint8_t ccNumber,
+                      uint16_t chans, uint16_t ports, uint8_t speed) {
+  int8_t slot = findMapperRampSlot(owner);
+  if (slot < 0) {
+    if (!rising) return; // a release with nothing actively ramping: nothing to fall from
+    for (uint8_t i = 0; i < MAPPER_RAMP_SLOTS; ++i) if (!mapperRamps[i].active) { slot = i; break; }
+    if (slot < 0) return; // every slot busy, drop it rather than steal one mid-ramp
+  }
+  MapperRamp &r = mapperRamps[slot];
+  const int16_t maxVal = isPitch ? 8191 : 127;
+  const int16_t target = rising ? maxVal : 0;
+  if (!r.active) r.value = 0; // a fresh ramp always starts from 0, same as the button's at boot
+  r.active = true;
+  r.rising = rising;
+  r.isPitch = isPitch;
+  r.pitchDown = pitchDown;
+  r.ccNumber = ccNumber;
+  r.chans = chans;
+  r.ports = ports;
+  r.owner = owner;
+  r.startValue = r.value;
+  r.startMs = millis();
+  // Same speed curve as the front button's ramp: buttonParamA/speed 127 is instant, 0 is the
+  // slowest, squared so the low end of the dial still feels usable instead of all bunching up fast.
+  float x = (127.0f - speed) / 127.0f;
+  float fullSweepSeconds = RAMP_MAX_SECONDS * x * x;
+  uint32_t fullSweepMs = (uint32_t)(fullSweepSeconds * 1000.0f + 0.5f);
+  int32_t remainingDistance = abs((int32_t)target - (int32_t)r.startValue);
+  r.durationMs = (uint32_t)((int64_t)remainingDistance * fullSweepMs / maxVal);
+}
+
+void serviceMapperRamps() {
+  const uint32_t now = millis();
+  for (uint8_t i = 0; i < MAPPER_RAMP_SLOTS; ++i) {
+    MapperRamp &r = mapperRamps[i];
+    if (!r.active) continue;
+    const int16_t maxVal = r.isPitch ? 8191 : 127;
+    const int16_t target = r.rising ? maxVal : 0;
+    uint32_t elapsed = now - r.startMs;
+    bool done = (r.durationMs == 0 || elapsed >= r.durationMs);
+    int16_t newValue = done ? target
+      : (int16_t)(r.startValue + (int32_t)(target - r.startValue) * (int32_t)elapsed / (int32_t)r.durationMs);
+    if (newValue != r.value) {
+      r.value = newValue;
+      for (uint8_t c = 0; c < 16; ++c) {
+        if (!(r.chans & (1u << c))) continue;
+        if (r.isPitch) {
+          int16_t bend = r.pitchDown ? -r.value : r.value;
+          uint16_t centered = (uint16_t)(8192 + bend);
+          sendToOutputs(r.ports, 0xE0, c, centered & 0x7F, (centered >> 7) & 0x7F, 3);
+        } else {
+          sendToOutputs(r.ports, 0xB0, c, r.ccNumber, (uint8_t)r.value, 3);
+        }
+      }
+    }
+    if (done && !r.rising) r.active = false;
+  }
+}
+
 // Note momentary/toggle reuse buttonParamA as the note number (0-127, same field cc actions use
 // for the cc number) and buttonParamB as the channel — no protocol/struct changes needed.
 void sendNote(bool on) {
@@ -4918,6 +5019,7 @@ void loop() {
   serviceLeds();
   serviceClock();
   serviceArps();
+  serviceMapperRamps();
   serviceRouteNotesOff();
   serviceLooper();
   serviceStutter();

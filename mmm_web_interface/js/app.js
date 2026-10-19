@@ -791,7 +791,7 @@ function renderLooperRow() {
   looperRow.innerHTML = `
     <div class="looper-row-header">
       <h2 class="looper-row-heading">LOOPER</h2>
-      <p class="note-hint">Map Note/CC to Feature or a Launchpad button for more looper control.</p>
+      <p class="note-hint">Set button to Looper, or use Note/CC to Feature and select Looper.</p>
     </div>
     <div class="looper-grid">
       <div class="mini-box">${miniBoxMain('Length', `<select data-looper-field="bars">${opt(0, l.bars, 'Free')}${Array.from({ length: 16 }, (_, k) => opt(k + 1, l.bars, `${k + 1} bar${k ? 's' : ''}`)).join('')}</select>`)}</div>
@@ -1705,18 +1705,21 @@ function launchpadSectionHtml(route, index) {
   const octave = Math.min(2, route.lpOctave || 0);
   const quad = route.lpQuad || defaultLpQuad();
   const qAttrs = `data-route-index="${index}"`;
+  const quadSwitch = switchHtml(index, 'lpQuadEnabled', quad.enabled, '', 'looper-switch');
   return `<div class="${featureRowClass(on)}">
       ${switchHtml(index, 'launchpad', on, 'Launchpad')}
-      ${on ? `<div class="lp-options">
-        <div class="arp-field"><label>Octave</label><select data-field="lpOctave" ${qAttrs}>${opt(0, octave, '0')}${opt(1, octave, '-1')}${opt(2, octave, '-2')}</select></div>
-      </div>
-      <div class="arp-fields">
-        ${switchHtml(index, 'lpQuadEnabled', quad.enabled, 'Break Off a Quad')}
+      ${on ? `<div class="looper-grid lp-settings-grid">
+        <div class="mini-box">${miniBoxMain('Octave', `<select data-field="lpOctave" ${qAttrs}>${opt(0, octave, '0')}${opt(1, octave, '-1')}${opt(2, octave, '-2')}</select>`)}</div>
+        <div class="mini-box">${miniBoxMain('Break Off a Quad', quadSwitch)}</div>
         ${quad.enabled ? `
-          <div class="arp-field"><label>Quadrant</label><select data-lp-quad-field="block" ${qAttrs}>${QUAD_BLOCK_LABELS.map((l, i2) => opt(i2, quad.block, l)).join('')}</select></div>
-          <div class="arp-field"><label>Channel</label><select data-lp-quad-field="channel" ${qAttrs}>${Array.from({ length: 16 }, (_, c) => opt(c, quad.channel, c + 1)).join('')}</select></div>
-          <div class="arp-field"><label>Start Note</label><select data-lp-quad-field="startNote" ${qAttrs}>${noteSelectOptions(quad.startNote)}</select></div>
+          <div class="mini-box">${miniBoxMain('Quadrant', `<select data-lp-quad-field="block" ${qAttrs}>${QUAD_BLOCK_LABELS.map((l, i2) => opt(i2, quad.block, l)).join('')}</select>`)}</div>
+          <div class="mini-box">${miniBoxMain('Channel', `<select data-lp-quad-field="channel" ${qAttrs}>${Array.from({ length: 16 }, (_, c) => opt(c, quad.channel, c + 1)).join('')}</select>`)}</div>
+          <div class="mini-box">${miniBoxMain('Start Note', `<select data-lp-quad-field="startNote" ${qAttrs}>${noteSelectOptions(quad.startNote)}</select>`)}</div>
         ` : ''}
+      </div>
+      <div class="lp-buttons-header">
+        <p class="note-hint">Button light color is a raw Launchpad velocity, 0 keeps the usual channel-color indicator.</p>
+        <button type="button" class="btn btn-ghost btn-tiny" data-action="resetLpDefaults">Reset to Defaults</button>
       </div>
         <div class="lp-buttons">${buttons}</div>` : ''}
     </div>`;
@@ -2126,6 +2129,13 @@ routesContainer.addEventListener('click', (e) => {
   if (!actionEl) return;
   const index = parseInt(actionEl.dataset.routeIndex, 10);
   const action = actionEl.dataset.action;
+  if (action === 'resetLpDefaults') {
+    state.lpActions = defaultLpActions();
+    markDirty();
+    renderRoutes();
+    toast('Launchpad buttons reset to defaults', 'success');
+    return;
+  }
   if (action === 'delete') {
     deleteRoute(index);
   } else if (action === 'toggleCollapsed' || action === 'expand') {

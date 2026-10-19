@@ -1087,9 +1087,7 @@ body.dragging-active { overflow: hidden; }
 .notecc-row input[type="number"] { flex: 0 0 50px; width: 50px; padding-left: 6px; padding-right: 4px; }
 
 /* Looper Length and Quantize, side by side in one box. */
-.looper-pair { display: grid; grid-template-columns: 1fr 1fr; gap: 10px; }
-.looper-pair select { width: 100%; }
-
 /* A feature that's on and open sits in its own box, apart from the others. */
 .feature-open { border: 1px solid var(--box-border); border-radius: var(--radius-sm); background: var(--box); padding: 10px 12px; }
-.lp-options { margin: 6px 0 8px; }
+.lp-buttons-header { display: flex; align-items: center; justify-content: space-between; gap: 10px; flex-wrap: wrap; margin-top: 12px; }
+.lp-buttons-header .note-hint { margin: 0; }
