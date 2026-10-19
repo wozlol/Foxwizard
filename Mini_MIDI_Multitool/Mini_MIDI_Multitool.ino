@@ -97,7 +97,7 @@ constexpr uint8_t SYSEX_MFR_ID = 0x7D;   // reserved for non-commercial/educatio
 constexpr uint8_t SYSEX_DEVICE_ID = 0x4D; // 'M'
 constexpr uint8_t PROTOCOL_VERSION = 4; // 2: 45-byte routes with port masks, GET_STATUS. 3: clock settings, LEARN. 4: 53-byte routes with feature fields, feature blocks
 constexpr uint8_t FW_VERSION_MAJOR = 1;
-constexpr uint8_t FW_VERSION_MINOR = 44;
+constexpr uint8_t FW_VERSION_MINOR = 45;
 constexpr uint8_t FW_CHUNK_BYTES = 128;          // firmware bytes per FW_DATA message, 147 once packed
 constexpr uint32_t FW_REBOOT_DELAY_MS = 300;     // lets the FW_END ACK reach the host before rebooting
 const char DEVICE_NAME[] = "FoxWizard Mini MIDI Multitool"; // long name sent in the SysEx IDENTITY_REPLY
@@ -1211,6 +1211,10 @@ void applyBrightnessToLeds() {
   ledOut.maxLevel = scaledMax(ledOut.baseMax, globalSettings.ledBrightnessStep);
   ledUsb.maxLevel = scaledMax(ledUsb.baseMax, globalSettings.ledBrightnessStep);
   ledIn.maxLevel = scaledMax(ledIn.baseMax, globalSettings.ledBrightnessStep);
+  // The sidecar's status LED follows the same knob. Goes out whether or not it's there right now,
+  // same as every other control frame; a sidecar that isn't listening just never hears it.
+  uint8_t pkt[4] = {CONTROL_BRIGHTNESS, globalSettings.ledBrightnessStep, 0, 0};
+  linkSend(LINK_PORT_CONTROL, pkt);
 }
 
 uint8_t scaleByte(uint32_t elapsed, uint32_t duration) {
@@ -4426,10 +4430,12 @@ void serviceStuckNoteGuard() {
     hostRestarted = false;
     releaseSidecarNotes();
     silenceSidecarOutputs();
+    applyBrightnessToLeds(); // the sidecar forgot the brightness knob across its own restart
   } else if (hostWasPresent && !present) {
     releaseSidecarNotes();
-  } else if (!hostWasPresent && present && hostEverPresent) {
-    silenceSidecarOutputs();
+  } else if (!hostWasPresent && present) {
+    if (hostEverPresent) silenceSidecarOutputs();
+    applyBrightnessToLeds(); // first time or returning: give it the current brightness
   }
   hostWasPresent = present;
   hostEverPresent |= present;

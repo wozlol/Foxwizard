@@ -17,6 +17,7 @@ constexpr uint8_t LINK_PORT_COUNT = 16;
 constexpr uint8_t CONTROL_PORT_MAP = 1; // host -> main. byte 1 = port mask, 2 = fw version, 3 = drops
 constexpr uint8_t CONTROL_FLOW = 2;     // both ways. byte 1 = 1 pause, 0 resume
 constexpr uint8_t CONTROL_HOST_RESTART = 3; // host -> main. byte 1 = last restart reason, 2 = hub port, 3 = restart count
+constexpr uint8_t CONTROL_BRIGHTNESS = 4; // main -> host. byte 1 = ledBrightnessStep (0-10), for the sidecar's status LED
 
 // Why the host brain last restarted, for CONTROL_HOST_RESTART and GET_STATUS.
 constexpr uint8_t RESTART_NONE = 0;  // powered up normally

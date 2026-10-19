@@ -23,14 +23,14 @@
   Status lights: on while a USB MIDI device is mounted on that hub port, blink off briefly on traffic.
 
   Diagnostic light, the RP2040-Zero's onboard RGB LED on GP16 (nothing is on GP16 on the sidecar
-  board). Flashes red, green, blue once at power-up to show the colors are right (magenta twice
-  instead after a recovery restart, see Recovery in ../README.md), then:
-  - red: no USB device
-  - yellow: a USB device that isn't USB MIDI, or a MIDI device on a hub port above 4
-  - green: USB MIDI device ready
-  - white flash: MIDI received from a USB device
-  - blinking slowly: nothing heard from the main brain for over 1 second (link wiring, ground, or
-    the main brain isn't running the Host Edition firmware)
+  board). Off by default, no baseline color, same no-blink ethic as the main brain's own activity
+  lights (see ../Mini_MIDI_Multitool/Mini_MIDI_Multitool.ino):
+  - blue: fades up on any MIDI activity through the sidecar (either hub USB port, either DIN/TRS
+    direction) and fades back down when it stops, 1 s up and 1/2 s down, the same curve as the main
+    brain's. Follows the main brain's own LED brightness knob.
+  - white: the same fade, instead for a new USB device (MIDI or not) just being plugged in.
+  - purple, instant, no fade: shown for two flashes right after a restart caused by a USB fault, see
+    Recovery in ../README.md. Nothing to show live, a fault reboots at once.
 */
 
 #include <Arduino.h>
@@ -72,8 +72,11 @@ constexpr uint8_t DIN_OUTS = 5;
 
 constexpr uint32_t PORT_MAP_HEARTBEAT_MS = 500;
 constexpr uint32_t LED_BLINK_MS = 25;
-constexpr uint32_t MAIN_SILENT_MS = 1000;    // diagnostic light blinks after this long without a frame from the main brain
-constexpr uint8_t STATUS_RGB_LEVEL = 40;     // diagnostic light brightness, 0-255
+constexpr uint8_t STATUS_RGB_LEVEL = 40;       // diagnostic light brightness ceiling, 0-255, before the brightness knob
+constexpr uint32_t STATUS_FADE_IN_MS = 1000;   // same curve as the main brain's activity lights
+constexpr uint32_t STATUS_FADE_OUT_MS = 500;
+constexpr uint32_t STATUS_HOLD_MS = 12;        // a re-trigger inside this window doesn't restart the fade-in
+constexpr uint32_t STATUS_FAULT_FLASH_MS = 300;
 constexpr uint32_t USB_STALL_MS = 1000;   // a device that accepts nothing this long stops holding up the others
 constexpr uint32_t USB_WEDGE_MS = 3000;   // still nothing this long: the USB host is wedged, reboot to recover
 constexpr uint32_t WATCHDOG_MS = 2000;    // reboots if the loop ever stops running this long, a hot-plug hang included
@@ -131,9 +134,24 @@ const pio_program_t WS2812_PROGRAM = {WS2812_INSTRUCTIONS, 4, -1};
 PIO statusRgbPio = nullptr;
 uint statusRgbSm = 0;
 uint8_t usbDevicesMounted = 0; // every device except hubs, MIDI or not
-uint32_t lastMainFrameMs = 0;
-uint32_t usbMidiFlashUntilMs = 0;
 uint32_t lastStatusRgb = 0xFFFFFFFF;
+
+// One fade engine for the status light, ported from the main brain's activity LEDs (same phases,
+// same timing), generalized to pick a color per trigger instead of driving one fixed hue.
+enum StatusColor : uint8_t { STATUS_BLUE = 0, STATUS_WHITE = 1 };
+enum StatusPhase : uint8_t { STATUS_OFF = 0, STATUS_RISING = 1, STATUS_ON = 2, STATUS_FALLING = 3 };
+struct StatusLed {
+  StatusPhase phase = STATUS_OFF;
+  uint32_t phaseStartMs = 0;
+  uint32_t lastActivityMs = 0;
+  uint8_t currentLevel = 0;
+  uint8_t fadeStartLevel = 0;
+  bool activitySeen = false;
+  uint8_t color = STATUS_BLUE;
+  uint8_t pendingColor = STATUS_BLUE;
+};
+StatusLed statusLed;
+uint8_t ledBrightnessStep = 10; // 0-10, from the main brain's brightness knob (CONTROL_BRIGHTNESS)
 
 uint32_t rgbColor(uint8_t r, uint8_t g, uint8_t b) { return ((uint32_t)r << 16) | ((uint32_t)g << 8) | b; }
 
@@ -348,15 +366,18 @@ void dispatchFromMain() {
 // Realtime bytes may sit between the bytes of any other message on DIN, so they go first.
 void pumpDinOuts() {
   for (DinOut &out : dinOuts) {
+    bool wrote = false;
     while (out.serial->availableForWrite() > 0) {
       MidiPacket *rt = out.rt.peek();
       if (rt) {
         out.serial->write(rt->b[1]);
         out.rt.pop();
+        wrote = true;
         continue;
       }
       if (out.pos < out.len) {
         out.serial->write(out.current.b[1 + out.pos++]);
+        wrote = true;
         continue;
       }
       MidiPacket *next = out.normal.peek();
@@ -366,6 +387,7 @@ void pumpDinOuts() {
       out.pos = 0;
       out.len = CIN_LENGTH[out.current.b[0] & 0x0F];
     }
+    if (wrote) noteStatusActivity(STATUS_BLUE);
   }
 }
 
@@ -383,6 +405,7 @@ void pumpUsbOuts() {
       }
     }
     if (wrote) tuh_midi_write_flush(hp.midiIdx);
+    if (wrote) noteStatusActivity(STATUS_BLUE);
     if (wrote || hp.normal.empty()) hp.lastProgressMs = now;
     // Queued output that never drains means the USB host has wedged (ARPnMIDI's MAX3421E host
     // showed the same sign). A reboot re-enumerates every device in about a second.
@@ -401,12 +424,14 @@ void pumpLinkIn() {
     if (!linkReader.feed((uint8_t)Serial1.read())) continue;
     uint8_t pkt[4];
     uint8_t port = decodeLinkFrame(linkReader.frame, pkt);
-    lastMainFrameMs = millis();
 
     if (port == LINK_PORT_CONTROL) {
-      if ((pkt[0] & 0x0F) == CONTROL_FLOW) {
+      const uint8_t type = pkt[0] & 0x0F;
+      if (type == CONTROL_FLOW) {
         mainAskedPause = pkt[1] == 1;
         mainFlowMs = millis();
+      } else if (type == CONTROL_BRIGHTNESS) {
+        ledBrightnessStep = pkt[1] > 10 ? 10 : pkt[1];
       }
       continue;
     }
@@ -424,6 +449,7 @@ void pumpLinkIn() {
 void sendDinInPacket(uint8_t cin, uint8_t b1, uint8_t b2, uint8_t b3) {
   uint8_t pkt[4] = {cin, b1, b2, b3};
   sendToMain(LINK_PORT_DIN, pkt);
+  noteStatusActivity(STATUS_BLUE);
 }
 
 uint8_t dinDataLength(uint8_t status) {
@@ -539,6 +565,7 @@ void tuh_mount_cb(uint8_t daddr) {
   tusb_desc_device_t desc;
   if (tuh_descriptor_get_device_local(daddr, &desc) && desc.bDeviceClass == TUSB_CLASS_HUB) return; // cached copy, no USB transfer
   ++usbDevicesMounted;
+  noteStatusActivity(STATUS_WHITE);
 }
 
 void tuh_umount_cb(uint8_t daddr) {
@@ -570,7 +597,7 @@ void pumpUsbIn() {
         sendToMain(p + 1, &buf[i]);
       }
       hp.blinkUntilMs = millis() + LED_BLINK_MS;
-      usbMidiFlashUntilMs = millis() + LED_BLINK_MS * 2;
+      noteStatusActivity(STATUS_BLUE);
     }
   }
 }
@@ -601,35 +628,117 @@ void writeStatusRgb(uint32_t color) {
   pio_sm_put(statusRgbPio, statusRgbSm, grb << 8);
 }
 
-void serviceStatusRgb() {
-  const uint32_t now = millis();
-  bool anyMidi = false;
-  for (const HubPort &hp : hubPorts) anyMidi |= hp.mounted;
+// The brightness knob's ceiling for this LED, same formula as the main brain's scaledMax().
+uint8_t statusMaxLevel() {
+  if (ledBrightnessStep == 0) return 0;
+  uint16_t pct = (uint16_t)ledBrightnessStep * 10;
+  uint16_t v = ((uint16_t)STATUS_RGB_LEVEL * pct + 50) / 100;
+  return (uint8_t)(v > STATUS_RGB_LEVEL ? STATUS_RGB_LEVEL : v);
+}
 
-  uint32_t color;
-  if ((int32_t)(usbMidiFlashUntilMs - now) > 0) color = rgbColor(STATUS_RGB_LEVEL, STATUS_RGB_LEVEL, STATUS_RGB_LEVEL);
-  else if (anyMidi) color = rgbColor(0, STATUS_RGB_LEVEL, 0);
-  else if (usbDevicesMounted > 0) color = rgbColor(STATUS_RGB_LEVEL, STATUS_RGB_LEVEL, 0);
-  else color = rgbColor(STATUS_RGB_LEVEL, 0, 0);
+// level is already brightness-scaled, 0-STATUS_RGB_LEVEL. Blue leans slightly toward cyan.
+uint32_t statusColorAt(uint8_t color, uint8_t level) {
+  if (color == STATUS_WHITE) return rgbColor(level, level, level);
+  return rgbColor(0, level / 3, level);
+}
 
-  bool mainSilent = lastMainFrameMs == 0 || now - lastMainFrameMs > MAIN_SILENT_MS;
-  if (mainSilent && (now / 500) % 2) color = 0;
+uint8_t statusScaleByte(uint32_t elapsed, uint32_t duration) {
+  if (elapsed >= duration) return 255;
+  return (uint8_t)((elapsed * 255UL) / duration);
+}
 
+void writeStatusLevel(uint8_t level) {
+  statusLed.currentLevel = level;
+  const uint32_t color = statusColorAt(statusLed.color, level);
   if (color != lastStatusRgb) {
     writeStatusRgb(color);
     lastStatusRgb = color;
   }
 }
 
-void showStatusRgbColors() {
-  const uint32_t magenta = rgbColor(STATUS_RGB_LEVEL, 0, STATUS_RGB_LEVEL);
-  const uint32_t normal[3] = {rgbColor(STATUS_RGB_LEVEL, 0, 0), rgbColor(0, STATUS_RGB_LEVEL, 0), rgbColor(0, 0, STATUS_RGB_LEVEL)};
-  const uint32_t recovered[3] = {magenta, 0, magenta};
-  const uint32_t *colors = (restartReason == RESTART_NONE) ? normal : recovered;
-  for (uint8_t i = 0; i < 3; ++i) {
-    writeStatusRgb(colors[i]);
-    delay(300);
+// Any MIDI activity (blue) or a newly connected USB device (white). Mirrors noteActivity() on the
+// main brain: the trigger is just a flag, the engine below picks it up and restarts the fade-in if
+// it wasn't already rising or on. A color switch while already lit takes effect immediately.
+void noteStatusActivity(uint8_t color) {
+  statusLed.activitySeen = true;
+  statusLed.pendingColor = color;
+}
+
+void serviceStatusLed() {
+  const uint32_t now = millis();
+  const uint8_t maxLevel = statusMaxLevel();
+
+  if (statusLed.activitySeen) {
+    statusLed.activitySeen = false;
+    statusLed.lastActivityMs = now;
+    statusLed.color = statusLed.pendingColor;
+    if (statusLed.phase != STATUS_RISING && statusLed.phase != STATUS_ON) {
+      statusLed.phase = STATUS_RISING;
+      statusLed.phaseStartMs = now;
+      statusLed.fadeStartLevel = statusLed.currentLevel;
+    }
   }
+
+  switch (statusLed.phase) {
+    case STATUS_OFF:
+      writeStatusLevel(0);
+      break;
+
+    case STATUS_RISING: {
+      const uint32_t elapsed = now - statusLed.phaseStartMs;
+      const uint8_t progress = statusScaleByte(elapsed, STATUS_FADE_IN_MS);
+      const uint8_t level = statusLed.fadeStartLevel + (((maxLevel - statusLed.fadeStartLevel) * progress) / 255);
+      writeStatusLevel(level);
+      if (elapsed >= STATUS_FADE_IN_MS) {
+        statusLed.phase = STATUS_ON;
+        writeStatusLevel(maxLevel);
+      }
+      break;
+    }
+
+    case STATUS_ON:
+      writeStatusLevel(maxLevel);
+      if (now - statusLed.lastActivityMs > STATUS_HOLD_MS) {
+        statusLed.phase = STATUS_FALLING;
+        statusLed.phaseStartMs = now;
+        statusLed.fadeStartLevel = statusLed.currentLevel;
+      }
+      break;
+
+    case STATUS_FALLING: {
+      if (now - statusLed.lastActivityMs <= STATUS_HOLD_MS) {
+        statusLed.phase = STATUS_RISING;
+        statusLed.phaseStartMs = now;
+        statusLed.fadeStartLevel = statusLed.currentLevel;
+        break;
+      }
+      const uint32_t elapsed = now - statusLed.phaseStartMs;
+      if (elapsed >= STATUS_FADE_OUT_MS) {
+        statusLed.phase = STATUS_OFF;
+        writeStatusLevel(0);
+      } else {
+        const uint8_t progress = statusScaleByte(elapsed, STATUS_FADE_OUT_MS);
+        const uint8_t level = statusLed.fadeStartLevel - ((statusLed.fadeStartLevel * progress) / 255);
+        writeStatusLevel(level);
+      }
+      break;
+    }
+  }
+}
+
+// Purple, instant, two flashes: only shown right after a restart a USB fault caused. A fault
+// reboots at once (see foxwizard_usb_fault below), so there's no live moment to show it in,
+// only this, at the next boot. Otherwise the light stays dark, same as every other idle state.
+void showBootStatus() {
+  if (restartReason == RESTART_NONE) return;
+  const uint32_t purple = rgbColor(STATUS_RGB_LEVEL, 0, STATUS_RGB_LEVEL);
+  for (uint8_t i = 0; i < 2; ++i) {
+    writeStatusRgb(purple);
+    delay(STATUS_FAULT_FLASH_MS);
+    writeStatusRgb(0);
+    delay(STATUS_FAULT_FLASH_MS);
+  }
+  lastStatusRgb = 0;
 }
 
 void serviceLeds() {
@@ -656,7 +765,7 @@ void setup() {
   readRestartReason();
 
   beginStatusRgb();
-  showStatusRgbColors();
+  showBootStatus();
 
   dinOuts[0].serial = &Serial2;
   dinOuts[1].serial = &dinOut2Serial;
@@ -698,5 +807,5 @@ void loop() {
   pumpLinkOut();
 
   serviceLeds();
-  serviceStatusRgb();
+  serviceStatusLed();
 }

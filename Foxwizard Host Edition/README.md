@@ -118,15 +118,14 @@ A board adding TRS 2-6 grounds GP14; nothing else changes in the firmware.
 4. Plug a USB-C male to USB-A female OTG adapter into the Zero, then a USB-A hub or MIDI device into that.
 5. Use a 4-port hub. Devices on hub ports above 4 are ignored. With no hub, a device plugged straight in counts as port 1.
 
-The Zero's onboard RGB LED (GP16) is a diagnostic light. It flashes red, green, blue once at power-up, so you can confirm the colors look right, then:
+The Zero's onboard RGB LED (GP16) is a diagnostic light, off by default, the same no-blink ethic as
+the main brain's own activity lights:
 
 | Light | Meaning |
 |---|---|
-| Red | No USB device |
-| Yellow | A USB device that isn't USB MIDI, or a MIDI device on a hub port above 4 |
-| Green | USB MIDI device ready |
-| White flash | MIDI received from a USB device |
-| Slow blinking | Nothing from the main brain for over 1 second: check the link wires, the ground wire, and that the main brain runs the Host Edition firmware |
+| Blue, fading | Any MIDI activity through the sidecar (a hub USB port or a DIN/TRS port, either direction). Fades up over 1 s and back down over 1/2 s, follows the main brain's brightness knob. |
+| White, fading | The same fade, for a USB device (MIDI or not) just being plugged in. |
+| Purple, instant | Two flashes, right after a restart a USB fault caused. See Restart reports below. |
 
 USB-A devices and hubs have no CC, so the Zero's own 5.1 kΩ CC resistors don't matter. A USB-C device on a USB-C to USB-C cable will not power up from the Zero.
 
@@ -157,6 +156,8 @@ Port 15 carries control frames, with the frame type in the CIN field:
 |---|---|---|
 | 1, port map | Host to main | Byte 1 = connected port mask (bit 0 = hub port 1, bit 4 = TRS 2-6 present, 1.44), byte 2 = host firmware version, byte 3 = drop count (max 127). Sent on any plug or unplug and every 500 ms. |
 | 2, flow | Both ways | Byte 1 = 1 pause, 0 resume. Sent on change and every 100 ms. |
+| 3, host restart | Host to main | Byte 1 = last restart reason, byte 2 = hub port (for a wedge), byte 3 = restart count. Sent with the port map. |
+| 4, brightness | Main to host | Byte 1 = the LED brightness knob, 0-10. Sent whenever it changes, and once a sidecar (re)appears. |
 
 `foxwizard_link.h` holds the frame code and queue rules. Both sketch folders carry an identical copy.
 
@@ -254,7 +255,7 @@ For old octave-per-row Launchpads (Mini mk1 and mk2). A route with the Launchpad
 - **Both brains:** a hardware watchdog reboots the brain if its loop stops running, 4 s on the main brain and 2 s on the sidecar. That covers a hang anywhere, a USB hot-plug hang included.
 - **Sidecar:** if queued output to a USB device hasn't moved for 3 s, the USB host has wedged, and the sidecar reboots. Every device re-enumerates in about a second.
 - **USB driver faults:** stock TinyUSB's RP2040 host driver halts the chip with `panic()` on a USB data sequence error, a buffer armed twice, or a request to clear a device's stalled endpoint. The sidecar's vendored copy (`Foxwizard_Host_Edition_Sidecar/src/Adafruit_TinyUSB/VENDORED.md`) restarts at once instead, with the fault as the reason, rather than halting until the watchdog fires. Recovering in place without a restart was tried and caused more faults, so it was taken back out.
-- **Restart reports:** after a recovery restart the sidecar's diagnostic light flashes magenta twice instead of red, green, blue. Patchling shows the reason in a red message that stays until clicked. Clicking the badge shows the last reason again.
+- **Restart reports:** after a recovery restart the sidecar's diagnostic light flashes purple twice. Patchling shows the reason in a red message that stays until clicked. Clicking the badge shows the last reason again.
 - **Buffer armed twice:** the only fault seen so far, and only right after plugging USB devices in or out, never while playing. Likely a race in TinyUSB's RP2040 hot-plug cleanup. It recovers in about a second, so Patchling shows it as a brief yellow "reset its USB ports after a device change" instead.
 - **Stuck notes:** when the sidecar restarts or disappears, the main brain sends Note Offs for every note still held from USB Host and TRS 2, through the same routes as a real Note Off. When the sidecar restarts or comes back, the main brain also sends All Notes Off (CC 123) on all channels to the sidecar's ports only, for notes those outputs missed while it was gone. The main brain's own ports are left alone.
 - **Main brain:** handles at most 64 USB Device packets and 64 TRS/DIN bytes per loop, so a flood such as a DAW feedback loop can't starve the link, the lights, or the button.
