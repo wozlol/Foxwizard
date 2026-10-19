@@ -1032,24 +1032,40 @@ body.dragging-active { overflow: hidden; }
 .looper-row { border-color: rgba(34, 197, 94, 0.45); background: linear-gradient(180deg, rgba(20, 58, 38, 0.9), rgba(26, 37, 64, 0.85)); transition: opacity 0.2s; }
 .looper-row-header { display: flex; align-items: center; flex-wrap: wrap; gap: 6px 14px; margin-bottom: 14px; }
 .looper-row-heading { font-family: 'Russo One', sans-serif; font-size: 1.25rem; color: #86efac; margin: 0; white-space: nowrap; }
-.looper-row-idle { opacity: 0.6; }
-.looper-row-idle .looper-row-heading { color: rgba(134, 239, 172, 0.55); }
 .switch-green input:checked + .switch-track { background: var(--green); }
-/* Six equal-weight settings (2 selects, 4 switches), up to 6 across, narrowing responsively. */
-/* align-items is left at its grid default (stretch) on purpose: every box in a row should be the
-   same visual height, matching the tallest one, not just independently sized to its own content. */
-.looper-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(150px, 1fr)); gap: 10px; }
+/* A row of equal-weight settings (selects and switches mixed). Titles and controls are two
+   separate grids, stacked, instead of each setting being its own independently-sized box — that
+   independent sizing is exactly why titles and controls never actually lined up across columns
+   no matter how their internal heights got tweaked. Both grids use the identical column template
+   (same text, on purpose), so they always produce the same column count and widths and therefore
+   the same wrapping, which is what guarantees column N's title sits directly above column N's
+   control, in every row, at every width — not because any height was measured or guessed, but
+   because a CSS grid lays out every item in a row to the same row height by construction. */
+.looper-grid { display: flex; flex-direction: column; gap: 8px; }
+.looper-titles, .looper-controls { display: grid; grid-template-columns: repeat(auto-fit, minmax(150px, 1fr)); gap: 10px; }
 .looper-switch { display: inline-flex; }
-/* The default .mini-box-main centers its label+control as a unit within that stretched box — fine
-   when every label is one line, but a label that wraps to two lines (Loop Unrouted Channels) then
-   pushes its own control down while one-line labels' controls stay higher. Pinning to the top and
-   reserving two lines' worth of label height on every box, whether its own text wraps or not,
-   keeps every title's top edge and every control's top edge each at one consistent height instead,
-   regardless of how tall the row as a whole ends up being stretched. */
-.looper-grid .mini-box-main { margin-top: 0; margin-bottom: 0; }
-.looper-grid .mini-box-label { min-height: 2.2em; }
+.looper-titles .mini-box-label {
+  margin: 0;
+  background: var(--box);
+  border: 1px solid var(--box-border);
+  border-bottom: none;
+  border-radius: var(--radius-md) var(--radius-md) 0 0;
+  padding: 10px 14px 2px;
+}
+.looper-controls .mini-box-control {
+  background: var(--box);
+  border: 1px solid var(--box-border);
+  border-top: none;
+  border-radius: 0 0 var(--radius-md) var(--radius-md);
+  padding: 2px 14px 10px;
+  display: flex;
+  align-items: center;
+  min-height: 40px;
+}
+.looper-controls .mini-box-control select,
+.looper-controls .mini-box-control .switch { width: 100%; }
 @media (max-width: 640px) {
-  .looper-grid { grid-template-columns: repeat(2, 1fr); }
+  .looper-titles, .looper-controls { grid-template-columns: repeat(2, 1fr); }
 }
 
 /* Arp settings, inside a route's output column. */

@@ -674,6 +674,22 @@ function miniBoxMain(label, controlHtml) {
   return `<div class="mini-box-main"><p class="mini-box-label">${label}</p>${controlHtml}</div>`;
 }
 
+// A mini-box for a grid where every cell needs to look like the same kind of thing whether its
+// control is a select or a switch: the control sits in a fixed-height, vertically centered slot,
+// so a short switch doesn't just float at the top of whatever extra height the title reserved,
+// and its center lines up with a taller select's center instead of only their top edges matching.
+// A row of settings boxes where every title lines up with every other title, and every control
+// lines up with every other control, by construction rather than by guessing heights: titles and
+// controls are two separate grids stacked on top of each other, sharing the exact same column
+// template, so column N's title and column N's control always land in the same place whichever
+// row wrapping puts them in on a narrower screen. items: [{ label, control }].
+function gridRow(items) {
+  return `<div class="looper-grid">
+    <div class="looper-titles">${items.map((it) => `<p class="mini-box-label">${it.label}</p>`).join('')}</div>
+    <div class="looper-controls">${items.map((it) => `<div class="mini-box-control">${it.control}</div>`).join('')}</div>
+  </div>`;
+}
+
 function renderGlobalCard() {
   const g = state.global;
   const isUsbAdaptor = g.mode === 0;
@@ -772,15 +788,21 @@ function renderGlobalCard() {
 // ============================================================================================
 const looperRow = document.getElementById('looperRow');
 
-function looperRowActive() {
-  return state.global.buttonAction === 11 || state.looper.loopUnrouted || state.routes.some((r) => r.looperEnabled !== false);
+// Whether the looper is reachable at all right now: Button Action set to it, or mapped on any
+// Note/CC to Feature entry or Launchpad button (all three lists are global, shared by the whole
+// device, like the firmware's own tables). Until one of these is true there's nothing to record
+// with, so the row stays collapsed to just its title and hint instead of showing dead settings.
+function looperMapped() {
+  return state.global.buttonAction === 11 ||
+    state.lpActions.some(usesLooper) ||
+    state.noteMap.some((e) => usesLooper(e.action)) ||
+    state.ccMap.some((e) => usesLooper(e.action));
 }
 
 function renderLooperRow() {
   looperRow.hidden = false;
   const l = state.looper;
-  const active = looperRowActive();
-  looperRow.classList.toggle('looper-row-idle', !active);
+  const mapped = looperMapped();
   const opt = (v, cur, label) => `<option value="${v}" ${cur === v ? 'selected' : ''}>${label}</option>`;
   // Title at top, control under — same shape as the Length/Quantize boxes beside them, instead of
   // the switch's own inline label making these four look like a different kind of control.
@@ -793,14 +815,14 @@ function renderLooperRow() {
       <h2 class="looper-row-heading">LOOPER</h2>
       <p class="note-hint">Set button to Looper, or use Note/CC to Feature and select Looper.</p>
     </div>
-    <div class="looper-grid">
-      <div class="mini-box">${miniBoxMain('Length', `<select data-looper-field="bars">${opt(0, l.bars, 'Free')}${Array.from({ length: 16 }, (_, k) => opt(k + 1, l.bars, `${k + 1} bar${k ? 's' : ''}`)).join('')}</select>`)}</div>
-      <div class="mini-box">${miniBoxMain('Quantize', `<select data-looper-field="quantize">${opt(-1, l.quantize, 'Off')}${DIVISIONS.map((d, i) => opt(i, l.quantize, d)).join('')}</select>`)}</div>
-      <div class="mini-box">${miniBoxMain('Auto Overdub', sw('autoOverdub', l.autoOverdub))}</div>
-      <div class="mini-box">${miniBoxMain('Record After Routes', sw('recordAfter', !l.recordInputs))}</div>
-      <div class="mini-box">${miniBoxMain('Hold Clears', sw('holdClears', l.holdClears))}</div>
-      <div class="mini-box">${miniBoxMain('Loop Unrouted Channels', sw('loopUnrouted', l.loopUnrouted))}</div>
-    </div>`;
+    ${mapped ? gridRow([
+      { label: 'Length', control: `<select data-looper-field="bars">${opt(0, l.bars, 'Free')}${Array.from({ length: 16 }, (_, k) => opt(k + 1, l.bars, `${k + 1} bar${k ? 's' : ''}`)).join('')}</select>` },
+      { label: 'Quantize', control: `<select data-looper-field="quantize">${opt(-1, l.quantize, 'Off')}${DIVISIONS.map((d, i) => opt(i, l.quantize, d)).join('')}</select>` },
+      { label: 'Auto Overdub', control: sw('autoOverdub', l.autoOverdub) },
+      { label: 'Record After Routes', control: sw('recordAfter', !l.recordInputs) },
+      { label: 'Hold Clears', control: sw('holdClears', l.holdClears) },
+      { label: 'Loop Unrouted Channels', control: sw('loopUnrouted', l.loopUnrouted) }
+    ]) : ''}`;
 }
 
 looperRow.addEventListener('change', (e) => {
@@ -1588,10 +1610,10 @@ function renderRouteCard(route, index, animateStaple) {
               </div>
               <p class="note-hint">CC range now begins with this CC.</p>
             </div>
-            <div class="field-row">
+            ${looperMapped() ? `<div class="field-row">
               ${switchHtml(index, 'looperEnabled', route.looperEnabled !== false, 'Looper')}
               ${route.looperEnabled !== false ? '<p class="note-hint">Whether this route\'s notes can be recorded by the looper.</p>' : ''}
-            </div>
+            </div>` : ''}
             <div class="field-row">
               ${switchHtml(index, 'monoRetrig', !!route.monoRetrig, 'Mono Retrig')}
               ${route.monoRetrig ? '<p class="note-hint">Poly to Mono. Helps samplers play more like analog CV synths. Lifting a key recalls the next still-held key.</p>' : ''}
@@ -1708,15 +1730,15 @@ function launchpadSectionHtml(route, index) {
   const quadSwitch = switchHtml(index, 'lpQuadEnabled', quad.enabled, '', 'looper-switch');
   return `<div class="${featureRowClass(on)}">
       ${switchHtml(index, 'launchpad', on, 'Launchpad')}
-      ${on ? `<div class="looper-grid lp-settings-grid">
-        <div class="mini-box">${miniBoxMain('Octave', `<select data-field="lpOctave" ${qAttrs}>${opt(0, octave, '0')}${opt(1, octave, '-1')}${opt(2, octave, '-2')}</select>`)}</div>
-        <div class="mini-box">${miniBoxMain('Break Off a Quad', quadSwitch)}</div>
-        ${quad.enabled ? `
-          <div class="mini-box">${miniBoxMain('Quadrant', `<select data-lp-quad-field="block" ${qAttrs}>${QUAD_BLOCK_LABELS.map((l, i2) => opt(i2, quad.block, l)).join('')}</select>`)}</div>
-          <div class="mini-box">${miniBoxMain('Channel', `<select data-lp-quad-field="channel" ${qAttrs}>${Array.from({ length: 16 }, (_, c) => opt(c, quad.channel, c + 1)).join('')}</select>`)}</div>
-          <div class="mini-box">${miniBoxMain('Start Note', `<select data-lp-quad-field="startNote" ${qAttrs}>${noteSelectOptions(quad.startNote)}</select>`)}</div>
-        ` : ''}
-      </div>
+      ${on ? gridRow([
+        { label: 'Octave', control: `<select data-field="lpOctave" ${qAttrs}>${opt(0, octave, '0')}${opt(1, octave, '-1')}${opt(2, octave, '-2')}</select>` },
+        { label: 'Break Off a Quad', control: quadSwitch },
+        ...(quad.enabled ? [
+          { label: 'Quadrant', control: `<select data-lp-quad-field="block" ${qAttrs}>${QUAD_BLOCK_LABELS.map((l, i2) => opt(i2, quad.block, l)).join('')}</select>` },
+          { label: 'Channel', control: `<select data-lp-quad-field="channel" ${qAttrs}>${Array.from({ length: 16 }, (_, c) => opt(c, quad.channel, c + 1)).join('')}</select>` },
+          { label: 'Start Note', control: `<select data-lp-quad-field="startNote" ${qAttrs}>${noteSelectOptions(quad.startNote)}</select>` }
+        ] : [])
+      ]) : ''}
       <div class="lp-buttons-header">
         <p class="note-hint">Button light color is a raw Launchpad velocity, 0 keeps the usual channel-color indicator.</p>
         <button type="button" class="btn btn-ghost btn-tiny" data-action="resetLpDefaults">Reset to Defaults</button>
@@ -1760,10 +1782,15 @@ routesContainer.addEventListener('change', (e) => {
   const act = actionFor(owner, i);
   const field = e.target.dataset.actField;
   if (!act || !field) return;
+  const wasLooper = usesLooper(act); // before applyActionField reassigns act's fields on a type change
   const redraw = applyActionField(act, field, e.target.value);
   if (usesLooper(act)) ensureLooperMode();
   markDirty();
-  if (redraw) refreshRouteCard(index);
+  // A type change here can make looperMapped() flip either way (first Looper mapping added, or
+  // the last one removed), which the per-route Looper switch and the Looper row's own collapse
+  // both depend on — refresh every route, not just this one, to pick that up everywhere.
+  if (redraw && (wasLooper || usesLooper(act))) renderRoutes();
+  else if (redraw) refreshRouteCard(index);
   if (redraw || usesLiveChannel(act)) refreshArpCards();
 });
 
