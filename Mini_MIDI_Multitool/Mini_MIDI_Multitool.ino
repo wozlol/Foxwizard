@@ -97,7 +97,7 @@ constexpr uint8_t SYSEX_MFR_ID = 0x7D;   // reserved for non-commercial/educatio
 constexpr uint8_t SYSEX_DEVICE_ID = 0x4D; // 'M'
 constexpr uint8_t PROTOCOL_VERSION = 4; // 2: 45-byte routes with port masks, GET_STATUS. 3: clock settings, LEARN. 4: 53-byte routes with feature fields, feature blocks
 constexpr uint8_t FW_VERSION_MAJOR = 1;
-constexpr uint8_t FW_VERSION_MINOR = 48;
+constexpr uint8_t FW_VERSION_MINOR = 49;
 constexpr uint8_t FW_CHUNK_BYTES = 128;          // firmware bytes per FW_DATA message, 147 once packed
 constexpr uint32_t FW_REBOOT_DELAY_MS = 300;     // lets the FW_END ACK reach the host before rebooting
 const char DEVICE_NAME[] = "FoxWizard Mini MIDI Multitool"; // long name sent in the SysEx IDENTITY_REPLY
@@ -1168,10 +1168,23 @@ uint8_t *featureBlockData(uint8_t type, uint8_t &size) {
   return nullptr;
 }
 
+// The Launchpad's 16 round buttons out of the box, Top 1-8 then Side 1-8. Patchling's
+// defaultLpActions() is the same list, so Reset to Defaults there matches a factory reset here.
+const MapAction LP_DEFAULT_ACTIONS[LAUNCHPAD_BUTTONS] = {
+  {ACT_PROGRAM_STEP, 1, 0, 0}, {ACT_PROGRAM_STEP, 0, 0, 0},     // Program Up, Down
+  {ACT_ARP_DIV_STEP, 0, 0, 0}, {ACT_ARP_DIV_STEP, 1, 0, 0},     // Arp Div Down, Up
+  {ACT_LIVE_CHANNEL, 0, 0, 0}, {ACT_LIVE_CHANNEL, 9, 0, 0},     // Live Ch 1, 10
+  {ACT_LIVE_CHANNEL, 1, 0, 0}, {ACT_LIVE_CHANNEL, 2, 0, 0},     // Live Ch 2, 3
+  {ACT_STUTTER_LENGTH, 4, 0, 0}, {ACT_STUTTER_LENGTH, 3, 0, 0}, // Stutter 2 bars, 1 bar
+  {ACT_STUTTER_LENGTH, 2, 0, 0}, {ACT_STUTTER_LENGTH, 1, 0, 0}, // Stutter 1/2, 1/4 bar
+  {ACT_STUTTER_LENGTH, 0, 0, 0}, {ACT_ECHO_TOGGLE, 0, 0, 0},    // Stutter 1/8 bar, Echo On/Off
+  {ACT_LOOPER, 1, 0, 0}, {ACT_LOOPER, 2, 0, 0},                 // Looper Play/Arm/Rec, Stop/Clear/Undo
+};
+
 void resetFeatureBlocks() {
   memset(noteMap, 0, sizeof(noteMap));
   memset(ccMap, 0, sizeof(ccMap));
-  memset(lpActions, 0, sizeof(lpActions));
+  memcpy(lpActions, LP_DEFAULT_ACTIONS, sizeof(lpActions));
   memset(noteMapToggle, 0, sizeof(noteMapToggle));
   memset(ccMapToggle, 0, sizeof(ccMapToggle));
   memset(lpToggle, 0, sizeof(lpToggle));

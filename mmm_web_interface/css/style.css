@@ -1030,28 +1030,36 @@ body.dragging-active { overflow: hidden; }
 /* Looper row: green, same card style as Scale and the global clock. Always shown. */
 .looper-row[hidden] { display: none; }
 .looper-row { border-color: rgba(34, 197, 94, 0.45); background: linear-gradient(180deg, rgba(20, 58, 38, 0.9), rgba(26, 37, 64, 0.85)); transition: opacity 0.2s; }
-.looper-row-header { display: flex; align-items: center; flex-wrap: wrap; gap: 6px 14px; margin-bottom: 14px; }
+.looper-row-header { display: flex; align-items: center; flex-wrap: wrap; gap: 6px 14px; }
 .looper-row-heading { font-family: 'Russo One', sans-serif; font-size: 1.25rem; color: #86efac; margin: 0; white-space: nowrap; }
 .switch-green input:checked + .switch-track { background: var(--green); }
-/* A row of equal-weight settings boxes (title over control, selects and switches mixed), each
-   title+control pair wrapping together as one box so a box never ends up visually orphaned from
-   its own title when the row wraps to two or more. Two separate grids (all titles, then all
-   controls) looked perfectly aligned in a single row, but fell apart the moment that wrapped —
-   wrapped titles piled up as their own block above every control, titles and controls no longer
-   anywhere near each other. Pinning every title to one line (nowrap, trimmed with an ellipsis in
-   the rare case a column is too narrow for it) is what actually keeps every box in a given row
-   the same height, rather than a two-line label quietly making just that one box taller — no
-   height is measured or guessed, there's just nothing left that can vary it. */
-.looper-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(225px, 1fr)); gap: 10px; }
-.looper-switch { display: inline-flex; }
-.looper-grid .mini-box-main { margin-top: 0; margin-bottom: 0; }
-.looper-grid .mini-box-label { white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
-.looper-grid .mini-box-control { display: flex; align-items: center; min-height: 38px; }
-.looper-grid .mini-box-control select,
-.looper-grid .mini-box-control .switch { width: 100%; }
-@media (max-width: 640px) {
-  .looper-grid { grid-template-columns: repeat(2, 1fr); }
+/* Looper settings: 6 across on desktop, 3 on tablets, 2 on phones. Each cell spans two rows of
+   the parent grid and shares them through subgrid, so every title in a visual row sits in one
+   title track and every control in one control track. A title that wraps to two lines makes that
+   whole row's title track taller, so the tops of all titles and all controls stay level. Controls
+   are centered in their track, so a switch sits on the same center line as a taller dropdown. */
+.looper-settings { display: grid; grid-template-columns: repeat(6, minmax(0, 1fr)); column-gap: 10px; row-gap: 10px; margin-top: 14px; }
+.looper-cell {
+  grid-row: span 2;
+  display: grid;
+  grid-template-rows: subgrid;
+  row-gap: 8px;
+  background: var(--box);
+  border: 1px solid var(--box-border);
+  border-radius: var(--radius-md);
+  padding: 12px 14px;
 }
+.looper-cell-title { margin: 0; align-self: start; font-size: 0.72rem; font-weight: 700; text-transform: uppercase; letter-spacing: 0.06em; color: var(--text-dim); }
+.looper-cell-control { align-self: center; display: flex; align-items: center; }
+.looper-cell-control select { width: 100%; }
+.looper-switch { display: inline-flex; }
+@media (max-width: 900px) {
+  .looper-settings { grid-template-columns: repeat(3, minmax(0, 1fr)); }
+}
+@media (max-width: 500px) {
+  .looper-settings { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+}
+.lp-quad-row { margin-top: 10px; }
 
 /* Arp settings, inside a route's output column. */
 .arp-fields { display: grid; grid-template-columns: repeat(auto-fill, minmax(150px, 1fr)); gap: 8px 12px; margin-top: 8px; }

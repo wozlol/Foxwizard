@@ -678,23 +678,6 @@ function miniBoxMain(label, controlHtml) {
 // control is a select or a switch: the control sits in a fixed-height, vertically centered slot,
 // so a short switch doesn't just float at the top of whatever extra height the title reserved,
 // and its center lines up with a taller select's center instead of only their top edges matching.
-// A row of settings boxes where every title lines up with every other title, and every control
-// lines up with every other control, by construction rather than by guessing heights: titles and
-// controls are two separate grids stacked on top of each other, sharing the exact same column
-// template, so column N's title and column N's control always land in the same place whichever
-// row wrapping puts them in on a narrower screen. items: [{ label, control }].
-// A row of equal-weight settings boxes (title over control, selects and switches mixed). Two
-// grids stacked (all titles, then all controls) line up perfectly in one row, but fall apart the
-// moment the row wraps to two: wrapped titles pile up as their own block, disconnected from their
-// controls below. Keeping title+control together as one box that wraps as a unit avoids that, and
-// pinning every title to one line (not wrapping it) is what actually keeps every box in a given
-// row the same height, instead of a two-line label quietly making just that one box taller.
-function gridRow(items) {
-  return `<div class="looper-grid">${items.map((it) =>
-    `<div class="mini-box">${miniBoxMain(it.label, `<div class="mini-box-control">${it.control}</div>`)}</div>`
-  ).join('')}</div>`;
-}
-
 function renderGlobalCard() {
   const g = state.global;
   const isUsbAdaptor = g.mode === 0;
@@ -798,10 +781,13 @@ const looperRow = document.getElementById('looperRow');
 // device, like the firmware's own tables). Until one of these is true there's nothing to record
 // with, so the row stays collapsed to just its title and hint instead of showing dead settings.
 function looperMapped() {
+  // A mapping only counts while some route has that feature switched on, so the default
+  // Launchpad table's two Looper buttons don't count with no Launchpad route.
+  const featureOn = (bit) => state.routes.some((r) => r.features & bit);
   return state.global.buttonAction === 11 ||
-    state.lpActions.some(usesLooper) ||
-    state.noteMap.some((e) => usesLooper(e.action)) ||
-    state.ccMap.some((e) => usesLooper(e.action));
+    (featureOn(FEATURE.LAUNCHPAD) && state.lpActions.some(usesLooper)) ||
+    (featureOn(FEATURE.NOTE_TO_CC) && state.noteMap.some((e) => usesLooper(e.action))) ||
+    (featureOn(FEATURE.CC_MAP) && state.ccMap.some((e) => usesLooper(e.action)));
 }
 
 function renderLooperRow() {
@@ -820,14 +806,14 @@ function renderLooperRow() {
       <h2 class="looper-row-heading">LOOPER</h2>
       <p class="note-hint">Set button to Looper, or use Note/CC to Feature and select Looper.</p>
     </div>
-    ${mapped ? gridRow([
-      { label: 'Length', control: `<select data-looper-field="bars">${opt(0, l.bars, 'Free')}${Array.from({ length: 16 }, (_, k) => opt(k + 1, l.bars, `${k + 1} bar${k ? 's' : ''}`)).join('')}</select>` },
-      { label: 'Quantize', control: `<select data-looper-field="quantize">${opt(-1, l.quantize, 'Off')}${DIVISIONS.map((d, i) => opt(i, l.quantize, d)).join('')}</select>` },
-      { label: 'Auto Overdub', control: sw('autoOverdub', l.autoOverdub) },
-      { label: 'Record After Routes', control: sw('recordAfter', !l.recordInputs) },
-      { label: 'Hold Clears', control: sw('holdClears', l.holdClears) },
-      { label: 'Loop Unrouted Channels', control: sw('loopUnrouted', l.loopUnrouted) }
-    ]) : ''}`;
+    ${mapped ? `<div class="looper-settings">${[
+      ['Length', `<select data-looper-field="bars">${opt(0, l.bars, 'Free')}${Array.from({ length: 16 }, (_, k) => opt(k + 1, l.bars, `${k + 1} bar${k ? 's' : ''}`)).join('')}</select>`],
+      ['Quantize', `<select data-looper-field="quantize">${opt(-1, l.quantize, 'Off')}${DIVISIONS.map((d, i) => opt(i, l.quantize, d)).join('')}</select>`],
+      ['Auto Overdub', sw('autoOverdub', l.autoOverdub)],
+      ['Record After Routes', sw('recordAfter', !l.recordInputs)],
+      ['Hold Clears', sw('holdClears', l.holdClears)],
+      ['Loop Unrouted Channels', sw('loopUnrouted', l.loopUnrouted)]
+    ].map(([title, control]) => `<div class="looper-cell"><p class="looper-cell-title">${title}</p><div class="looper-cell-control">${control}</div></div>`).join('')}</div>` : ''}`;
 }
 
 looperRow.addEventListener('change', (e) => {
@@ -1731,23 +1717,22 @@ function launchpadSectionHtml(route, index) {
   const octave = Math.min(2, route.lpOctave || 0);
   const quad = route.lpQuad || defaultLpQuad();
   const qAttrs = `data-route-index="${index}"`;
-  const quadSwitch = switchHtml(index, 'lpQuadEnabled', quad.enabled, '', 'looper-switch');
   return `<div class="${featureRowClass(on)}">
       ${switchHtml(index, 'launchpad', on, 'Launchpad')}
-      ${on ? gridRow([
-        { label: 'Octave', control: `<select data-field="lpOctave" ${qAttrs}>${opt(0, octave, '0')}${opt(1, octave, '-1')}${opt(2, octave, '-2')}</select>` },
-        { label: 'Break Off a Quad', control: quadSwitch },
-        ...(quad.enabled ? [
-          { label: 'Quadrant', control: `<select data-lp-quad-field="block" ${qAttrs}>${QUAD_BLOCK_LABELS.map((l, i2) => opt(i2, quad.block, l)).join('')}</select>` },
-          { label: 'Channel', control: `<select data-lp-quad-field="channel" ${qAttrs}>${Array.from({ length: 16 }, (_, c) => opt(c, quad.channel, c + 1)).join('')}</select>` },
-          { label: 'Start Note', control: `<select data-lp-quad-field="startNote" ${qAttrs}>${noteSelectOptions(quad.startNote)}</select>` }
-        ] : [])
-      ]) : ''}
-      ${on ? `<div class="lp-buttons-header">
+      ${on ? `<div class="arp-fields">
+        <div class="arp-field"><label>Octave</label><select data-field="lpOctave" ${qAttrs}>${opt(0, octave, '0')}${opt(1, octave, '-1')}${opt(2, octave, '-2')}</select></div>
+      </div>
+      <div class="lp-quad-row">${switchHtml(index, 'lpQuadEnabled', quad.enabled, 'Break Off a Quad')}</div>
+      ${quad.enabled ? `<div class="arp-fields">
+        <div class="arp-field"><label>Quadrant</label><select data-lp-quad-field="block" ${qAttrs}>${QUAD_BLOCK_LABELS.map((l, i2) => opt(i2, quad.block, l)).join('')}</select></div>
+        <div class="arp-field"><label>Channel</label><select data-lp-quad-field="channel" ${qAttrs}>${Array.from({ length: 16 }, (_, c) => opt(c, quad.channel, c + 1)).join('')}</select></div>
+        <div class="arp-field"><label>Start Note</label><select data-lp-quad-field="startNote" ${qAttrs}>${noteSelectOptions(quad.startNote)}</select></div>
+      </div>` : ''}
+      <div class="lp-buttons-header">
         <p class="note-hint">Button light color is a raw Launchpad velocity, 0 keeps the usual channel-color indicator.</p>
         <button type="button" class="btn btn-ghost btn-tiny" data-action="resetLpDefaults">Reset to Defaults</button>
       </div>
-        <div class="lp-buttons">${buttons}</div>` : ''}
+      <div class="lp-buttons">${buttons}</div>` : ''}
     </div>`;
 }
 
@@ -2194,7 +2179,10 @@ routesContainer.addEventListener('change', (e) => {
   if (index === undefined || !field) return;
   const route = state.routes[parseInt(index, 10)];
   applyRouteFieldChange(route, field, e.target);
-  if (STRUCTURAL_FIELDS.has(field)) refreshRouteCard(parseInt(index, 10));
+  // These three decide whether the looper is reachable, which every route's Looper switch and
+  // the Looper row itself follow, so they redraw everything rather than just this card.
+  if (field === 'launchpad' || field === 'noteToCc' || field === 'ccMapOn') renderRoutes();
+  else if (STRUCTURAL_FIELDS.has(field)) refreshRouteCard(parseInt(index, 10));
   if (field === 'outputChannels') updateChannelWarning(parseInt(index, 10));
   syncMasterSwitches(parseInt(index, 10));
   syncRouteLive(parseInt(index, 10));
