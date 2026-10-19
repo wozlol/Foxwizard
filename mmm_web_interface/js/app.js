@@ -707,7 +707,7 @@ function renderGlobalCard() {
       <div class="mini-box">${miniBoxMain('Note', `<select data-global-field="buttonParamA">${noteSelectOptions(g.buttonParamA)}</select>`)}</div>
       <div class="mini-box">${miniBoxMain('Channel', `<select data-global-field="buttonParamB">${channelSelectOptions(g.buttonParamB)}</select>`)}</div>`;
   } else if (g.buttonAction === 11) {
-    buttonExtraFields = looperFieldsHtml();
+    buttonExtraFields = `<p class="note-hint">Looper settings moved to their own row below.</p>`;
   }
 
   const brightnessPct = g.ledBrightnessStep * 10;
@@ -715,6 +715,7 @@ function renderGlobalCard() {
   const allCollapsed = state.routes.length > 0 && state.routes.every((r) => r._collapsed);
 
   renderClockRow();
+  renderLooperRow();
   globalCard.innerHTML = `
     <div class="global-card-header">
       <h2 class="main-mode-heading">MAIN MODE</h2>
@@ -764,28 +765,46 @@ function renderGlobalCard() {
   wireSpeedSecondsInput();
 }
 
-// Looper mode's settings, in the mode card next to the button action.
-function looperFieldsHtml() {
+// ============================================================================================
+// Looper row (green). Always shown: it records unrouted channels by default, so it works without
+// changing Button Action. The single-button Looper gesture still needs Button Action set to
+// Looper; everything else here is reachable from any route's Note/CC to Feature mapping too.
+// ============================================================================================
+const looperRow = document.getElementById('looperRow');
+
+function looperRowActive() {
+  return state.global.buttonAction === 11 || state.looper.loopUnrouted || state.routes.some((r) => r.looperEnabled !== false);
+}
+
+function renderLooperRow() {
+  looperRow.hidden = false;
   const l = state.looper;
+  const active = looperRowActive();
+  looperRow.classList.toggle('looper-row-idle', !active);
   const opt = (v, cur, label) => `<option value="${v}" ${cur === v ? 'selected' : ''}>${label}</option>`;
-  const sw = (field, on, label) => `<label class="switch">
+  const sw = (field, on, label) => `<label class="switch switch-green">
       <input type="checkbox" data-looper-field="${field}" ${on ? 'checked' : ''}>
       <span class="switch-track"><span class="switch-thumb"></span></span>
       <span class="switch-label">${label}</span>
     </label>`;
-  return `
-    <div class="mini-box looper-pair">
-      ${miniBoxMain('Length', `<select data-looper-field="bars">${opt(0, l.bars, 'Free')}${Array.from({ length: 16 }, (_, k) => opt(k + 1, l.bars, `${k + 1} bar${k ? 's' : ''}`)).join('')}</select>`)}
-      ${miniBoxMain('Quantize', `<select data-looper-field="quantize">${opt(-1, l.quantize, 'Off')}${DIVISIONS.map((d, i) => opt(i, l.quantize, d)).join('')}</select>`)}
+  looperRow.innerHTML = `
+    <div class="looper-row-header">
+      <h2 class="looper-row-heading">LOOPER</h2>
+      <p class="note-hint">Map Note/CC to Feature or a Launchpad button for more looper control.</p>
     </div>
-    <div class="mini-box looper-switches">
-      ${sw('autoOverdub', l.autoOverdub, 'Auto Overdub')}
-      ${sw('recordAfter', !l.recordInputs, 'Record After Routes')}
-      ${sw('holdClears', l.holdClears, 'Hold Clears')}
+    <div class="settings-grid">
+      <div class="mini-box">${miniBoxMain('Length', `<select data-looper-field="bars">${opt(0, l.bars, 'Free')}${Array.from({ length: 16 }, (_, k) => opt(k + 1, l.bars, `${k + 1} bar${k ? 's' : ''}`)).join('')}</select>`)}</div>
+      <div class="mini-box">${miniBoxMain('Quantize', `<select data-looper-field="quantize">${opt(-1, l.quantize, 'Off')}${DIVISIONS.map((d, i) => opt(i, l.quantize, d)).join('')}</select>`)}</div>
+      <div class="mini-box looper-switches">
+        ${sw('autoOverdub', l.autoOverdub, 'Auto Overdub')}
+        ${sw('recordAfter', !l.recordInputs, 'Record After Routes')}
+        ${sw('holdClears', l.holdClears, 'Hold Clears')}
+        ${sw('loopUnrouted', l.loopUnrouted, 'Loop Unrouted Channels')}
+      </div>
     </div>`;
 }
 
-globalCard.addEventListener('change', (e) => {
+looperRow.addEventListener('change', (e) => {
   const field = e.target.dataset.looperField;
   if (!field) return;
   const l = state.looper;
@@ -793,6 +812,8 @@ globalCard.addEventListener('change', (e) => {
   else if (e.target.type === 'checkbox') l[field] = e.target.checked;
   else l[field] = parseInt(e.target.value, 10);
   markDirty();
+  renderLooperRow();
+  renderClockRow();
 });
 
 // ============================================================================================
@@ -803,7 +824,9 @@ const clockRow = document.getElementById('clockRow');
 let clockReadout = { bpm: null, status: 0 };
 
 function clockRowActive() {
-  return state.global.buttonAction === 10 || state.global.buttonAction === 11 || state.routes.some((r) => r.arpSlot || (r.features & (FEATURE.ECHO | FEATURE.STUTTER)));
+  return state.global.buttonAction === 10 || state.global.buttonAction === 11 ||
+    state.looper.quantize >= 0 || state.looper.bars > 0 || // the looper needs a clock either way it's triggered now
+    state.routes.some((r) => r.arpSlot || (r.features & (FEATURE.ECHO | FEATURE.STUTTER)));
 }
 
 function clockSourceOptions(g) {
@@ -824,9 +847,18 @@ function clockReadoutText() {
 }
 
 function renderClockRow() {
-  clockRow.hidden = !clockRowActive();
-  if (clockRow.hidden) return;
+  clockRow.hidden = false;
+  const relevant = clockRowActive();
+  clockRow.classList.toggle('clock-row-dim', !relevant);
   const g = state.global;
+  if (!relevant) {
+    clockRow.innerHTML = `
+      <div class="clock-row-header">
+        <h2 class="clock-row-heading">GLOBAL CLOCK</h2>
+        <span class="clock-readout">Nothing using the clock yet &middot; BPM ${g.bpm}</span>
+      </div>`;
+    return;
+  }
   const master = g.clockSource === 0;
   const opt = (v, cur, label) => `<option value="${v}" ${cur === v ? 'selected' : ''}>${label}</option>`;
   let beats = '';
@@ -1562,6 +1594,10 @@ function renderRouteCard(route, index, animateStaple) {
               <p class="note-hint">Poly to Mono. Helps samplers play more like analog CV synths. Lifting a key recalls the next still-held key.</p>
             </div>
             <div class="field-row">
+              ${switchHtml(index, 'looperEnabled', route.looperEnabled !== false, 'Looper')}
+              <p class="note-hint">Whether this route's notes can be recorded by the looper.</p>
+            </div>
+            <div class="field-row">
               <div class="round-robin-row">
                 ${switchHtml(index, 'roundRobin', !!route.roundRobin, 'Round Robin')}
                 ${route.roundRobin ? switchHtml(index, 'roundRobinRandom', !!route.roundRobinRandom, 'Rand', 'cc-map-row-indent') : ''}
@@ -2070,6 +2106,7 @@ function claimFeature(index, bit, label) {
 
 function renderRoutes() {
   renderScaleRow();
+  renderLooperRow();
   emptyHint.hidden = state.routes.length !== 0;
   routesContainer.innerHTML = state.routes.map((r, i) => renderRouteCard(r, i)).join('');
 }
@@ -2174,6 +2211,7 @@ function applyRouteFieldChange(route, field, el) {
   if (field === 'realtime') { route.realtimeEnabled = el.checked; return; }
   if (field === 'clock') { route.clockEnabled = el.checked; return; }
   if (field === 'monoRetrig') { route.monoRetrig = el.checked; return; }
+  if (field === 'looperEnabled') { route.looperEnabled = el.checked; renderLooperRow(); return; }
   if (field === 'roundRobin') { route.roundRobin = el.checked; return; }
   if (field === 'roundRobinRandom') { route.roundRobinRandom = el.checked; return; }
   if (field === 'ccMapEnabled') {

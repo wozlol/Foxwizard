@@ -225,7 +225,7 @@ struct RouteData {
   // lower-right, 3 upper-right, matching launchpadGridNote's block numbering), bits3-6 channel 0-15.
   uint8_t launchpadQuad;
   uint8_t launchpadQuadStart; // the quad's first note, default 36
-  uint8_t spare[1];   // room for later route features without changing the wire format again
+  uint8_t flags3; // bit0=Looper off (1.48): this route's notes are skipped by the looper's input capture
 };
 
 struct GlobalSettings {
@@ -520,7 +520,8 @@ struct LooperSettings {
   uint8_t autoOverdub;    // 1: overdub turns on by itself as a new take starts playing
   uint8_t recordInputs;   // 0 records what the routes send out, 1 what comes in, replayed through the routes
   uint8_t doubleTapClears; // 0: holding the button clears (or undoes), a double tap stops. 1: the other way
-  uint8_t spare[43];
+  uint8_t loopUnroutedOff; // 1.48: 0 (a fresh preset's default) records a note no route matches at all, 1 skips it
+  uint8_t spare[42];
 };
 #pragma pack(pop)
 LooperSettings looperSettings;
@@ -2437,7 +2438,12 @@ uint8_t loopSoundingCount = 0;
 
 enum : uint8_t { LS_CLEARED = 0, LS_ARMED, LS_RECORDING, LS_PLAYING, LS_STOPPED };
 
-bool looperMode() { return globalSettings.buttonAction == BTN_LOOPER; }
+// The looper is reachable via the mapper regardless of what the front button does now (1.48), so
+// it's no longer gated by Button Action; serviceLooperLeds() still only runs for the front button's
+// own LED when Button Action is actually Looper.
+bool looperMode() { return true; }
+
+bool routeLooperOff(const RouteData &r) { return (r.flags3 & 0x01) != 0; }
 bool looperRecordsOutputs() { return looperMode() && !looperSettings.recordInputs; }
 bool looperRecordsInputs() { return looperMode() && looperSettings.recordInputs; }
 void loopHeldUpdate(uint16_t tag, bool on, uint8_t channel, uint8_t note, uint8_t velocity);
@@ -3581,6 +3587,7 @@ void serviceArps() {
 
 void dispatchNoteEvent(uint8_t inputDevice, uint8_t channel, bool isNoteOn, uint8_t rawNote, uint8_t velocity) {
   bool matchedAny = false;
+  bool matchedLooperRoute = false; // a route whose own notes these are, with its Looper switch on
   for (uint16_t i = 0; i < routeCount; ++i) {
     uint8_t note = rawNote;
     launchpadExcludePorts = 0;
@@ -3631,6 +3638,7 @@ void dispatchNoteEvent(uint8_t inputDevice, uint8_t channel, bool isNoteOn, uint
     }
     if (routeMatches(routes[i], inputDevice, channel, MK_NOTE, note)) {
       matchedAny = true;
+      if (!routeLooperOff(routes[i])) matchedLooperRoute = true;
       if (handleNoteMap(i, isNoteOn, note, velocity)) continue;
       if (routes[i].features & (FEATURE_SCALE | FEATURE_AUTO_CHORD)) {
         // A Note Off releases exactly what its Note On played, even if the settings changed between.
@@ -3690,6 +3698,17 @@ void dispatchNoteEvent(uint8_t inputDevice, uint8_t channel, bool isNoteOn, uint
     // still count as "seen" on the input side for the IN LED even if fully consumed by routes
     if (inputDevice == DEV_USB) noteActivity(ledUsb); else noteActivity(ledIn);
   }
+
+  // The looper's input-side capture (1.48): a route whose own notes these are and whose Looper
+  // switch is on, or nothing routed it at all and Loop Unrouted Channels is on. A note that only
+  // triggered a square, Launchpad button or Break Off a Quad redirect isn't "this route's notes",
+  // so it's neither captured here nor counted as unrouted (the quad's own recursive dispatch
+  // makes that call for itself).
+  if (!looperEmitting && looperRecordsInputs() &&
+      (matchedLooperRoute || (!matchedAny && !looperSettings.loopUnroutedOff))) {
+    looperCapture((uint16_t)((inputDevice << 8) | (inputDevice == DEV_HOST ? currentHostPort : 0)),
+                  (isNoteOn ? 0x90 : 0x80) | channel, rawNote, isNoteOn ? velocity : 0);
+  }
 }
 
 void processIncomingEvent(uint8_t inputDevice, uint8_t statusHi, uint8_t channel, uint8_t data1, uint8_t data2, uint8_t len) {
@@ -3708,11 +3727,6 @@ void processIncomingEvent(uint8_t inputDevice, uint8_t statusHi, uint8_t channel
   bool isNoteOn = (kind == MK_NOTE) && (statusHi == 0x90 && data2 > 0);
   if (kind == MK_NOTE) lastMusicMs = millis();
   if (captureLearnOrTap(inputDevice, kind, isNoteOn, channel, data1, data2)) return;
-  if (kind == MK_NOTE && !looperEmitting && looperRecordsInputs()) {
-    looperCapture((uint16_t)((inputDevice << 8) | (inputDevice == DEV_HOST ? currentHostPort : 0)),
-                  (isNoteOn ? 0x90 : 0x80) | channel, data1, isNoteOn ? data2 : 0);
-  }
-
   if (kind == MK_NOTE && !looperEmitting && (inputDevice == DEV_HOST || inputDevice == DEV_TRS2)) {
     sidecarHeld[channel][data1] = !isNoteOn ? 0 : (inputDevice == DEV_HOST ? currentHostPort : 0x80);
   }

@@ -934,8 +934,12 @@ body.dragging-active { overflow: hidden; }
    Global clock row: red, same card style as a route, between Main Mode and the routes.
    --------------------------------------------------------------------------------------------- */
 .clock-row[hidden] { display: none; }
-.clock-row { border-color: rgba(239, 68, 68, 0.45); background: linear-gradient(180deg, rgba(64, 26, 34, 0.9), rgba(26, 37, 64, 0.85)); }
-.clock-row-header { display: flex; align-items: baseline; flex-wrap: wrap; gap: 4px 14px; margin-bottom: 14px; }
+.clock-row { border-color: rgba(239, 68, 68, 0.45); background: linear-gradient(180deg, rgba(64, 26, 34, 0.9), rgba(26, 37, 64, 0.85)); transition: opacity 0.2s; }
+.clock-row-header { display: flex; align-items: baseline; flex-wrap: wrap; gap: 4px 14px; }
+.clock-row:not(.clock-row-dim) .clock-row-header { margin-bottom: 14px; }
+/* Nothing's using the clock: a single dim strip instead of the full grid. */
+.clock-row.clock-row-dim { padding: 10px 16px; opacity: 0.55; border-color: rgba(239, 68, 68, 0.2); background: rgba(40, 30, 36, 0.6); }
+.clock-row.clock-row-dim .clock-row-heading { font-size: 0.95rem; }
 .clock-row-heading { font-family: 'Russo One', sans-serif; font-size: 1.25rem; color: #fca5a5; margin: 0; white-space: nowrap; }
 .clock-readout { font-size: 0.86rem; font-weight: 600; color: #fecaca; }
 .switch-red input:checked + .switch-track { background: var(--red); }
@@ -981,6 +985,16 @@ body.dragging-active { overflow: hidden; }
 .scale-row-idle .scale-row-heading { color: rgba(253, 224, 71, 0.55); }
 .scale-layout { display: flex; align-items: center; gap: 8px; margin-top: 8px; }
 .scale-layout label { font-size: 0.78rem; color: var(--text-dim); }
+
+/* Looper row: green, same card style as Scale and the global clock. Always shown. */
+.looper-row[hidden] { display: none; }
+.looper-row { border-color: rgba(34, 197, 94, 0.45); background: linear-gradient(180deg, rgba(20, 58, 38, 0.9), rgba(26, 37, 64, 0.85)); transition: opacity 0.2s; }
+.looper-row-header { display: flex; align-items: center; flex-wrap: wrap; gap: 6px 14px; margin-bottom: 14px; }
+.looper-row-heading { font-family: 'Russo One', sans-serif; font-size: 1.25rem; color: #86efac; margin: 0; white-space: nowrap; }
+.looper-row-idle { opacity: 0.6; }
+.looper-row-idle .looper-row-heading { color: rgba(134, 239, 172, 0.55); }
+.looper-switches { display: flex; flex-direction: column; gap: 6px; justify-content: center; }
+.switch-green input:checked + .switch-track { background: var(--green); }
 
 /* Arp settings, inside a route's output column. */
 .arp-fields { display: grid; grid-template-columns: repeat(auto-fill, minmax(150px, 1fr)); gap: 8px 12px; margin-top: 8px; }

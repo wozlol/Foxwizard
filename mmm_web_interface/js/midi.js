@@ -151,11 +151,11 @@ export function bytesToEcho(b) {
 // holding the button clears and a double tap stops, 1 the other way), play/arm trigger (3), stop/clear
 // trigger (3), 37 spare.
 export function defaultLooper() {
-  return { bars: 0, quantize: -1, autoOverdub: false, recordInputs: false, holdClears: true };
+  return { bars: 0, quantize: -1, autoOverdub: false, recordInputs: false, holdClears: true, loopUnrouted: true };
 }
 export function looperToBytes(l) {
   return [l.bars, l.quantize + 1, l.autoOverdub ? 1 : 0, l.recordInputs ? 1 : 0, l.holdClears ? 0 : 1,
-    ...new Array(43).fill(0)];
+    l.loopUnrouted ? 0 : 1, ...new Array(42).fill(0)];
 }
 export function bytesToLooper(b) {
   return {
@@ -163,7 +163,8 @@ export function bytesToLooper(b) {
     quantize: b[1] >= 1 && b[1] <= DIVISIONS.length ? b[1] - 1 : -1,
     autoOverdub: b[2] === 1,
     recordInputs: b[3] === 1,
-    holdClears: b[4] !== 1
+    holdClears: b[4] !== 1,
+    loopUnrouted: b[5] !== 1
   };
 }
 
@@ -361,7 +362,7 @@ export function routeToBytes(r, protocolVersion = 2) {
     const quadByte = (q.enabled ? 1 : 0) | ((q.block & 0x03) << 1) | ((q.channel & 0x0F) << 3);
     bytes.push((r.features || 0) & 0xFF, ((r.features || 0) >> 8) & 0xFF, r.arpSlot || 0, r.scaleLayout || 0,
       (r.chordMask || 0) & 0xFF, ((r.chordMask || 0) >> 8) & 0xFF, Math.min(2, r.lpOctave || 0), quadByte,
-      q.startNote & 0x7F, 0);
+      q.startNote & 0x7F, r.looperEnabled === false ? 1 : 0);
   }
   return bytes;
 }
@@ -403,7 +404,8 @@ export function bytesToRoute(b) {
       block: (b[ROUTE_BYTES_V2 + 7] >> 1) & 0x03,
       channel: (b[ROUTE_BYTES_V2 + 7] >> 3) & 0x0F,
       startNote: b[ROUTE_BYTES_V2 + 8] & 0x7F
-    } : defaultLpQuad()
+    } : defaultLpQuad(),
+    looperEnabled: b.length < ROUTE_BYTES_V4 || (b[ROUTE_BYTES_V2 + 9] & 0x01) === 0
   };
 }
 

@@ -100,6 +100,7 @@ function looperFromXml(el) {
   lp.autoOverdub = el.getAttribute('autoOverdub') === 'true';
   lp.recordInputs = el.getAttribute('records') === 'inputs';
   lp.holdClears = el.getAttribute('holdClears') !== 'false';
+  lp.loopUnrouted = el.getAttribute('loopUnrouted') !== 'false';
   return lp;
 }
 
@@ -186,7 +187,7 @@ export function serializePreset(state) {
     lines.push(`      <passthrough programChange="${!!(r.typeFlags & DATA_TYPE_BITS.programChange)}" pitchBend="${!!(r.typeFlags & DATA_TYPE_BITS.pitchBend)}" aftertouch="${!!(r.typeFlags & DATA_TYPE_BITS.aftertouch)}" aftertouchMapEnabled="${!!(r.typeFlags & DATA_TYPE_BITS.aftertouchMap)}" aftertouchMapCC="${r.atMapCC}" pressure="${!!(r.typeFlags & DATA_TYPE_BITS.pressure)}" pressureMapEnabled="${!!r.cpMapEnabled}" pressureMapCC="${r.cpMapCC}" sysex="${!!(r.typeFlags & DATA_TYPE_BITS.sysex)}" common="${!!r.commonEnabled}" realtime="${!!r.realtimeEnabled}" clock="${!!r.clockEnabled}"/>`);
     lines.push(`      <noteRange enabled="${!!(r.typeFlags & DATA_TYPE_BITS.note)}" start="${r.noteStart}" end="${r.noteEnd}"/>`);
     lines.push(`      <ccRange enabled="${!!(r.typeFlags & DATA_TYPE_BITS.cc)}" start="${r.ccStart}" end="${r.ccEnd}"/>`);
-    lines.push(`      <output ports="${portsToString(r.outPorts)}" device="${legacyDeviceName(r.outPorts, OUT_DEVICE_NAMES)}" channels="${channelsToRangeString(r.outputChannels)}" transpose="${r.transpose}" velocityScale="${r.velocityScale}" ccMapStart="${r.ccMapStart}" monoRetrig="${!!r.monoRetrig}" roundRobin="${!!r.roundRobin}" roundRobinRandom="${!!r.roundRobinRandom}" noteToCc="${!!(r.features & FEATURE.NOTE_TO_CC)}" launchpad="${!!(r.features & FEATURE.LAUNCHPAD)}" launchpadOctave="${r.lpOctave || 0}" quadEnabled="${!!(r.lpQuad || defaultLpQuad()).enabled}" quadBlock="${(r.lpQuad || defaultLpQuad()).block}" quadChannel="${(r.lpQuad || defaultLpQuad()).channel}" quadStartNote="${(r.lpQuad || defaultLpQuad()).startNote}" scale="${!!(r.features & FEATURE.SCALE)}" layout="${esc(LAYOUTS[r.scaleLayout || 0])}" autoChord="${!!(r.features & FEATURE.AUTO_CHORD)}" chord="${Array.from({ length: 12 }, (_, k) => k).filter((k) => (r.chordMask || 0) & (1 << k)).map((k) => k + 1).join(',')}" arp="${r.arpSlot || 0}" echo="${!!(r.features & FEATURE.ECHO)}" stutter="${!!(r.features & FEATURE.STUTTER)}" ccToFeature="${!!(r.features & FEATURE.CC_MAP)}"/>`);
+    lines.push(`      <output ports="${portsToString(r.outPorts)}" device="${legacyDeviceName(r.outPorts, OUT_DEVICE_NAMES)}" channels="${channelsToRangeString(r.outputChannels)}" transpose="${r.transpose}" velocityScale="${r.velocityScale}" ccMapStart="${r.ccMapStart}" monoRetrig="${!!r.monoRetrig}" roundRobin="${!!r.roundRobin}" roundRobinRandom="${!!r.roundRobinRandom}" noteToCc="${!!(r.features & FEATURE.NOTE_TO_CC)}" launchpad="${!!(r.features & FEATURE.LAUNCHPAD)}" launchpadOctave="${r.lpOctave || 0}" quadEnabled="${!!(r.lpQuad || defaultLpQuad()).enabled}" quadBlock="${(r.lpQuad || defaultLpQuad()).block}" quadChannel="${(r.lpQuad || defaultLpQuad()).channel}" quadStartNote="${(r.lpQuad || defaultLpQuad()).startNote}" scale="${!!(r.features & FEATURE.SCALE)}" layout="${esc(LAYOUTS[r.scaleLayout || 0])}" autoChord="${!!(r.features & FEATURE.AUTO_CHORD)}" chord="${Array.from({ length: 12 }, (_, k) => k).filter((k) => (r.chordMask || 0) & (1 << k)).map((k) => k + 1).join(',')}" arp="${r.arpSlot || 0}" echo="${!!(r.features & FEATURE.ECHO)}" stutter="${!!(r.features & FEATURE.STUTTER)}" ccToFeature="${!!(r.features & FEATURE.CC_MAP)}" looperEnabled="${r.looperEnabled !== false}"/>`);
     lines.push('    </route>');
   }
   lines.push('  </routes>');
@@ -214,7 +215,7 @@ export function serializePreset(state) {
   squaresToXml(lines, stt.squares, '    ');
   lines.push('  </stutter>');
   const lp = state.looper || defaultLooper();
-  lines.push(`  <looper length="${lp.bars ? lp.bars : 'free'}" quantize="${lp.quantize >= 0 ? DIVISIONS[lp.quantize] : 'off'}" autoOverdub="${lp.autoOverdub}" records="${lp.recordInputs ? 'inputs' : 'outputs'}" holdClears="${lp.holdClears}">`);
+  lines.push(`  <looper length="${lp.bars ? lp.bars : 'free'}" quantize="${lp.quantize >= 0 ? DIVISIONS[lp.quantize] : 'off'}" autoOverdub="${lp.autoOverdub}" records="${lp.recordInputs ? 'inputs' : 'outputs'}" holdClears="${lp.holdClears}" loopUnrouted="${lp.loopUnrouted !== false}">`);
   lines.push('  </looper>');
   lines.push('  <launchpad>');
   (state.lpActions || []).forEach((act, i) => {
@@ -335,6 +336,7 @@ export function parsePreset(xmlText) {
       chordMask: parseChord(outputEl?.getAttribute('chord')),
       scaleLayout: Math.max(0, LAYOUTS.indexOf(outputEl?.getAttribute('layout'))),
       lpOctave: Math.min(2, Math.max(0, parseInt(outputEl?.getAttribute('launchpadOctave') || '0', 10) || 0)),
+      looperEnabled: outputEl?.getAttribute('looperEnabled') !== 'false',
       lpQuad: {
         enabled: outputEl?.getAttribute('quadEnabled') === 'true',
         block: Math.min(3, Math.max(0, parseInt(outputEl?.getAttribute('quadBlock') || '3', 10) || 0)),
