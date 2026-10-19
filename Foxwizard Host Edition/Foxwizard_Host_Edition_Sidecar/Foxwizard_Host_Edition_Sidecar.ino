@@ -31,6 +31,9 @@
   - white: the same fade, instead for a new USB device (MIDI or not) just being plugged in.
   - purple, instant, no fade: shown for two flashes right after a restart caused by a USB fault, see
     Recovery in ../README.md. Nothing to show live, a fault reboots at once.
+  - purple, blinking fast: nothing heard from the main brain for over 1 second (link wiring, ground,
+    or the main brain isn't running the Host Edition firmware). The one deliberate exception to the
+    no-blink ethic, since it means there's nothing else to show.
 */
 
 #include <Arduino.h>
@@ -77,6 +80,8 @@ constexpr uint32_t STATUS_FADE_IN_MS = 1000;   // same curve as the main brain's
 constexpr uint32_t STATUS_FADE_OUT_MS = 500;
 constexpr uint32_t STATUS_HOLD_MS = 12;        // a re-trigger inside this window doesn't restart the fade-in
 constexpr uint32_t STATUS_FAULT_FLASH_MS = 300;
+constexpr uint32_t STATUS_LINK_SILENT_MS = 1000; // no main brain heard from this long: blink purple
+constexpr uint32_t STATUS_LINK_BLINK_MS = 150;   // fast, on/off, no fade
 constexpr uint32_t USB_STALL_MS = 1000;   // a device that accepts nothing this long stops holding up the others
 constexpr uint32_t USB_WEDGE_MS = 3000;   // still nothing this long: the USB host is wedged, reboot to recover
 constexpr uint32_t WATCHDOG_MS = 2000;    // reboots if the loop ever stops running this long, a hot-plug hang included
@@ -138,7 +143,7 @@ uint32_t lastStatusRgb = 0xFFFFFFFF;
 
 // One fade engine for the status light, ported from the main brain's activity LEDs (same phases,
 // same timing), generalized to pick a color per trigger instead of driving one fixed hue.
-enum StatusColor : uint8_t { STATUS_BLUE = 0, STATUS_WHITE = 1 };
+enum StatusColor : uint8_t { STATUS_BLUE = 0, STATUS_WHITE = 1, STATUS_PURPLE = 2 };
 enum StatusPhase : uint8_t { STATUS_OFF = 0, STATUS_RISING = 1, STATUS_ON = 2, STATUS_FALLING = 3 };
 struct StatusLed {
   StatusPhase phase = STATUS_OFF;
@@ -152,6 +157,7 @@ struct StatusLed {
 };
 StatusLed statusLed;
 uint8_t ledBrightnessStep = 10; // 0-10, from the main brain's brightness knob (CONTROL_BRIGHTNESS)
+uint32_t lastMainFrameMs = 0; // any frame heard from the main brain, link-down detection only
 
 uint32_t rgbColor(uint8_t r, uint8_t g, uint8_t b) { return ((uint32_t)r << 16) | ((uint32_t)g << 8) | b; }
 
@@ -424,6 +430,7 @@ void pumpLinkIn() {
     if (!linkReader.feed((uint8_t)Serial1.read())) continue;
     uint8_t pkt[4];
     uint8_t port = decodeLinkFrame(linkReader.frame, pkt);
+    lastMainFrameMs = millis();
 
     if (port == LINK_PORT_CONTROL) {
       const uint8_t type = pkt[0] & 0x0F;
@@ -639,6 +646,7 @@ uint8_t statusMaxLevel() {
 // level is already brightness-scaled, 0-STATUS_RGB_LEVEL. Blue leans slightly toward cyan.
 uint32_t statusColorAt(uint8_t color, uint8_t level) {
   if (color == STATUS_WHITE) return rgbColor(level, level, level);
+  if (color == STATUS_PURPLE) return rgbColor(level, 0, level);
   return rgbColor(0, level / 3, level);
 }
 
@@ -666,6 +674,15 @@ void noteStatusActivity(uint8_t color) {
 
 void serviceStatusLed() {
   const uint32_t now = millis();
+
+  if (lastMainFrameMs == 0 || now - lastMainFrameMs > STATUS_LINK_SILENT_MS) {
+    statusLed.color = STATUS_PURPLE;
+    writeStatusLevel(((now / STATUS_LINK_BLINK_MS) % 2) ? statusMaxLevel() : 0);
+    statusLed.phase = STATUS_OFF; // a clean slate for whenever the link comes back
+    statusLed.currentLevel = 0;
+    return;
+  }
+
   const uint8_t maxLevel = statusMaxLevel();
 
   if (statusLed.activitySeen) {

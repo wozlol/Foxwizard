@@ -119,13 +119,14 @@ A board adding TRS 2-6 grounds GP14; nothing else changes in the firmware.
 5. Use a 4-port hub. Devices on hub ports above 4 are ignored. With no hub, a device plugged straight in counts as port 1.
 
 The Zero's onboard RGB LED (GP16) is a diagnostic light, off by default, the same no-blink ethic as
-the main brain's own activity lights:
+the main brain's own activity lights, with one deliberate exception for a dead link:
 
 | Light | Meaning |
 |---|---|
 | Blue, fading | Any MIDI activity through the sidecar (a hub USB port or a DIN/TRS port, either direction). Fades up over 1 s and back down over 1/2 s, follows the main brain's brightness knob. |
 | White, fading | The same fade, for a USB device (MIDI or not) just being plugged in. |
 | Purple, instant | Two flashes, right after a restart a USB fault caused. See Restart reports below. |
+| Purple, blinking fast | Nothing heard from the main brain for over 1 second: check the link wires, the ground wire, and that the main brain runs the Host Edition firmware. |
 
 USB-A devices and hubs have no CC, so the Zero's own 5.1 kΩ CC resistors don't matter. A USB-C device on a USB-C to USB-C cable will not power up from the Zero.
 
