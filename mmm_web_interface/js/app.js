@@ -671,7 +671,7 @@ function channelSelectOptions(selected) {
 // see the .mini-box-main CSS for how the centering (and, for boxes with a trailing .note-hint,
 // bottom-pinning that hint) actually works.
 function miniBoxMain(label, controlHtml) {
-  return `<div class="mini-box-main"><p class="mini-box-label">${label}</p>${controlHtml}</div>`;
+  return `<div class="mini-box-main"><p class="mini-box-label" title="${label}">${label}</p>${controlHtml}</div>`;
 }
 
 // A mini-box for a grid where every cell needs to look like the same kind of thing whether its
@@ -683,11 +683,16 @@ function miniBoxMain(label, controlHtml) {
 // controls are two separate grids stacked on top of each other, sharing the exact same column
 // template, so column N's title and column N's control always land in the same place whichever
 // row wrapping puts them in on a narrower screen. items: [{ label, control }].
+// A row of equal-weight settings boxes (title over control, selects and switches mixed). Two
+// grids stacked (all titles, then all controls) line up perfectly in one row, but fall apart the
+// moment the row wraps to two: wrapped titles pile up as their own block, disconnected from their
+// controls below. Keeping title+control together as one box that wraps as a unit avoids that, and
+// pinning every title to one line (not wrapping it) is what actually keeps every box in a given
+// row the same height, instead of a two-line label quietly making just that one box taller.
 function gridRow(items) {
-  return `<div class="looper-grid">
-    <div class="looper-titles">${items.map((it) => `<p class="mini-box-label">${it.label}</p>`).join('')}</div>
-    <div class="looper-controls">${items.map((it) => `<div class="mini-box-control">${it.control}</div>`).join('')}</div>
-  </div>`;
+  return `<div class="looper-grid">${items.map((it) =>
+    `<div class="mini-box">${miniBoxMain(it.label, `<div class="mini-box-control">${it.control}</div>`)}</div>`
+  ).join('')}</div>`;
 }
 
 function renderGlobalCard() {
