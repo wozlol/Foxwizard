@@ -97,7 +97,7 @@ constexpr uint8_t SYSEX_MFR_ID = 0x7D;   // reserved for non-commercial/educatio
 constexpr uint8_t SYSEX_DEVICE_ID = 0x4D; // 'M'
 constexpr uint8_t PROTOCOL_VERSION = 4; // 2: 45-byte routes with port masks, GET_STATUS. 3: clock settings, LEARN. 4: 53-byte routes with feature fields, feature blocks
 constexpr uint8_t FW_VERSION_MAJOR = 1;
-constexpr uint8_t FW_VERSION_MINOR = 45;
+constexpr uint8_t FW_VERSION_MINOR = 46;
 constexpr uint8_t FW_CHUNK_BYTES = 128;          // firmware bytes per FW_DATA message, 147 once packed
 constexpr uint32_t FW_REBOOT_DELAY_MS = 300;     // lets the FW_END ACK reach the host before rebooting
 const char DEVICE_NAME[] = "FoxWizard Mini MIDI Multitool"; // long name sent in the SysEx IDENTITY_REPLY
@@ -284,6 +284,9 @@ struct UsbOutSysexAccum {
   uint8_t buf[3];
   uint8_t len = 0;
 };
+// Forward declared with its default here: Arduino's auto-prototype generation doesn't pick up a
+// default argument reliably, and it can only be specified once between declaration and definition.
+void usbSysexByte(UsbOutSysexAccum &accum, uint8_t b, bool activity = true);
 
 struct DinParser {
   uint8_t runningStatus = 0;
@@ -3772,7 +3775,10 @@ void forwardCommonOrRealtime(uint8_t inputDevice, uint8_t statusByte, uint8_t da
 // ============================================================================================
 void handleSysexCommand(uint8_t sourcePort, const uint8_t *cmdBuf, uint8_t cmdLen);
 
-void usbSysexByte(UsbOutSysexAccum &accum, uint8_t b) {
+// activity: real musical data (routed/forwarded SysEx, a mapped Transport action) lights the LED.
+// Patchling's own protocol replies (ACKs, the background status poll every 2 s, route reads) don't
+// count — they aren't something the player did, lighting the LED for them would be noise.
+void usbSysexByte(UsbOutSysexAccum &accum, uint8_t b, bool activity) {
   accum.buf[accum.len++] = b;
   if (b == 0xF7) {
     uint8_t cin = 0x04 + accum.len;
@@ -3780,14 +3786,14 @@ void usbSysexByte(UsbOutSysexAccum &accum, uint8_t b) {
     for (uint8_t i = 0; i < accum.len; ++i) pkt[1 + i] = accum.buf[i];
     usbSend(pkt);
     accum.len = 0;
-    noteActivity(ledUsb);
+    if (activity) noteActivity(ledUsb);
     return;
   }
   if (accum.len == 3) {
     uint8_t pkt[4] = {0x04, accum.buf[0], accum.buf[1], accum.buf[2]};
     usbSend(pkt);
     accum.len = 0;
-    noteActivity(ledUsb);
+    if (activity) noteActivity(ledUsb);
   }
 }
 
@@ -3899,15 +3905,14 @@ void appendReply(uint8_t b) { if (replyLen < sizeof(replyBuf) - 1) replyBuf[repl
 void sendReply(uint8_t sourcePort) {
   appendReply(0xF7);
   if (sourcePort == DEV_TRS) {
-    trsSend(replyBuf, replyLen);
-    noteActivity(ledOut);
+    trsSend(replyBuf, replyLen); // a protocol reply, not activity, see usbSysexByte above
   } else if (sourcePort == DEV_HOST || sourcePort == DEV_TRS2) {
     UsbOutSysexAccum accum; // reply goes back out the sidecar port the command came in on
     const uint8_t port = (sourcePort == DEV_HOST) ? currentHostPort : LINK_PORT_DIN;
     for (uint8_t i = 0; i < replyLen; ++i) linkSysexByte(accum, &port, 1, replyBuf[i]);
   } else {
     UsbOutSysexAccum accum; // fresh accumulator: our own replies are always short + self-contained
-    for (uint8_t i = 0; i < replyLen; ++i) usbSysexByte(accum, replyBuf[i]);
+    for (uint8_t i = 0; i < replyLen; ++i) usbSysexByte(accum, replyBuf[i], false); // a protocol reply, not activity
   }
 }
 
