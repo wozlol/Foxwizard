@@ -97,7 +97,7 @@ constexpr uint8_t SYSEX_MFR_ID = 0x7D;   // reserved for non-commercial/educatio
 constexpr uint8_t SYSEX_DEVICE_ID = 0x4D; // 'M'
 constexpr uint8_t PROTOCOL_VERSION = 4; // 2: 45-byte routes with port masks, GET_STATUS. 3: clock settings, LEARN. 4: 53-byte routes with feature fields, feature blocks
 constexpr uint8_t FW_VERSION_MAJOR = 1;
-constexpr uint8_t FW_VERSION_MINOR = 46;
+constexpr uint8_t FW_VERSION_MINOR = 47;
 constexpr uint8_t FW_CHUNK_BYTES = 128;          // firmware bytes per FW_DATA message, 147 once packed
 constexpr uint32_t FW_REBOOT_DELAY_MS = 300;     // lets the FW_END ACK reach the host before rebooting
 const char DEVICE_NAME[] = "FoxWizard Mini MIDI Multitool"; // long name sent in the SysEx IDENTITY_REPLY
@@ -3809,6 +3809,9 @@ void linkSysexByte(UsbOutSysexAccum &accum, const uint8_t *ports, uint8_t portCo
 }
 
 void forwardSysexByte(uint8_t fromInputDevice, uint16_t destPorts, uint8_t b) {
+  // Genuinely forwarded SysEx, from whichever input it came in on — never our own protocol bytes,
+  // those never reach here (feedSysexByte only calls this once a message is classified FORWARDING).
+  noteActivity(fromInputDevice == DEV_USB ? ledUsb : ledIn);
   if (destPorts & PORT_TRS) {
     trsSend(&b, 1);
     noteActivity(ledOut);
@@ -4281,7 +4284,8 @@ void processDinByte(uint8_t b) {
   }
 
   if (dinSysex.phase != SysexState::IDLE || b == 0xF0) {
-    noteActivity(ledIn);
+    // Not here: a byte that turns out to be one of our own protocol commands isn't activity.
+    // Genuinely forwarded DIN SysEx pulses the LED on its own, from forwardSysexByte above.
     feedSysexByte(DEV_TRS, dinSysex, b);
     if (dinSysex.phase != SysexState::IDLE) return;
     if (b == 0xF0 || b == 0xF7) return;
@@ -4338,7 +4342,10 @@ void pumpDinIn() {
 // Shared by the USB device port and the host link, which both carry USB-MIDI packets.
 void handleUsbMidiPacket(uint8_t inputDevice, SysexState &sysex, const uint8_t packet[4]) {
   uint8_t cin = packet[0] & 0x0F;
-  noteActivity(inputDevice == DEV_USB ? ledUsb : ledIn);
+  // Not here for SysEx (0x04/0x06/0x07, and 0x05 closing one already in progress): a byte that
+  // turns out to be one of our own protocol commands (GET_STATUS and the like) isn't activity, see
+  // usbSysexByte above. Genuinely forwarded SysEx still pulses the LED on its own, from there.
+  // Every other kind below is always real data, so it pulses unconditionally.
 
   if (cin == 0x04) {
     feedSysexByte(inputDevice, sysex, packet[1]);
@@ -4357,14 +4364,17 @@ void handleUsbMidiPacket(uint8_t inputDevice, SysexState &sysex, const uint8_t p
     feedSysexByte(inputDevice, sysex, packet[3]);
     return;
   }
+  if (cin == 0x05 && sysex.phase != SysexState::IDLE) {
+    feedSysexByte(inputDevice, sysex, packet[1]); // lone 0xF7 closing a sysex
+    return;
+  }
+
+  noteActivity(inputDevice == DEV_USB ? ledUsb : ledIn);
+
   if (cin == 0x05) {
-    if (sysex.phase != SysexState::IDLE) {
-      feedSysexByte(inputDevice, sysex, packet[1]); // lone 0xF7 closing a sysex
-    } else {
-      // Realtime (>=0xF8) or a 1-byte System Common message (Tune Request 0xF6) — both route
-      // through forwardCommonOrRealtime, which tells them apart by the status byte itself.
-      forwardCommonOrRealtime(inputDevice, packet[1], 0, 0, 1);
-    }
+    // Realtime (>=0xF8) or a 1-byte System Common message (Tune Request 0xF6) — both route through
+    // forwardCommonOrRealtime, which tells them apart by the status byte itself.
+    forwardCommonOrRealtime(inputDevice, packet[1], 0, 0, 1);
     return;
   }
   if (cin == 0x02) { // 2-byte System Common: MTC Quarter Frame (0xF1) or Song Select (0xF3)
