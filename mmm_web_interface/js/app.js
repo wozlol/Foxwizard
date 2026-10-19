@@ -1738,7 +1738,7 @@ function launchpadSectionHtml(route, index) {
           { label: 'Start Note', control: `<select data-lp-quad-field="startNote" ${qAttrs}>${noteSelectOptions(quad.startNote)}</select>` }
         ] : [])
       ]) : ''}
-      <div class="lp-buttons-header">
+      ${on ? `<div class="lp-buttons-header">
         <p class="note-hint">Button light color is a raw Launchpad velocity, 0 keeps the usual channel-color indicator.</p>
         <button type="button" class="btn btn-ghost btn-tiny" data-action="resetLpDefaults">Reset to Defaults</button>
       </div>
