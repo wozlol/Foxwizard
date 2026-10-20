@@ -1604,21 +1604,7 @@ function renderRouteCard(route, index, animateStaple) {
               </div>
               <p class="note-hint cc-map-hint">CC range now begins with this CC.</p>
             </div>
-            ${looperMapped() ? `<div class="field-row">
-              ${switchHtml(index, 'looperEnabled', route.looperEnabled !== false, 'Looper', 'switch-green')}
-            </div>` : ''}
-            <div class="field-row">
-              ${switchHtml(index, 'monoRetrig', !!route.monoRetrig, 'Mono Retrig')}
-              ${route.monoRetrig ? '<p class="note-hint">Poly to Mono. Helps samplers play more like analog CV synths. Lifting a key recalls the next still-held key.</p>' : ''}
-            </div>
-            <div class="field-row">
-              <div class="round-robin-row">
-                ${switchHtml(index, 'roundRobin', !!route.roundRobin, 'Round Robin')}
-                ${route.roundRobin ? switchHtml(index, 'roundRobinRandom', !!route.roundRobinRandom, 'Rand', 'cc-map-row-indent') : ''}
-              </div>
-              ${route.roundRobin ? `<p class="note-hint">Mono to Poly. ${route.roundRobinRandom ? 'Picks a random selected channel for each new note.' : 'Cycles each new note to a different selected channel.'}</p>` : ''}
-            </div>
-            ${featuresSupported() ? mapSectionHtml(route, index, 'note') + mapSectionHtml(route, index, 'cc') + launchpadSectionHtml(route, index) + scaleSectionHtml(route, index) + autoChordSectionHtml(route, index) + arpSectionHtml(route, index) + echoSectionHtml(route, index) + stutterSectionHtml(route, index) + plockSectionHtml(route, index) : ''}
+            ${toggleRowsHtml(route, index)}
           </div>
         </div>
       </div>
@@ -2169,6 +2155,32 @@ routesContainer.addEventListener('click', async (e) => {
 
 // A feature switch that's off takes half the column, so off switches sit two to a row. Its section
 // takes the whole width once it's on.
+// The switch rows under CC Map Start. Closed ones stay on top in their usual order, and the ones
+// opened up (settings or a hint showing) pile up below, so no closed switch sits between open ones.
+function toggleRowsHtml(route, index) {
+  const rows = [];
+  if (looperMapped()) rows.push([false, `<div class="field-row">
+              ${switchHtml(index, 'looperEnabled', route.looperEnabled !== false, 'Looper', 'switch-green')}
+            </div>`]);
+  rows.push([!!route.monoRetrig, `<div class="field-row">
+              ${switchHtml(index, 'monoRetrig', !!route.monoRetrig, 'Mono Retrig')}
+              ${route.monoRetrig ? '<p class="note-hint">Poly to Mono. Helps samplers play more like analog CV synths. Lifting a key recalls the next still-held key.</p>' : ''}
+            </div>`]);
+  rows.push([!!route.roundRobin, `<div class="field-row">
+              <div class="round-robin-row">
+                ${switchHtml(index, 'roundRobin', !!route.roundRobin, 'Round Robin')}
+                ${route.roundRobin ? switchHtml(index, 'roundRobinRandom', !!route.roundRobinRandom, 'Rand', 'cc-map-row-indent') : ''}
+              </div>
+              ${route.roundRobin ? `<p class="note-hint">Mono to Poly. ${route.roundRobinRandom ? 'Picks a random selected channel for each new note.' : 'Cycles each new note to a different selected channel.'}</p>` : ''}
+            </div>`]);
+  if (featuresSupported()) {
+    const sections = [mapSectionHtml(route, index, 'note'), mapSectionHtml(route, index, 'cc'), launchpadSectionHtml(route, index),
+      scaleSectionHtml(route, index), autoChordSectionHtml(route, index), arpSectionHtml(route, index),
+      echoSectionHtml(route, index), stutterSectionHtml(route, index), plockSectionHtml(route, index)];
+    for (const html of sections) rows.push([html.trimStart().startsWith(`<div class="${featureRowClass(true)}"`), html]);
+  }
+  return rows.filter(r => !r[0]).map(r => r[1]).join('') + rows.filter(r => r[0]).map(r => r[1]).join('');
+}
 function featureRowClass(on) {
   return on ? 'field-row field-row-wide feature-open' : 'field-row';
 }
