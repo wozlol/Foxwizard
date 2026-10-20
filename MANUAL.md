@@ -139,7 +139,7 @@ Each note the route plays repeats at the echo division, fading out.
 | Echo After Route | on (default): echoes what the route sends. Off: echoes the notes coming in, so the repeats go through the route too (arped, scaled). |
 | Repeats | 1-32 |
 | Level % | how loud the repeats start |
-| Bounce | Bounce 1-8 brings each repeat closer than the last, like a dropping ball. Slow 1-8 spreads them out. Off keeps them even. |
+| Bounce | each gap is a fraction of the last, heard from the first repeat. Bounce 1/2 halves it every time, like a ball settling fast, then 2/3, 3/4 out to 8/9. Slow 2/1 to 9/8 makes the gaps grow instead. Off keeps them even. |
 | Natural Fade | each repeat loses the same share of loudness, like a bouncing ball, instead of an even fade |
 | Division | division table |
 

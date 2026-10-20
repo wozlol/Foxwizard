@@ -97,7 +97,7 @@ constexpr uint8_t SYSEX_MFR_ID = 0x7D;   // reserved for non-commercial/educatio
 constexpr uint8_t SYSEX_DEVICE_ID = 0x4D; // 'M'
 constexpr uint8_t PROTOCOL_VERSION = 4; // 2: 45-byte routes with port masks, GET_STATUS. 3: clock settings, LEARN. 4: 53-byte routes with feature fields, feature blocks
 constexpr uint8_t FW_VERSION_MAJOR = 1;
-constexpr uint8_t FW_VERSION_MINOR = 63;
+constexpr uint8_t FW_VERSION_MINOR = 64;
 constexpr uint8_t FW_CHUNK_BYTES = 128;          // firmware bytes per FW_DATA message, 147 once packed
 constexpr uint32_t FW_REBOOT_DELAY_MS = 300;     // lets the FW_END ACK reach the host before rebooting
 const char DEVICE_NAME[] = "FoxWizard Mini MIDI Multitool"; // long name sent in the SysEx IDENTITY_REPLY
@@ -2330,24 +2330,25 @@ void echoEngineTap(uint8_t channel, bool on, uint8_t note, uint8_t velocity) {
   fw::EchoConfig config;
   config.delayUs = (uint32_t)fw::divisionDurationUs(echoCurrentDivision(), clockEngine.bpm());
   config.wetPercent = echoSettings.level >= 1 && echoSettings.level <= 100 ? echoSettings.level : 70;
-  // Bounce: each gap is the last one times the same ratio, the way a ball's bounces shorten (or,
-  // negative, lengthen). Level 1 is gentle, a marble on glass rattling down; 8 is a fast settle.
-  static const uint8_t BOUNCE_DRIFT[8] = {16, 12, 9, 7, 5, 4, 3, 2}; // the engine's drift: the gap halves (or doubles) over this many repeats
+  // Bounce (1.64): each gap is a harmonic fraction of the last, heard from the first repeat.
+  // Bounce 8 halves it every time, a ball settling fast, then 2/3, 3/4 ... Bounce 1 is 8/9. Slow is
+  // the same fractions upside down, so the gaps grow: Slow 8 doubles them.
   const int8_t b = echoSettings.bounce;
   float ratio = 1.0f;
   if (b >= -8 && b <= 8 && b != 0) {
-    const uint8_t m = BOUNCE_DRIFT[(b > 0 ? b : -b) - 1];
-    config.drift = b > 0 ? (int8_t)m : -(int8_t)m;
-    ratio = powf(2.0f, (b > 0 ? -1.0f : 1.0f) / m);
+    const float n = 9 - (b > 0 ? b : -b); // 1 for 8, 8 for 1
+    ratio = b > 0 ? n / (n + 1.0f) : (n + 1.0f) / n;
+    config.spacingFactorQ16 = (uint32_t)(ratio * 65536.0f + 0.5f);
   }
-  // Long enough for all the repeats at their changing gaps, then the echo lets go.
+  // Long enough for all the repeats at their changing gaps, then the echo lets go. At most a minute.
   float span = 0.0f, gap = 1.0f;
   for (uint8_t k = 0; k <= repeats; ++k) { span += gap; gap *= ratio; }
-  config.lengthUs = (uint32_t)(config.delayUs * span);
+  const float lengthUs = config.delayUs * span;
+  config.lengthUs = lengthUs > 60e6f ? 60000000u : (uint32_t)lengthUs;
   if (echoSettings.naturalFade) {
-    // Louder repeats lose the same share each time: with Bounce, the share the gap shrinks (or
-    // grows) by, so loudness and timing settle together; without it, down to an eighth by the last.
-    const float decay = b ? (ratio < 1.0f ? ratio : 1.0f / ratio) : powf(0.125f, 1.0f / repeats);
+    // Louder repeats lose the same share each time: with Bounce, the square root of the gap's share,
+    // so the repeats stay audible as they speed up; without it, down to an eighth by the last.
+    const float decay = b ? sqrtf(ratio < 1.0f ? ratio : 1.0f / ratio) : powf(0.125f, 1.0f / repeats);
     config.velocityDecayQ16 = (uint32_t)(decay * 65536.0f + 0.5f);
   }
   echoEngine.noteOn(now, 0, 0x90 | channel, note, velocity, config);

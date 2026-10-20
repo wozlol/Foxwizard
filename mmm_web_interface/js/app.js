@@ -1940,12 +1940,13 @@ function arpSectionHtml(route, index) {
 
 // Echo: each note the route sends repeats at the echo division, fading out over its repeats. A
 // division square's trigger latches its division, pressed again it goes back to the default.
-// Bounce (1.59): Bounce 1-8 brings each repeat closer than the last, a dropping ball, 1 a marble
-// rattling on glass, 8 a quick settle. Slow 1-8 spreads them out instead.
+// Bounce (1.64): each gap is a harmonic fraction of the last. Bounce 1/2 halves it every repeat, a
+// ball settling fast, out to 8/9. Slow is the same fractions upside down, so the gaps grow.
+// Stored as -8..8, 8 the strongest Bounce.
 const ECHO_BOUNCES = [
-  ...Array.from({ length: 8 }, (_, k) => [-(8 - k), `Slow ${8 - k}`]),
+  ...Array.from({ length: 8 }, (_, k) => [-(8 - k), `Slow ${k + 2}/${k + 1}`]),
   [0, 'Off'],
-  ...Array.from({ length: 8 }, (_, k) => [k + 1, `Bounce ${k + 1}`])
+  ...Array.from({ length: 8 }, (_, k) => [k + 1, `Bounce ${8 - k}/${9 - k}`])
 ];
 
 routesContainer.addEventListener('change', (e) => {

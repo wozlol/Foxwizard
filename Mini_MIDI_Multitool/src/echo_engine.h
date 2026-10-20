@@ -23,6 +23,8 @@ struct EchoConfig {
   // FoxWizard 1.59: each repeat's velocity times this (Q16) instead of the even fade over the
   // echo's length, the way a bouncing ball loses the same share of its energy every bounce. 0 off.
   uint32_t velocityDecayQ16 = 0;
+  // FoxWizard 1.64: each gap is the last one times this (Q16), used instead of drift. 0 off.
+  uint32_t spacingFactorQ16 = 0;
 };
 
 class EchoEngine {

@@ -82,7 +82,7 @@ void EchoEngine::noteOn(uint64_t nowUs, uint8_t target, uint8_t status,
   sequence->endUs = nowUs + config.lengthUs;
   sequence->nextOnUs = sequence->firstRepeatUs;
   sequence->spacingUs = config.delayUs;
-  sequence->driftFactorQ16 = driftFactorQ16(config.drift);
+  sequence->driftFactorQ16 = config.spacingFactorQ16 ? config.spacingFactorQ16 : driftFactorQ16(config.drift);
   sequence->id = nextSequenceId_++;
   if (nextSequenceId_ == 0) nextSequenceId_ = 1;
   sequence->target = target;
