@@ -336,6 +336,8 @@ for Patchling's piano. No reply.
 
 **CLEAR_PLOCKS (0x34, 1.59):** no payload. Forgets every Per-Note Parameter Lock. No reply.
 
+**GET_HOST_REPORT (0x35, 1.63):** payload: page (0 or 1). Reply HOST_REPORT_DATA (0x36): page, complete (1 when every piece of the report has arrived from the host brain), then pack7 of that page's 120 bytes. The 240-byte report is the host brain's record of its last recovery restart, layout in `foxwizard_link.h`. All zero until a host brain with firmware 3 or later restarts.
+
 ## Terminology: Poly Aftertouch vs. Channel Pressure
 
 MIDI has two unrelated messages both colloquially called "aftertouch," and this protocol (and the

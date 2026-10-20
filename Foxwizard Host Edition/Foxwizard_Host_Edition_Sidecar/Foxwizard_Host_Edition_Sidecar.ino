@@ -68,7 +68,7 @@ constexpr uint8_t PIN_TRS_BOARD = 14; // floating (its internal pull-up): a bare
                                        // Tells the main brain whether TRS 2-6 physically exist.
 
 constexpr uint32_t DIN_BAUD = 31250;
-constexpr uint8_t HOST_FW_VERSION = 2;
+constexpr uint8_t HOST_FW_VERSION = 3; // 3: the host report
 
 constexpr uint8_t HUB_PORTS = 4;
 constexpr uint8_t DIN_OUTS = 5;
@@ -161,6 +161,91 @@ uint32_t lastMainFrameMs = 0; // any frame heard from the main brain, link-down 
 
 uint32_t rgbColor(uint8_t r, uint8_t g, uint8_t b) { return ((uint32_t)r << 16) | ((uint32_t)g << 8) | b; }
 
+// ============================================================================================
+// Black box. Kept in RAM the startup code leaves alone, so it survives every restart but a power
+// cycle. It's kept up as things happen, so even a watchdog restart (nothing gets to run first)
+// leaves it telling what each port was doing and where the loop was. At the next start it becomes
+// the host report (layout in foxwizard_link.h), sent to the main brain for Patchling to show.
+// ============================================================================================
+constexpr uint32_t BLACK_BOX_MAGIC = 0xB1AC0B03;
+struct BlackBoxPort {
+  uint16_t vid, pid;
+  uint32_t sent, received;  // packets the device accepted, and packets read from it
+  uint8_t last[4];          // the last packet it accepted
+  uint8_t stuck[4];         // at a recovery restart: the packet waiting at the front of its queue
+  uint16_t queued;          // at a recovery restart: packets waiting
+  uint16_t idleMs;          // at a recovery restart: time since it last took anything
+  bool mounted, writable, skipLogged;
+};
+struct BlackBoxEvent { uint32_t ms; uint8_t type, port, a, b; };
+struct BlackBox {
+  uint32_t magic;
+  uint32_t uptimeMs;
+  uint32_t maxLoopUs;
+  uint32_t stallDrops;
+  uint8_t stage, devices, eventHead, eventCount;
+  BlackBoxPort port[HUB_PORTS];
+  BlackBoxEvent events[HOST_REPORT_EVENTS];
+};
+BlackBox __uninitialized_ram(blackBox);
+uint8_t hostReport[HOST_REPORT_BYTES];
+bool haveHostReport = false;
+uint8_t reportPassesLeft = 0; // passes still to send, one per heartbeat
+uint16_t reportNext = 0xFFFF;  // next frame of the pass being sent, 0xFFFF none
+
+void logEvent(uint8_t type, uint8_t port, uint8_t a = 0, uint8_t b = 0) {
+  BlackBoxEvent &e = blackBox.events[blackBox.eventHead];
+  e = BlackBoxEvent{millis(), type, port, a, b};
+  blackBox.eventHead = (blackBox.eventHead + 1) % HOST_REPORT_EVENTS;
+  if (blackBox.eventCount < HOST_REPORT_EVENTS) ++blackBox.eventCount;
+}
+
+void put16(uint8_t *p, uint32_t v) { const uint16_t c = v > 0xFFFF ? 0xFFFF : v; p[0] = c & 0xFF; p[1] = c >> 8; }
+void put32(uint8_t *p, uint32_t v) { for (uint8_t i = 0; i < 4; ++i) p[i] = (v >> (8 * i)) & 0xFF; }
+
+void buildHostReport(uint8_t reason, uint8_t port, uint32_t count) {
+  uint8_t *r = hostReport;
+  memset(r, 0, HOST_REPORT_BYTES);
+  r[0] = HOST_REPORT_LAYOUT;
+  r[1] = reason;
+  r[2] = port;
+  r[3] = blackBox.stage;
+  put32(r + 4, blackBox.uptimeMs);
+  put16(r + 8, blackBox.maxLoopUs);
+  put16(r + 10, blackBox.stallDrops);
+  r[12] = blackBox.devices;
+  r[13] = count > 255 ? 255 : count;
+  r[14] = HOST_FW_VERSION;
+  for (uint8_t p = 0; p < HUB_PORTS; ++p) {
+    const BlackBoxPort &b = blackBox.port[p];
+    uint8_t *q = r + 16 + p * HOST_REPORT_PORT_BYTES;
+    q[0] = (b.mounted ? 1 : 0) | (b.writable ? 2 : 0);
+    put16(q + 1, b.vid);
+    put16(q + 3, b.pid);
+    put32(q + 5, b.sent);
+    put32(q + 9, b.received);
+    memcpy(q + 13, b.last, 4);
+    memcpy(q + 17, b.stuck, 4);
+    put16(q + 21, b.queued);
+    q[23] = b.idleMs / 100 > 255 ? 255 : b.idleMs / 100;
+  }
+  const uint8_t n = blackBox.eventCount > HOST_REPORT_EVENTS ? HOST_REPORT_EVENTS : blackBox.eventCount;
+  for (uint8_t i = 0; i < n; ++i) {
+    const BlackBoxEvent &e = blackBox.events[(blackBox.eventHead + HOST_REPORT_EVENTS - n + i) % HOST_REPORT_EVENTS];
+    uint8_t *q = r + 16 + HUB_PORTS * HOST_REPORT_PORT_BYTES + i * 8;
+    put32(q, e.ms);
+    q[4] = e.type; q[5] = e.port; q[6] = e.a; q[7] = e.b;
+  }
+}
+
+void resetBlackBox() {
+  memset(&blackBox, 0, sizeof(blackBox));
+  blackBox.magic = BLACK_BOX_MAGIC;
+}
+
+// A recovery restart notes each port's queue first, which a watchdog restart can't.
+void snapshotPortsForRestart();
+
 // Restart reporting. A recovery reboot tags watchdog scratch register 0 with its reason first.
 // Scratch registers survive a watchdog reboot but not power-up. A watchdog reboot without a tag
 // means the loop stopped: usually the USB driver halting on a device error.
@@ -170,6 +255,7 @@ uint8_t restartPort = 0;
 uint32_t restartCount = 0;
 
 void readRestartReason() {
+  const bool boxValid = blackBox.magic == BLACK_BOX_MAGIC;
   if (watchdog_caused_reboot()) {
     const uint32_t tag = watchdog_hw->scratch[0];
     if ((tag & 0xFFFFF000) == RESTART_TAG) {
@@ -182,9 +268,18 @@ void readRestartReason() {
   }
   watchdog_hw->scratch[0] = 0;
   watchdog_hw->scratch[1] = restartCount;
+  if (restartReason != RESTART_NONE && boxValid) {
+    buildHostReport(restartReason, restartPort, restartCount);
+    haveHostReport = true;
+    reportPassesLeft = 6; // three seconds of heartbeats, in case the main brain is still starting
+  }
+  resetBlackBox();
+  logEvent(HOST_EVENT_BOOT, 0, restartReason);
 }
 
 void recoveryRestart(uint8_t reason, uint8_t port) {
+  snapshotPortsForRestart();
+  logEvent(HOST_EVENT_RESTART, port, reason);
   watchdog_hw->scratch[0] = RESTART_TAG | ((uint32_t)reason << 8) | port;
   rp2040.reboot();
 }
@@ -193,6 +288,7 @@ void recoveryRestart(uint8_t reason, uint8_t port) {
 // the USB interrupt. Restarts at once with the fault as the reason, instead of halting until the
 // watchdog fires.
 extern "C" void foxwizard_usb_fault(uint8_t fault) {
+  logEvent(HOST_EVENT_FAULT, 0, fault);
   switch (fault) {
     case FOXWIZARD_FAULT_DATA_SEQ: recoveryRestart(RESTART_DATA_SEQ, 0); break;
     case FOXWIZARD_FAULT_STALL: recoveryRestart(RESTART_STALL, 0); break;
@@ -228,6 +324,7 @@ bool portMapDirty = true;
 bool trsBoard = false; // read once in setup(): PIN_TRS_BOARD grounded, so TRS 2-6 are wired
 uint32_t lastPortMapMs = 0;
 uint32_t usbStallDrops = 0;
+
 
 // ============================================================================================
 // Link out to the main brain. Realtime and control frames always go first. Ordinary frames
@@ -285,6 +382,13 @@ void serviceControlOut() {
     sendToMain(LINK_PORT_CONTROL, restart);
     portMapDirty = false;
     lastPortMapMs = now;
+    if (haveHostReport && reportPassesLeft && reportNext == 0xFFFF) { --reportPassesLeft; reportNext = 0; }
+  }
+  // The report goes a little at a time, leaving room for clock and control frames.
+  while (reportNext < HOST_REPORT_BYTES / 2 && toMainRt.freeSlots(false) > 16) {
+    uint8_t pkt[4] = {CONTROL_HOST_REPORT, (uint8_t)reportNext, hostReport[reportNext * 2], hostReport[reportNext * 2 + 1]};
+    sendToMain(LINK_PORT_CONTROL, pkt);
+    if (++reportNext >= HOST_REPORT_BYTES / 2) reportNext = 0xFFFF;
   }
 
   // Bytes still in the UART buffer count as 5 to a frame.
@@ -348,6 +452,8 @@ void dispatchFromMain() {
       if (usbStalled(hp)) {
         toUsb[i] = false;
         ++usbStallDrops;
+        blackBox.stallDrops = usbStallDrops;
+        if (!blackBox.port[i].skipLogged) { blackBox.port[i].skipLogged = true; logEvent(HOST_EVENT_SKIP, i + 1); }
         continue;
       }
       ready = false;
@@ -406,6 +512,10 @@ void pumpUsbOuts() {
       MidiPacket *pkt;
       while ((pkt = (q == 0 ? hp.rt.peek() : hp.normal.peek())) != nullptr) {
         if (!tuh_midi_packet_write(hp.midiIdx, pkt->b)) break; // TinyUSB buffer full, retry next loop
+        BlackBoxPort &bb = blackBox.port[&hp - hubPorts];
+        memcpy(bb.last, pkt->b, 4);
+        ++bb.sent;
+        bb.skipLogged = false;
         if (q == 0) hp.rt.pop(); else hp.normal.pop();
         wrote = true;
       }
@@ -422,6 +532,19 @@ void pumpUsbOuts() {
 // ============================================================================================
 // Link input from the main brain
 // ============================================================================================
+void snapshotPortsForRestart() {
+  const uint32_t now = millis();
+  for (uint8_t p = 0; p < HUB_PORTS; ++p) {
+    HubPort &hp = hubPorts[p];
+    BlackBoxPort &bb = blackBox.port[p];
+    MidiPacket *head = hp.rt.peek();
+    if (!head) head = hp.normal.peek();
+    if (head) memcpy(bb.stuck, head->b, 4); else memset(bb.stuck, 0, 4);
+    bb.queued = hp.rt.size() + hp.normal.size();
+    bb.idleMs = now - hp.lastProgressMs > 0xFFFF ? 0xFFFF : now - hp.lastProgressMs;
+  }
+}
+
 void pumpLinkIn() {
   uint16_t budget = LINK_RX_BUDGET;
   while (budget-- && Serial1.available() > 0) {
@@ -565,6 +688,12 @@ void tuh_midi_mount_cb(uint8_t idx, const tuh_midi_mount_cb_t *mount_cb_data) {
   hp.midiIdx = idx;
   midiIdxToPort[idx] = port;
   portMapDirty = true;
+  BlackBoxPort &bb = blackBox.port[port - 1];
+  bb = BlackBoxPort{};
+  tuh_vid_pid_get(mount_cb_data->daddr, &bb.vid, &bb.pid);
+  bb.mounted = true;
+  bb.writable = hp.writable;
+  logEvent(HOST_EVENT_MOUNT, port);
 }
 
 // Any device at all, so the diagnostic light can tell "nothing plugged in" from "not USB MIDI".
@@ -572,12 +701,14 @@ void tuh_mount_cb(uint8_t daddr) {
   tusb_desc_device_t desc;
   if (tuh_descriptor_get_device_local(daddr, &desc) && desc.bDeviceClass == TUSB_CLASS_HUB) return; // cached copy, no USB transfer
   ++usbDevicesMounted;
+  blackBox.devices = usbDevicesMounted;
   noteStatusActivity(STATUS_WHITE);
 }
 
 void tuh_umount_cb(uint8_t daddr) {
   (void)daddr;
   if (usbDevicesMounted > 0) --usbDevicesMounted;
+  blackBox.devices = usbDevicesMounted;
 }
 
 void tuh_midi_umount_cb(uint8_t idx) {
@@ -587,6 +718,8 @@ void tuh_midi_umount_cb(uint8_t idx) {
   if (port == 0) return;
   resetHubPort(hubPorts[port - 1]);
   portMapDirty = true;
+  blackBox.port[port - 1].mounted = false; // the rest stays, for a report
+  logEvent(HOST_EVENT_UNMOUNT, port);
 }
 
 // Reads a device only while the link queue has room for a whole USB packet's worth. Otherwise the
@@ -601,6 +734,7 @@ void pumpUsbIn() {
       if (n == 0) break;
       for (uint32_t i = 0; i + 3 < n; i += 4) {
         if ((buf[i] & 0x0F) < 2) continue; // CIN 0/1 reserved, also skips zero padding
+        ++blackBox.port[p].received;
         sendToMain(p + 1, &buf[i]);
       }
       hp.blinkUntilMs = millis() + LED_BLINK_MS;
@@ -809,20 +943,35 @@ void setup() {
 }
 
 void loop() {
+  static uint32_t loopStartUs = 0;
+  const uint32_t nowUs = micros();
+  if (loopStartUs && nowUs - loopStartUs > blackBox.maxLoopUs) blackBox.maxLoopUs = nowUs - loopStartUs;
+  loopStartUs = nowUs;
+  blackBox.uptimeMs = millis();
   rp2040.wdt_reset();
+  blackBox.stage = HOST_STAGE_USB_TASK;
   USBHost.task();
 
+  blackBox.stage = HOST_STAGE_LINK_IN;
   pumpLinkIn();
+  blackBox.stage = HOST_STAGE_DIN_IN;
   pumpDinIn();
+  blackBox.stage = HOST_STAGE_USB_IN;
   pumpUsbIn();
 
+  blackBox.stage = HOST_STAGE_DISPATCH;
   dispatchFromMain();
+  blackBox.stage = HOST_STAGE_USB_OUT;
   pumpUsbOuts();
+  blackBox.stage = HOST_STAGE_DIN_OUT;
   pumpDinOuts();
 
+  blackBox.stage = HOST_STAGE_CONTROL;
   serviceControlOut();
+  blackBox.stage = HOST_STAGE_LINK_OUT;
   pumpLinkOut();
 
+  blackBox.stage = HOST_STAGE_LEDS;
   serviceLeds();
   serviceStatusLed();
 }

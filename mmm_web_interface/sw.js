@@ -1,7 +1,7 @@
 // FoxWizard Patchling — offline app shell cache.
 // CACHE_NAME carries the Patchling version, which is always the firmware version.
 // firmware/build_firmware.sh checks it.
-const CACHE_NAME = 'foxwizard-patchling-1.62';
+const CACHE_NAME = 'foxwizard-patchling-1.63';
 const SHELL_FILES = [
   './',
   './index.html',
@@ -9,8 +9,10 @@ const SHELL_FILES = [
   './css/style.css',
   './js/app.js',
   './js/midi.js',
+  './js/mapper.js',
   './js/presetXml.js',
   './js/dragReorder.js',
+  './js/hostReport.js',
   './icons/icon.svg',
   './icons/icon-192.png',
   './icons/icon-512.png',

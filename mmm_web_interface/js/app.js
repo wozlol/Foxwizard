@@ -2,6 +2,7 @@ import { ACT, MAP_ENTRIES, defaultAction, defaultLpActions, actionEditorHtml, ap
 import { DeviceLink, DATA_TYPE_BITS, ROUTE_NAME_MAX_LEN, PORTS, PORT_TRS, PORT_USB, SIDECAR_INPUT_PORTS, SIDECAR_OUTPUT_PORTS, SIDECAR_TRS_PORTS, FEATURE, SCALES, LAYOUTS, defaultScale, ARP_SLOTS, ARP_MODES, ARP_MODE_ORDER, ARP_SQUARES, DIVISIONS, defaultArp, defaultEcho, defaultStutter, defaultLooper, defaultLpQuad, noTrigger, STUTTER_RUNOUTS, snapRunout, defaultPlock } from './midi.js';
 import { serializePreset, parsePreset, downloadPreset, readPresetFile, channelsToRangeString } from './presetXml.js';
 import { attachDragReorder } from './dragReorder.js';
+import { parseHostReport, hostReportSummary, hostReportText } from './hostReport.js';
 
 // ============================================================================================
 // Icons
@@ -486,6 +487,26 @@ function restartMessage(status) {
   }
 }
 
+// 1.63: the Host Edition's own report of its last restart, null when the firmware can't give one.
+async function fetchHostReport() {
+  const v = deviceVersion();
+  if (!v || v.major < 1 || (v.major === 1 && v.minor < 63)) return null;
+  try {
+    const { bytes } = await device.getHostReport();
+    return parseHostReport(bytes);
+  } catch (err) { return null; }
+}
+
+async function showHostReport() {
+  const report = await fetchHostReport();
+  const text = hostReportText(report, restartMessage(lastHostStatus));
+  const pre = text.replace(/[&<>]/g, c => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;' }[c]));
+  openDialog('Host Edition Report', `<pre class="host-report">${pre}</pre>`, [
+    { label: 'Copy', kind: 'ghost', onClick: () => navigator.clipboard.writeText(text).then(() => toast('Report copied', 'success'), () => {}) },
+    { label: 'Close', kind: 'primary' }
+  ]);
+}
+
 async function refreshSidecarStatus() {
   if (!device.connected || updateInProgress || !overlay.hidden) return;
   let status;
@@ -501,12 +522,17 @@ async function refreshSidecarStatus() {
     if (hostRestartCount !== null && status.restartCount > hostRestartCount) {
       // USB driver resets (data sequence 3, device change 4) recover on their own: a brief yellow note.
       // Every other reason stays up in red until clicked.
-      if (status.restartReason === 3 || status.restartReason === 4) {
-        toast(restartMessage(status), 'warn');
-      } else {
-        const time = new Date().toLocaleTimeString();
-        toast(`${time} ${restartMessage(status)} (click to dismiss)`, 'error', true);
-      }
+      // The report arrives over the next second or two, after the restart itself.
+      const time = new Date().toLocaleTimeString();
+      setTimeout(async () => {
+        const summary = hostReportSummary(await fetchHostReport());
+        const more = summary ? ` ${summary} Click the Connected badge for the full report.` : '';
+        if (status.restartReason === 3 || status.restartReason === 4) {
+          toast(`${restartMessage(status)}.${more}`, 'warn');
+        } else {
+          toast(`${time} ${restartMessage(status)}.${more} (click to dismiss)`, 'error', true);
+        }
+      }, 2500);
     }
     hostRestartCount = status.restartCount;
   }
@@ -592,7 +618,8 @@ connectionPill.addEventListener('click', async () => {
   }
   await latestFirmwareReady;
   if (sidecarPresent && lastHostStatus?.restartCount > 0) {
-    toast(`Last recovery: ${restartMessage(lastHostStatus)}. ${lastHostStatus.restartCount} since the Host Edition powered up. (click to dismiss)`, (lastHostStatus.restartReason === 3 || lastHostStatus.restartReason === 4) ? 'warn' : 'error', true);
+    await showHostReport();
+    return;
   }
   const status = firmwareStatus();
   if (status === 'current') toast(`Firmware ${versionText(deviceVersion())} is up to date`, 'success');

@@ -29,6 +29,8 @@ export const CMD = {
   PREVIEW_BRIGHTNESS: 0x30,
   PLAY_NOTE: 0x33,
   CLEAR_PLOCKS: 0x34,
+  GET_HOST_REPORT: 0x35,
+  HOST_REPORT_DATA: 0x36,
   COMMIT: 0x31,
   FACTORY_RESET: 0x32,
   FW_BEGIN: 0x40,
@@ -747,6 +749,18 @@ export class DeviceLink extends EventTarget {
   async getFeature(type) {
     const reply = await this._sendAndWait([CMD.GET_FEATURE, type], CMD.FEATURE_DATA, DEFAULT_TIMEOUT_MS);
     return unpack7(reply.slice(1));
+  }
+
+  /** 1.63: the host brain's report from its last restart, { complete, bytes } (240 bytes). */
+  async getHostReport() {
+    const bytes = [];
+    let complete = true;
+    for (const page of [0, 1]) {
+      const reply = await this._sendAndWait([CMD.GET_HOST_REPORT, page], CMD.HOST_REPORT_DATA, DEFAULT_TIMEOUT_MS);
+      complete = complete && reply[1] === 1;
+      bytes.push(...unpack7(reply.slice(2)).slice(0, 120));
+    }
+    return { complete, bytes };
   }
 
   async setFeature(type, bytes) {

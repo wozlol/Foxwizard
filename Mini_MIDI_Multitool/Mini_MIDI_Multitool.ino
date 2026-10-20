@@ -97,7 +97,7 @@ constexpr uint8_t SYSEX_MFR_ID = 0x7D;   // reserved for non-commercial/educatio
 constexpr uint8_t SYSEX_DEVICE_ID = 0x4D; // 'M'
 constexpr uint8_t PROTOCOL_VERSION = 4; // 2: 45-byte routes with port masks, GET_STATUS. 3: clock settings, LEARN. 4: 53-byte routes with feature fields, feature blocks
 constexpr uint8_t FW_VERSION_MAJOR = 1;
-constexpr uint8_t FW_VERSION_MINOR = 62;
+constexpr uint8_t FW_VERSION_MINOR = 63;
 constexpr uint8_t FW_CHUNK_BYTES = 128;          // firmware bytes per FW_DATA message, 147 once packed
 constexpr uint32_t FW_REBOOT_DELAY_MS = 300;     // lets the FW_END ACK reach the host before rebooting
 const char DEVICE_NAME[] = "FoxWizard Mini MIDI Multitool"; // long name sent in the SysEx IDENTITY_REPLY
@@ -136,6 +136,8 @@ enum SysexCmd : uint8_t {
   CMD_PREVIEW_BRIGHTNESS = 0x30,
   CMD_PLAY_NOTE = 0x33, // Patchling's piano: on, note, velocity to every port on every channel, no reply
   CMD_CLEAR_PLOCKS = 0x34, // 1.59: forget every Per-Note Parameter Lock, no payload, no reply
+  CMD_GET_HOST_REPORT = 0x35, // 1.63: payload page 0 or 1
+  CMD_HOST_REPORT_DATA = 0x36, // page, 1 when the whole report has arrived, then pack7 of that page's 120 bytes
   CMD_COMMIT = 0x31,
   CMD_FACTORY_RESET = 0x32,
   CMD_FW_BEGIN = 0x40,
@@ -345,6 +347,8 @@ uint8_t hostRestartPort = 0;             // hub port, for RESTART_WEDGE
 uint8_t hostRestartCount = 0;            // recovery restarts since the host brain powered up, saturates at 127
 bool hostRestartSeen = false;            // hostRestartCount holds a real value
 bool hostRestarted = false;              // set when the host brain restarts, handled in the loop
+uint8_t hostReport[HOST_REPORT_BYTES];   // 1.63: the host brain's report from its last restart
+uint8_t hostReportGot[HOST_REPORT_BYTES / 16]; // which 2-byte pieces have arrived
 
 // Stuck-note guard. Notes held from USB Host and TRS 2 inputs, by original channel and note: 0 = not
 // held, 1-4 = the USB Host port, 0x80 = TRS 2. If the host brain restarts or disappears, their Note
@@ -4832,6 +4836,20 @@ void handleSysexCommand(uint8_t sourcePort, const uint8_t *cmdBuf, uint8_t cmdLe
       break;
     }
 
+    case CMD_GET_HOST_REPORT: {
+      const uint8_t page = payloadLen ? (payload[0] & 1) : 0;
+      bool complete = true;
+      for (uint8_t i = 0; i < sizeof(hostReportGot); ++i) complete = complete && hostReportGot[i] == 0xFF;
+      beginReply(CMD_HOST_REPORT_DATA);
+      appendReply(page);
+      appendReply(complete ? 1 : 0);
+      uint8_t packed[sizeof(replyBuf)];
+      const uint8_t packedLen = pack7(hostReport + page * (HOST_REPORT_BYTES / 2), HOST_REPORT_BYTES / 2, packed);
+      for (uint8_t i = 0; i < packedLen; ++i) appendReply(packed[i]);
+      sendReply(sourcePort);
+      break;
+    }
+
     case CMD_GET_GLOBAL: {
       beginReply(CMD_GLOBAL_DATA);
       appendReply(globalSettings.mode);
@@ -5277,8 +5295,16 @@ void pumpHostIn() {
         hostRestartReason = packet[1];
         hostRestartPort = packet[2];
         if (hostRestartSeen && packet[3] != hostRestartCount) hostRestarted = true; // any change, a power cycle resets it to 0
+        if (!hostRestartSeen || packet[3] != hostRestartCount) memset(hostReportGot, 0, sizeof(hostReportGot)); // a new report follows
         hostRestartCount = packet[3];
         hostRestartSeen = true;
+      } else if (type == CONTROL_HOST_REPORT) {
+        const uint8_t k = packet[1];
+        if (k < HOST_REPORT_BYTES / 2) {
+          hostReport[k * 2] = packet[2];
+          hostReport[k * 2 + 1] = packet[3];
+          hostReportGot[k >> 3] |= 1 << (k & 7);
+        }
       } else if (type == CONTROL_FLOW) {
         hostAskedPause = packet[1] == 1;
         hostFlowMs = millis();

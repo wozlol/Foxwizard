@@ -18,6 +18,25 @@ constexpr uint8_t CONTROL_PORT_MAP = 1; // host -> main. byte 1 = port mask, 2 =
 constexpr uint8_t CONTROL_FLOW = 2;     // both ways. byte 1 = 1 pause, 0 resume
 constexpr uint8_t CONTROL_HOST_RESTART = 3; // host -> main. byte 1 = last restart reason, 2 = hub port, 3 = restart count
 constexpr uint8_t CONTROL_BRIGHTNESS = 4; // main -> host. byte 1 = ledBrightnessStep (0-10), for the sidecar's status LED
+constexpr uint8_t CONTROL_HOST_REPORT = 5; // host -> main. byte 1 = index, 2-3 = report bytes 2*index and 2*index+1
+
+// The host report (host fw 3): what the host brain knew when it last restarted, sent a few times
+// after a recovery restart. Multi-byte values are little-endian.
+constexpr uint8_t HOST_REPORT_LAYOUT = 1;
+constexpr uint16_t HOST_REPORT_BYTES = 240;
+constexpr uint8_t HOST_REPORT_PORT_BYTES = 24; // per hub port, 4 of them from byte 16
+constexpr uint8_t HOST_REPORT_EVENTS = 16;     // 8 bytes each, from byte 112, oldest first
+// Host report event types
+constexpr uint8_t HOST_EVENT_BOOT = 1;     // a = restart reason
+constexpr uint8_t HOST_EVENT_MOUNT = 2;    // VID and PID are in the port block
+constexpr uint8_t HOST_EVENT_UNMOUNT = 3;
+constexpr uint8_t HOST_EVENT_SKIP = 4;     // the port accepted nothing for 1 s, its output is being dropped
+constexpr uint8_t HOST_EVENT_RESTART = 5;  // a = reason
+constexpr uint8_t HOST_EVENT_FAULT = 6;    // a = USB driver fault code
+// Where the host brain's loop was, for a restart the watchdog caused
+constexpr uint8_t HOST_STAGE_USB_TASK = 1, HOST_STAGE_LINK_IN = 2, HOST_STAGE_DIN_IN = 3, HOST_STAGE_USB_IN = 4,
+                  HOST_STAGE_DISPATCH = 5, HOST_STAGE_USB_OUT = 6, HOST_STAGE_DIN_OUT = 7, HOST_STAGE_CONTROL = 8,
+                  HOST_STAGE_LINK_OUT = 9, HOST_STAGE_LEDS = 10;
 
 // Why the host brain last restarted, for CONTROL_HOST_RESTART and GET_STATUS.
 constexpr uint8_t RESTART_NONE = 0;  // powered up normally
