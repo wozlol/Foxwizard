@@ -1067,7 +1067,9 @@ body.dragging-active { overflow: hidden; }
 @media (max-width: 500px) {
   .looper-settings { grid-template-columns: repeat(2, minmax(0, 1fr)); }
 }
-.lp-quad-row { margin-top: 10px; }
+/* A feature's own switch on the left and its first sub-switch in the right column, same columns
+   as the route's switch grid, instead of the sub-switch taking a line of its own. */
+.feature-head { display: grid; grid-template-columns: 1fr 1fr; gap: 8px 12px; align-items: center; }
 .looper-trigger { display: flex; align-items: center; flex-wrap: wrap; gap: 6px; margin-left: auto; }
 .looper-trigger-label { font-size: 0.72rem; color: var(--text-dim); }
 .looper-trigger input[type="number"] { width: 64px; }

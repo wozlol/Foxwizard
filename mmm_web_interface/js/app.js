@@ -1765,11 +1765,14 @@ function launchpadSectionHtml(route, index) {
   const quad = route.lpQuad || defaultLpQuad();
   const qAttrs = `data-route-index="${index}"`;
   return `<div class="${featureRowClass(on)}">
-      ${switchHtml(index, 'launchpad', on, 'Launchpad')}
-      ${on ? `<div class="arp-fields">
-        <div class="arp-field"><label>Octave</label><select data-field="lpOctave" ${qAttrs}>${opt(0, octave, '0')}${opt(1, octave, '-1')}${opt(2, octave, '-2')}</select></div>
+      ${on ? `<div class="feature-head">
+        ${switchHtml(index, 'launchpad', on, 'Launchpad')}
+        ${switchHtml(index, 'lpQuadEnabled', quad.enabled, 'Break Off a Quad')}
       </div>
-      <div class="lp-quad-row">${switchHtml(index, 'lpQuadEnabled', quad.enabled, 'Break Off a Quad')}</div>
+      <div class="arp-fields">
+        <div class="arp-field"><label>Octave</label><select data-field="lpOctave" ${qAttrs}>${opt(0, octave, '0')}${opt(1, octave, '-1')}${opt(2, octave, '-2')}</select></div>
+      </div>` : switchHtml(index, 'launchpad', on, 'Launchpad')}
+      ${on ? `
       ${quad.enabled ? `<div class="arp-fields">
         <div class="arp-field"><label>Quadrant</label><select data-lp-quad-field="block" ${qAttrs}>${QUAD_BLOCK_LABELS.map((l, i2) => opt(i2, quad.block, l)).join('')}</select></div>
         <div class="arp-field"><label>Channel</label><select data-lp-quad-field="channel" ${qAttrs}>${Array.from({ length: 16 }, (_, c) => opt(c, quad.channel, c + 1)).join('')}</select></div>
@@ -1977,8 +1980,10 @@ function echoSectionHtml(route, index) {
   const e = state.echo;
   const attrs = (f) => `data-echo-field="${f}" data-route-index="${index}"`;
   return `<div class="${featureRowClass(true)}">
-      ${switchHtml(index, 'echoOn', true, 'Echo', 'switch-red')}
-      <div class="lp-quad-row">${switchHtml(index, 'echoAfter', e.afterRoute !== false, 'Echo After Route')}</div>
+      <div class="feature-head">
+        ${switchHtml(index, 'echoOn', true, 'Echo', 'switch-red')}
+        ${switchHtml(index, 'echoAfter', e.afterRoute !== false, 'Echo After Route')}
+      </div>
       <div class="arp-fields">
         <div class="arp-field"><label>Repeats</label><input type="number" min="1" max="32" value="${e.repeats}" ${attrs('repeats')}></div>
         <div class="arp-field"><label>Level %</label><input type="number" min="1" max="100" value="${e.level}" ${attrs('level')}></div>
@@ -1995,8 +2000,10 @@ function stutterSectionHtml(route, index) {
   if (!on) return `<div class="${featureRowClass(false)}">${switchHtml(index, 'stutterOn', false, 'Stutter', 'switch-red')}</div>`;
   const st = state.stutter;
   return `<div class="${featureRowClass(true)}">
-      ${switchHtml(index, 'stutterOn', true, 'Stutter', 'switch-red')}
-      <div class="lp-quad-row">${switchHtml(index, 'stutterAfter', st.afterRoute !== false, 'Stutter After Route')}</div>
+      <div class="feature-head">
+        ${switchHtml(index, 'stutterOn', true, 'Stutter', 'switch-red')}
+        ${switchHtml(index, 'stutterAfter', st.afterRoute !== false, 'Stutter After Route')}
+      </div>
       <div class="arp-fields">
         <div class="arp-field"><label>Runout Bars</label><input type="number" min="1" max="16" value="${st.maxBars}" data-stutter-field="maxBars" data-route-index="${index}"></div>
       </div>
