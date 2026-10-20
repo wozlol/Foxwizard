@@ -97,7 +97,7 @@ constexpr uint8_t SYSEX_MFR_ID = 0x7D;   // reserved for non-commercial/educatio
 constexpr uint8_t SYSEX_DEVICE_ID = 0x4D; // 'M'
 constexpr uint8_t PROTOCOL_VERSION = 4; // 2: 45-byte routes with port masks, GET_STATUS. 3: clock settings, LEARN. 4: 53-byte routes with feature fields, feature blocks
 constexpr uint8_t FW_VERSION_MAJOR = 1;
-constexpr uint8_t FW_VERSION_MINOR = 61;
+constexpr uint8_t FW_VERSION_MINOR = 62;
 constexpr uint8_t FW_CHUNK_BYTES = 128;          // firmware bytes per FW_DATA message, 147 once packed
 constexpr uint32_t FW_REBOOT_DELAY_MS = 300;     // lets the FW_END ACK reach the host before rebooting
 const char DEVICE_NAME[] = "FoxWizard Mini MIDI Multitool"; // long name sent in the SysEx IDENTITY_REPLY
@@ -2635,6 +2635,65 @@ int8_t stutterSquareFor(uint16_t routeIndex, uint8_t inputDevice, uint8_t type, 
   return k;
 }
 
+// Launchpad button lights (1.62). A button stays lit while it's held, and also while the Stutter or
+// Echo it turned on stays latched on, going dark when that ends however it ends.
+uint16_t lpBtnPort[LAUNCHPAD_BUTTONS];   // where the button was last pressed, 0 never
+uint8_t lpBtnChannel[LAUNCHPAD_BUTTONS];
+uint8_t lpBtnColor[LAUNCHPAD_BUTTONS];
+bool lpBtnHeld[LAUNCHPAD_BUTTONS];
+bool lpBtnLit[LAUNCHPAD_BUTTONS];
+
+bool stutterLatchedOn(uint8_t square) {
+  return stutterSettings.latching && stutterRouteIdx < routeCount && stutterHeldCount && stutterHeld[stutterHeldCount - 1] == square;
+}
+
+bool echoLatchedOn(int8_t square) {
+  if (echoSettings.momentary || echoRouteIdx >= routeCount || echoOff) return false;
+  return square == ARP_SQUARES || echoLatched == square;
+}
+
+bool lpButtonLatched(uint8_t b) {
+  const MapAction &act = lpActions[b];
+  if (act.type == ACT_STUTTER_LENGTH) return act.a < STUTTER_LENGTH_PRESETS && stutterLatchedOn(ARP_SQUARES + 1 + act.a);
+  if (act.type == ACT_ECHO_TOGGLE) return echoLatchedOn(ARP_SQUARES);
+  if (act.type != ACT_NONE || b >= 8) return false;
+  // A top button with no action can be a Stutter or Echo square's trigger.
+  const uint8_t ch = lpBtnChannel[b], cc = LP_TOP_BUTTON_CC + b;
+  const StutterSettings &st = stutterSettings;
+  const int8_t sk = squareFor(st.squares, st.defaultTriggerType, st.defaultTriggerChannel, st.defaultTriggerNumber, 2, ch, cc);
+  if (sk >= 0 && stutterLatchedOn((uint8_t)sk)) return true;
+  const EchoSettings &e = echoSettings;
+  const int8_t ek = squareFor(e.squares, e.defaultTriggerType, e.defaultTriggerChannel, e.defaultTriggerNumber, 2, ch, cc);
+  return ek >= 0 && echoLatchedOn(ek);
+}
+
+void lpButtonRefresh(uint8_t b) {
+  if (!lpBtnPort[b]) return;
+  const bool lit = lpBtnHeld[b] || lpButtonLatched(b);
+  if (lit == lpBtnLit[b]) return;
+  lpBtnLit[b] = lit;
+  if (b < 8) sendToOutputs(lpBtnPort[b], 0xB0, lpBtnChannel[b], LP_TOP_BUTTON_CC + b, lit ? lpBtnColor[b] : 0, 3);
+  else sendToOutputs(lpBtnPort[b], lit ? 0x90 : 0x80, lpBtnChannel[b], (b - 8) * 16 + 8, lit ? lpBtnColor[b] : 0, 3);
+}
+
+// A Launchpad button pressed or let go: its light follows, then its action runs.
+void lpButtonInput(uint16_t routeIndex, uint8_t b, bool down, uint16_t port, uint8_t channel, uint8_t color) {
+  lpBtnPort[b] = port;
+  lpBtnChannel[b] = channel;
+  if (down) lpBtnColor[b] = color;
+  lpBtnHeld[b] = down;
+  lpBtnLit[b] = !down; // forces the press or release out
+  lpButtonRefresh(b);
+  if (routeIndex < routeCount) handleLaunchpadButton(routeIndex, b, down);
+}
+
+void serviceLaunchpadLights() {
+  static uint32_t lastMs = 0;
+  if (millis() - lastMs < 20) return;
+  lastMs = millis();
+  for (uint8_t b = 0; b < LAUNCHPAD_BUTTONS; ++b) lpButtonRefresh(b);
+}
+
 void serviceStutter() {
   if (stutterRouteIdx == 0xFFFF) return;
   const uint64_t now = time_us_64();
@@ -4297,11 +4356,12 @@ void processIncomingEvent(uint8_t inputDevice, uint8_t statusHi, uint8_t channel
       const uint8_t side = launchpadSideButton(number);
       // A mapped side button with a custom color lights with that, otherwise the channel's color.
       const uint8_t litColor = (side < LAUNCHPAD_BUTTONS && lpActions[side].c) ? lpActions[side].c : launchpadChannelColor(channel);
-      sendToOutputs(port, isNoteOn ? 0x90 : 0x80, channel, number, isNoteOn ? litColor : 0, 3);
-      if (side != 0xFF) {
-        handleLaunchpadButton(lp, side, isNoteOn);
+      if (side < LAUNCHPAD_BUTTONS) {
+        lpButtonInput(lp, side, isNoteOn, port, channel, litColor);
         return;
       }
+      sendToOutputs(port, isNoteOn ? 0x90 : 0x80, channel, number, isNoteOn ? litColor : 0, 3);
+      if (side != 0xFF) return;
       const uint8_t grid = launchpadGridNote(number);
       if (grid != LP_NOT_GRID) {
         lpPort = port;
@@ -4386,10 +4446,11 @@ void processIncomingEvent(uint8_t inputDevice, uint8_t statusHi, uint8_t channel
         launchpadLearnPort(sourcePort(inputDevice), i);
         // A mapped top button with a custom color (1.48) lights with that instead of echoing the
         // Launchpad's own CC value back.
-        sendToOutputs(sourcePort(inputDevice), 0xB0, channel, number, lpActions[button].c ? lpActions[button].c : data2, 3);
-        if (lpActions[button].type != ACT_NONE) {
+        const bool acts = lpActions[button].type != ACT_NONE;
+        lpButtonInput(acts ? i : 0xFFFF, button, data2 > 0, sourcePort(inputDevice), channel,
+                      lpActions[button].c ? lpActions[button].c : data2);
+        if (acts) {
           matchedAny = true;
-          handleLaunchpadButton(i, button, data2 > 0);
           flushPending();
           continue;
         }
@@ -5632,6 +5693,7 @@ void loop() {
   serviceLooper();
   serviceStutter();
   serviceEcho();
+  serviceLaunchpadLights();
   servicePlocks();
   serviceLearnTimeout();
   pumpTrsOut();
