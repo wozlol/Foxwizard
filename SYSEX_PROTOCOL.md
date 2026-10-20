@@ -321,8 +321,20 @@ Mapped notes and CCs don't pass through. Messages go to the route's outputs and 
 | 8 | Program Up/Down | 1 up, 0 down | | press, from the last program sent, wrapping |
 | 9 | Live Out Channel | channel 0-15 | | press: the route sends only on that channel for the session, pressed again it's back. Notes sounding on the old channels get All Notes Off, and the route's arp lets go |
 | 10 | Live Velocity | 0 follows the value, 1-20 = 10-200% | | follows: every CC value or press velocity sets 10-200%. Fixed: press sets it, pressed again it's back. Takes the place of the route's Velocity % for the session |
-| 11 | Looper | 0 Button (as the button in Looper mode, hold included), 1 Play/Arm/Rec, 2 Stop/Clear/Undo, 3 Play, 4 Stop, 5 Pause, 6 Overdub, 7 Clear, 8 Undo, 9 Rec/Arm | | press (Button: press and release). Needs Button Action LOOPER, which Patchling sets |
+| 11 | Looper | 0 1-Button (as the button in Looper mode, hold included), 1 Play/Arm/Rec, 2 Stop/Clear/Undo, 3 Play, 4 Stop, 5 Pause, 6 Overdub, 7 Clear, 8 Un-Clear, 9 Rec/Arm, 10 Un-Overdub, 11 Re-Overdub, 12 Double, 13 Half (10-13 from 1.60) | | press (1-Button: press and release) |
 | 12 | Tap Tempo | | | press |
+| 13 | Live Ch Up/Down | 1 up, 0 down | | press: the live out channel steps, wrapping |
+| 14 | Arp Div Up/Down | 1 up, 0 down | | press: the route's arp division steps |
+| 15 | Stutter Length | 0 1/8 bar, 1 1/4, 2 1/2, 3 1 bar, 4 2 bars, 5 4 bars | | press and release, as a Stutter square |
+| 16 | LP Quad | | | press: Break Off a Quad off and on |
+| 17 | Echo On/Off | | | press |
+| 18 | Note Toggle | note | | press, on and off in turn |
+| 19 | Pitch Ramp | 1 up, 0 down | length: 0 instant, else division + 1 | press bends over the length, release returns |
+| 20 | Mod Ramp | | length | as Pitch Ramp, on CC 1 |
+| 21 | CC Ramp | CC | length | as Pitch Ramp, on that CC |
+| 22 | Panic | | | press |
+| 23 | Octave Up/Down | 1 up, 0 down | 0 momentary, 1 toggle | press shifts the route an octave |
+| 24 | Clear P-Locks | | | press |
 
 Live out channel and velocity are session only, cleared when routes change. With a live out channel on,
 a route's arp is bypassed (notes play straight on the live channel, no Bypass or Bass) unless its

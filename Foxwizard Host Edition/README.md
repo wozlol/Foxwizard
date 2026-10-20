@@ -31,6 +31,13 @@ Tested on hardware: it runs with the host brain disconnected and picks it up whe
 
 The sidecar can't be updated through Patchling. Flash it from the Arduino IDE.
 
+## Releasing
+
+1. `mmm_web_interface/firmware/build_firmware.sh` (no options) publishes the live firmware into `mmm_web_interface/firmware/`.
+2. Merge to `main` and push.
+3. Copy `mmm_web_interface/` to the Patchling site (woz.lol/fox).
+4. Upload the `.uf2` to woz.lol/foxwizard-midi-multitool-firmware.
+
 ## Arduino settings
 
 | Sketch | Board | Tools -> USB Stack |
