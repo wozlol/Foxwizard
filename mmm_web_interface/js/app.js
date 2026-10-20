@@ -1,5 +1,5 @@
 import { ACT, MAP_ENTRIES, defaultAction, defaultLpActions, actionEditorHtml, applyActionField, usesLooper, usesLiveChannel } from './mapper.js';
-import { DeviceLink, DATA_TYPE_BITS, ROUTE_NAME_MAX_LEN, PORTS, PORT_TRS, PORT_USB, SIDECAR_INPUT_PORTS, SIDECAR_OUTPUT_PORTS, SIDECAR_TRS_PORTS, FEATURE, SCALES, LAYOUTS, defaultScale, ARP_SLOTS, ARP_MODES, ARP_MODE_ORDER, ARP_SQUARES, DIVISIONS, defaultArp, defaultEcho, defaultStutter, defaultLooper, defaultLpQuad, noTrigger } from './midi.js';
+import { DeviceLink, DATA_TYPE_BITS, ROUTE_NAME_MAX_LEN, PORTS, PORT_TRS, PORT_USB, SIDECAR_INPUT_PORTS, SIDECAR_OUTPUT_PORTS, SIDECAR_TRS_PORTS, FEATURE, SCALES, LAYOUTS, defaultScale, ARP_SLOTS, ARP_MODES, ARP_MODE_ORDER, ARP_SQUARES, DIVISIONS, defaultArp, defaultEcho, defaultStutter, defaultLooper, defaultLpQuad, noTrigger, STUTTER_RUNOUTS, snapRunout } from './midi.js';
 import { serializePreset, parsePreset, downloadPreset, readPresetFile, channelsToRangeString } from './presetXml.js';
 import { attachDragReorder } from './dragReorder.js';
 
@@ -2006,7 +2006,7 @@ function stutterSectionHtml(route, index) {
         ${switchHtml(index, 'stutterLatching', !!st.latching, 'Stutter Latching')}
       </div>
       <div class="arp-fields">
-        <div class="arp-field"><label>Runout Bars</label><input type="number" min="1" max="16" value="${st.maxBars}" data-stutter-field="maxBars" data-route-index="${index}"></div>
+        <div class="arp-field"><label>Runout Bars</label><select data-stutter-field="maxBars" data-route-index="${index}">${STUTTER_RUNOUTS.map((v) => `<option value="${v}" ${st.maxBars === v ? 'selected' : ''}>${v === 0 ? 'Off' : v}</option>`).join('')}</select></div>
       </div>
       <label class="arp-table-label">Division</label>
       ${divisionTableHtml(st, 'stutter', index, '')}
@@ -2015,10 +2015,8 @@ function stutterSectionHtml(route, index) {
 
 routesContainer.addEventListener('change', (e) => {
   if (e.target.dataset.stutterField !== 'maxBars') return;
-  let v = parseInt(e.target.value, 10);
-  v = Math.min(16, Math.max(1, Number.isNaN(v) ? 16 : v));
-  e.target.value = v;
-  state.stutter.maxBars = v;
+  const v = parseInt(e.target.value, 10);
+  state.stutter.maxBars = STUTTER_RUNOUTS.includes(v) ? v : 16;
   markDirty();
 });
 

@@ -175,15 +175,21 @@ export function bytesToLooper(b) {
 export function defaultStutter() {
   return { division: 8, maxBars: 16, defaultTrigger: noTrigger(), afterRoute: true, latching: false, squares: Array.from({ length: ARP_SQUARES }, () => null) };
 }
+// Runout Bars: Off, 2, 4, 8 or 16. 0 here is Off, sent as 127 (the firmware keeps 1-16 as bar counts).
+export const STUTTER_RUNOUTS = [0, 2, 4, 8, 16];
+export function snapRunout(bars) {
+  if (bars === 0 || bars === 127) return 0;
+  return STUTTER_RUNOUTS.find((v) => v >= bars && v > 0) || 16;
+}
 // Byte 5 (1.49): 1 = before the route. Byte 6 (1.50): 1 = squares latch.
 export function stutterToBytes(st) {
-  return [st.division + 1, st.maxBars, ...triggerToBytes(st.defaultTrigger), st.afterRoute === false ? 1 : 0, st.latching ? 1 : 0, ...new Array(9).fill(0), ...squaresToBytes(st.squares), 0, 0, 0, 0];
+  return [st.division + 1, st.maxBars === 0 ? 127 : st.maxBars, ...triggerToBytes(st.defaultTrigger), st.afterRoute === false ? 1 : 0, st.latching ? 1 : 0, ...new Array(9).fill(0), ...squaresToBytes(st.squares), 0, 0, 0, 0];
 }
 export function bytesToStutter(b) {
   const d = defaultStutter();
   return {
     division: b[0] >= 1 && b[0] <= DIVISIONS.length ? b[0] - 1 : d.division,
-    maxBars: b[1] >= 1 && b[1] <= 16 ? b[1] : d.maxBars,
+    maxBars: b[1] === 127 ? 0 : (b[1] >= 1 && b[1] <= 16 ? snapRunout(b[1]) : d.maxBars),
     defaultTrigger: bytesToTrigger(b, 2),
     afterRoute: b[5] !== 1,
     latching: b[6] === 1,

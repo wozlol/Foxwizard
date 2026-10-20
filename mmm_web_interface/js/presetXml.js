@@ -4,7 +4,7 @@ import { ACTION_TYPES, MAP_ENTRIES, defaultAction, defaultLpActions } from './ma
 // the device's SysEx protocol can set. Numbers are kept human (channel lists as "1,2,4-6", device
 // names as words) rather than raw bitmasks/enums, so the file is meant to be hand-editable.
 
-import { DATA_TYPE_BITS, PORTS, PORT_TRS, PORT_USB, FEATURE, SCALES, LAYOUTS, defaultScale, ARP_SLOTS, ARP_MODES, ARP_SQUARES, DIVISIONS, defaultArp, defaultEcho, defaultStutter, defaultLooper, defaultLpQuad, noTrigger } from './midi.js';
+import { DATA_TYPE_BITS, PORTS, PORT_TRS, PORT_USB, FEATURE, SCALES, LAYOUTS, defaultScale, ARP_SLOTS, ARP_MODES, ARP_SQUARES, DIVISIONS, defaultArp, defaultEcho, defaultStutter, defaultLooper, defaultLpQuad, noTrigger, STUTTER_RUNOUTS, snapRunout } from './midi.js';
 
 
 const MODE_NAMES = ['usbAdaptor', 'router'];
@@ -86,7 +86,8 @@ function stutterFromXml(el) {
   const st = defaultStutter();
   if (!el) return st;
   if (DIVISIONS.includes(el.getAttribute('division'))) st.division = DIVISIONS.indexOf(el.getAttribute('division'));
-  st.maxBars = Math.min(16, Math.max(1, parseInt(el.getAttribute('runoutBars') || '16', 10) || 16));
+  const runout = el.getAttribute('runoutBars') || '16';
+  st.maxBars = runout === 'off' ? 0 : snapRunout(Math.min(16, Math.max(1, parseInt(runout, 10) || 16)));
   st.squares = squaresFromXml(el);
   st.defaultTrigger = triggerFromXml(el);
   st.afterRoute = el.getAttribute('afterRoute') !== 'false';
@@ -215,7 +216,7 @@ export function serializePreset(state) {
   squaresToXml(lines, ec.squares, '    ');
   lines.push('  </echo>');
   const stt = state.stutter || defaultStutter();
-  lines.push(`  <stutter division="${DIVISIONS[stt.division]}" runoutBars="${stt.maxBars}" afterRoute="${stt.afterRoute !== false}" latching="${!!stt.latching}"${triggerAttrs(stt.defaultTrigger)}>`);
+  lines.push(`  <stutter division="${DIVISIONS[stt.division]}" runoutBars="${stt.maxBars === 0 ? 'off' : stt.maxBars}" afterRoute="${stt.afterRoute !== false}" latching="${!!stt.latching}"${triggerAttrs(stt.defaultTrigger)}>`);
   squaresToXml(lines, stt.squares, '    ');
   lines.push('  </stutter>');
   const lp = state.looper || defaultLooper();
