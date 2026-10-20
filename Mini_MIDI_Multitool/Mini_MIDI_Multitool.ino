@@ -97,7 +97,7 @@ constexpr uint8_t SYSEX_MFR_ID = 0x7D;   // reserved for non-commercial/educatio
 constexpr uint8_t SYSEX_DEVICE_ID = 0x4D; // 'M'
 constexpr uint8_t PROTOCOL_VERSION = 4; // 2: 45-byte routes with port masks, GET_STATUS. 3: clock settings, LEARN. 4: 53-byte routes with feature fields, feature blocks
 constexpr uint8_t FW_VERSION_MAJOR = 1;
-constexpr uint8_t FW_VERSION_MINOR = 52;
+constexpr uint8_t FW_VERSION_MINOR = 53;
 constexpr uint8_t FW_CHUNK_BYTES = 128;          // firmware bytes per FW_DATA message, 147 once packed
 constexpr uint32_t FW_REBOOT_DELAY_MS = 300;     // lets the FW_END ACK reach the host before rebooting
 const char DEVICE_NAME[] = "FoxWizard Mini MIDI Multitool"; // long name sent in the SysEx IDENTITY_REPLY
@@ -504,7 +504,7 @@ bool echoOff = false;           // turned off by the default square's trigger
 #pragma pack(push, 1)
 struct StutterSettings {
   uint8_t divisionPlus1; // the default square, fw::MusicalDivision + 1, 0 = 1/8
-  uint8_t maxBars;       // runout: 1-16 bars, then it lets go by itself, 0 = 16, STUTTER_NO_RUNOUT = never
+  uint8_t maxBars;       // runout: 1-16 bars, then it lets go by itself. 0 (the default) or 127 (Patchling's Off) = never
   uint8_t defaultTriggerType;
   uint8_t defaultTriggerChannel;
   uint8_t defaultTriggerNumber;
@@ -516,7 +516,6 @@ struct StutterSettings {
 };
 #pragma pack(pop)
 StutterSettings stutterSettings;
-constexpr uint8_t STUTTER_NO_RUNOUT = 127; // 1.51: Runout Bars set to Off
 
 // Looper: the button's Looper mode, one loop. Ported from ARPnMIDI's looper engine.
 #pragma pack(push, 1)
@@ -2423,10 +2422,10 @@ void stutterUpdate(uint64_t now) {
   stutterCycleSeen = stutterRepeater.completedCycles();
   echoStop();
   stutterPlaying = want;
-  if (stutterSettings.maxBars == STUTTER_NO_RUNOUT) {
+  if (stutterSettings.maxBars == 0 || stutterSettings.maxBars > 16) {
     stutterStopUs = UINT64_MAX; // no runout: it plays until let go
   } else if (stutterHeldCount == 1) { // the runout counts from the first press
-    const uint8_t bars = stutterSettings.maxBars >= 1 && stutterSettings.maxBars <= 16 ? stutterSettings.maxBars : 16;
+    const uint8_t bars = stutterSettings.maxBars;
     stutterStopUs = now + fw::barDurationUs(clockEngine.bpm(), globalSettings.beatsPerBar ? globalSettings.beatsPerBar : 4,
                                            globalSettings.beatUnit ? globalSettings.beatUnit : 4) * bars;
   }

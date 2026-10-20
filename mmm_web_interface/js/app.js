@@ -2016,7 +2016,7 @@ function stutterSectionHtml(route, index) {
 routesContainer.addEventListener('change', (e) => {
   if (e.target.dataset.stutterField !== 'maxBars') return;
   const v = parseInt(e.target.value, 10);
-  state.stutter.maxBars = STUTTER_RUNOUTS.includes(v) ? v : 16;
+  state.stutter.maxBars = STUTTER_RUNOUTS.includes(v) ? v : 0;
   markDirty();
 });
 

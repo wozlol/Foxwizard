@@ -86,7 +86,7 @@ function stutterFromXml(el) {
   const st = defaultStutter();
   if (!el) return st;
   if (DIVISIONS.includes(el.getAttribute('division'))) st.division = DIVISIONS.indexOf(el.getAttribute('division'));
-  const runout = el.getAttribute('runoutBars') || '16';
+  const runout = el.getAttribute('runoutBars') || 'off';
   st.maxBars = runout === 'off' ? 0 : snapRunout(Math.min(16, Math.max(1, parseInt(runout, 10) || 16)));
   st.squares = squaresFromXml(el);
   st.defaultTrigger = triggerFromXml(el);
