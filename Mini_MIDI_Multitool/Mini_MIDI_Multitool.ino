@@ -97,7 +97,7 @@ constexpr uint8_t SYSEX_MFR_ID = 0x7D;   // reserved for non-commercial/educatio
 constexpr uint8_t SYSEX_DEVICE_ID = 0x4D; // 'M'
 constexpr uint8_t PROTOCOL_VERSION = 4; // 2: 45-byte routes with port masks, GET_STATUS. 3: clock settings, LEARN. 4: 53-byte routes with feature fields, feature blocks
 constexpr uint8_t FW_VERSION_MAJOR = 1;
-constexpr uint8_t FW_VERSION_MINOR = 50;
+constexpr uint8_t FW_VERSION_MINOR = 51;
 constexpr uint8_t FW_CHUNK_BYTES = 128;          // firmware bytes per FW_DATA message, 147 once packed
 constexpr uint32_t FW_REBOOT_DELAY_MS = 300;     // lets the FW_END ACK reach the host before rebooting
 const char DEVICE_NAME[] = "FoxWizard Mini MIDI Multitool"; // long name sent in the SysEx IDENTITY_REPLY
@@ -509,7 +509,8 @@ struct StutterSettings {
   uint8_t defaultTriggerChannel;
   uint8_t defaultTriggerNumber;
   uint8_t beforeRoute;   // 1.49: 1 loops the route's incoming notes and plays the loop back in through it, 0 loops what it sends
-  uint8_t spare[10];
+  uint8_t latching;      // 1.50: 1 a press latches a square until it's pressed again (or the runout), 0 holds it only while held
+  uint8_t spare[9];
   DivisionSquare squares[ARP_SQUARES];
   uint8_t spare2[4];
 };
@@ -2430,6 +2431,14 @@ void stutterUpdate(uint64_t now) {
 }
 
 void stutterPress(int8_t square, bool down) {
+  if (stutterSettings.latching) { // a press latches that square, the same one again lets go
+    if (!down) return;
+    const bool same = stutterHeldCount && stutterHeld[stutterHeldCount - 1] == (uint8_t)square;
+    stutterHeldCount = 0;
+    if (!same) stutterHeld[stutterHeldCount++] = square;
+    stutterUpdate(time_us_64());
+    return;
+  }
   uint8_t n = 0;
   for (uint8_t k = 0; k < stutterHeldCount; ++k) if (stutterHeld[k] != square) stutterHeld[n++] = stutterHeld[k];
   stutterHeldCount = n;

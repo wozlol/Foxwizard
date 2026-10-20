@@ -173,11 +173,11 @@ export function bytesToLooper(b) {
 // Stutter, firmware 1.24. 48 bytes: default division + 1 (0 = 1/8), runout bars (1-16, 0 = 16), default
 // trigger (3), 11 spare, 7 division squares, 4 spare. Every square is momentary, the default too.
 export function defaultStutter() {
-  return { division: 8, maxBars: 16, defaultTrigger: noTrigger(), afterRoute: true, squares: Array.from({ length: ARP_SQUARES }, () => null) };
+  return { division: 8, maxBars: 16, defaultTrigger: noTrigger(), afterRoute: true, latching: false, squares: Array.from({ length: ARP_SQUARES }, () => null) };
 }
-// Byte 5 (1.49): 1 = before the route.
+// Byte 5 (1.49): 1 = before the route. Byte 6 (1.50): 1 = squares latch.
 export function stutterToBytes(st) {
-  return [st.division + 1, st.maxBars, ...triggerToBytes(st.defaultTrigger), st.afterRoute === false ? 1 : 0, ...new Array(10).fill(0), ...squaresToBytes(st.squares), 0, 0, 0, 0];
+  return [st.division + 1, st.maxBars, ...triggerToBytes(st.defaultTrigger), st.afterRoute === false ? 1 : 0, st.latching ? 1 : 0, ...new Array(9).fill(0), ...squaresToBytes(st.squares), 0, 0, 0, 0];
 }
 export function bytesToStutter(b) {
   const d = defaultStutter();
@@ -186,6 +186,7 @@ export function bytesToStutter(b) {
     maxBars: b[1] >= 1 && b[1] <= 16 ? b[1] : d.maxBars,
     defaultTrigger: bytesToTrigger(b, 2),
     afterRoute: b[5] !== 1,
+    latching: b[6] === 1,
     squares: bytesToSquares(b, 16)
   };
 }

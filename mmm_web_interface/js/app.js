@@ -2003,6 +2003,7 @@ function stutterSectionHtml(route, index) {
       <div class="feature-head">
         ${switchHtml(index, 'stutterOn', true, 'Stutter', 'switch-red')}
         ${switchHtml(index, 'stutterAfter', st.afterRoute !== false, 'Stutter After Route')}
+        ${switchHtml(index, 'stutterLatching', !!st.latching, 'Stutter Latching')}
       </div>
       <div class="arp-fields">
         <div class="arp-field"><label>Runout Bars</label><input type="number" min="1" max="16" value="${st.maxBars}" data-stutter-field="maxBars" data-route-index="${index}"></div>
@@ -2373,6 +2374,7 @@ function applyRouteFieldChange(route, field, el) {
     return;
   }
   if (field === 'stutterAfter') { state.stutter.afterRoute = el.checked; return; }
+  if (field === 'stutterLatching') { state.stutter.latching = el.checked; return; }
   if (field === 'echoAfter') { state.echo.afterRoute = el.checked; return; }
   if (field === 'lpOctave') {
     route.lpOctave = parseInt(el.value, 10);
