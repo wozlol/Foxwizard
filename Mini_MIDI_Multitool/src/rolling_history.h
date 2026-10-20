@@ -9,7 +9,7 @@
 
 namespace fw {
 
-constexpr uint16_t kRollingHistoryCapacity = 512;
+constexpr uint16_t kRollingHistoryCapacity = 1024; // FoxWizard 1.58: room for up to 4 bars of a busy stutter
 
 struct HistorySnapshot {
   uint32_t nextSequence = 0;

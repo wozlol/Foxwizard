@@ -118,10 +118,10 @@ function squaresToBytes(squares) {
   }
   return b;
 }
-function bytesToSquares(b, offset) {
+function bytesToSquares(b, offset, divisions = DIVISIONS) {
   return Array.from({ length: ARP_SQUARES }, (_, k) => {
     const o = offset + k * 4;
-    if (!(b[o] >= 1 && b[o] <= DIVISIONS.length)) return null;
+    if (!(b[o] >= 1 && b[o] <= divisions.length)) return null;
     return { division: b[o] - 1, triggerType: b[o + 1] <= 2 ? b[o + 1] : 0, triggerChannel: b[o + 2] <= 16 ? b[o + 2] : 16, triggerNumber: (b[o + 3] || 0) & 0x7F };
   });
 }
@@ -129,11 +129,12 @@ function bytesToSquares(b, offset) {
 // Echo, firmware 1.23. 48 bytes: division + 1 (0 = 1/8), repeats (1-32, 0 = 4), level % (1-100, 0 = 70),
 // 13 spare, 7 division squares whose triggers latch, 4 spare.
 export function defaultEcho() {
-  return { division: 8, repeats: 4, level: 70, defaultTrigger: noTrigger(), afterRoute: true, squares: Array.from({ length: ARP_SQUARES }, () => null) };
+  return { division: 8, repeats: 4, level: 70, defaultTrigger: noTrigger(), afterRoute: true, latching: true, global: false, squares: Array.from({ length: ARP_SQUARES }, () => null) };
 }
-// Default trigger (bytes 3-5) turns Echo off and on. Byte 6 (1.49): 1 = before the route.
+// Default trigger (bytes 3-5) turns Echo off and on. Byte 6 (1.49): 1 = before the route. Byte 7 (1.58):
+// 1 = momentary (Latching off). Byte 8 (1.58): 1 = Global Echo.
 export function echoToBytes(e) {
-  return [e.division + 1, e.repeats, e.level, ...triggerToBytes(e.defaultTrigger), e.afterRoute === false ? 1 : 0, ...new Array(9).fill(0), ...squaresToBytes(e.squares), 0, 0, 0, 0];
+  return [e.division + 1, e.repeats, e.level, ...triggerToBytes(e.defaultTrigger), e.afterRoute === false ? 1 : 0, e.latching === false ? 1 : 0, e.global ? 1 : 0, ...new Array(7).fill(0), ...squaresToBytes(e.squares), 0, 0, 0, 0];
 }
 export function bytesToEcho(b) {
   const d = defaultEcho();
@@ -143,6 +144,8 @@ export function bytesToEcho(b) {
     level: b[2] >= 1 && b[2] <= 100 ? b[2] : d.level,
     defaultTrigger: bytesToTrigger(b, 3),
     afterRoute: b[6] !== 1,
+    latching: b[7] !== 1,
+    global: b[8] === 1,
     squares: bytesToSquares(b, 16)
   };
 }
@@ -186,16 +189,18 @@ export function snapRunout(bars) {
 export function stutterToBytes(st) {
   return [st.division + 1, st.maxBars === 0 ? 127 : st.maxBars, ...triggerToBytes(st.defaultTrigger), st.afterRoute === false ? 1 : 0, st.latching ? 1 : 0, st.global ? 1 : 0, ...new Array(8).fill(0), ...squaresToBytes(st.squares), 0, 0, 0, 0];
 }
+// Stutter's divisions: the musical ones, then 2 and 4 bars (firmware codes 20 and 21), 1.58.
+export const STUTTER_DIVISIONS = [...DIVISIONS, '2 bars', '4 bars'];
 export function bytesToStutter(b) {
   const d = defaultStutter();
   return {
-    division: b[0] >= 1 && b[0] <= DIVISIONS.length ? b[0] - 1 : d.division,
+    division: b[0] >= 1 && b[0] <= STUTTER_DIVISIONS.length ? b[0] - 1 : d.division,
     maxBars: b[1] >= 1 && b[1] <= 16 ? snapRunout(b[1]) : 0, // 0 and 127 are Off
     defaultTrigger: bytesToTrigger(b, 2),
     afterRoute: b[5] !== 1,
     latching: b[6] === 1,
     global: b[7] === 1,
-    squares: bytesToSquares(b, 16)
+    squares: bytesToSquares(b, 16, STUTTER_DIVISIONS)
   };
 }
 

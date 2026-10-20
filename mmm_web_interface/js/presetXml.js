@@ -4,7 +4,7 @@ import { ACTION_TYPES, MAP_ENTRIES, defaultAction, defaultLpActions } from './ma
 // the device's SysEx protocol can set. Numbers are kept human (channel lists as "1,2,4-6", device
 // names as words) rather than raw bitmasks/enums, so the file is meant to be hand-editable.
 
-import { DATA_TYPE_BITS, PORTS, PORT_TRS, PORT_USB, FEATURE, SCALES, LAYOUTS, defaultScale, ARP_SLOTS, ARP_MODES, ARP_SQUARES, DIVISIONS, defaultArp, defaultEcho, defaultStutter, defaultLooper, defaultLpQuad, noTrigger, STUTTER_RUNOUTS, snapRunout } from './midi.js';
+import { DATA_TYPE_BITS, PORTS, PORT_TRS, PORT_USB, FEATURE, SCALES, LAYOUTS, defaultScale, ARP_SLOTS, ARP_MODES, ARP_SQUARES, DIVISIONS, defaultArp, defaultEcho, defaultStutter, defaultLooper, defaultLpQuad, noTrigger, STUTTER_RUNOUTS, snapRunout, STUTTER_DIVISIONS } from './midi.js';
 
 
 const MODE_NAMES = ['usbAdaptor', 'router'];
@@ -48,21 +48,21 @@ function readPorts(el, fallbackDevice) {
 }
 
 // Division squares (arp and echo) as <division> children.
-function squaresToXml(lines, squares, indent) {
+function squaresToXml(lines, squares, indent, divisions = DIVISIONS) {
   (squares || []).forEach((sq) => {
     if (!sq) return;
-    lines.push(`${indent}<division value="${DIVISIONS[sq.division]}" trigger="${['none', 'note', 'cc'][sq.triggerType] || 'none'}" channel="${sq.triggerChannel > 15 ? 'any' : sq.triggerChannel + 1}" number="${sq.triggerNumber}"/>`);
+    lines.push(`${indent}<division value="${divisions[sq.division]}" trigger="${['none', 'note', 'cc'][sq.triggerType] || 'none'}" channel="${sq.triggerChannel > 15 ? 'any' : sq.triggerChannel + 1}" number="${sq.triggerNumber}"/>`);
   });
 }
 
-function squaresFromXml(el) {
+function squaresFromXml(el, divisions = DIVISIONS) {
   const found = [...el.querySelectorAll('division')];
   return Array.from({ length: ARP_SQUARES }, (_, k) => {
     const d = found[k];
-    if (!d || !DIVISIONS.includes(d.getAttribute('value'))) return null;
+    if (!d || !divisions.includes(d.getAttribute('value'))) return null;
     const c = d.getAttribute('channel') || 'any';
     return {
-      division: DIVISIONS.indexOf(d.getAttribute('value')),
+      division: divisions.indexOf(d.getAttribute('value')),
       triggerType: Math.max(0, ['none', 'note', 'cc'].indexOf(d.getAttribute('trigger'))),
       triggerChannel: c === 'any' ? 16 : Math.min(15, Math.max(0, parseInt(c, 10) - 1)),
       triggerNumber: Math.min(127, Math.max(0, parseInt(d.getAttribute('number') || '0', 10) || 0))
@@ -79,16 +79,18 @@ function echoFromXml(el) {
   e.squares = squaresFromXml(el);
   e.defaultTrigger = triggerFromXml(el);
   e.afterRoute = el.getAttribute('afterRoute') !== 'false';
+  e.latching = el.getAttribute('latching') !== 'false';
+  e.global = el.getAttribute('global') === 'true';
   return e;
 }
 
 function stutterFromXml(el) {
   const st = defaultStutter();
   if (!el) return st;
-  if (DIVISIONS.includes(el.getAttribute('division'))) st.division = DIVISIONS.indexOf(el.getAttribute('division'));
+  if (STUTTER_DIVISIONS.includes(el.getAttribute('division'))) st.division = STUTTER_DIVISIONS.indexOf(el.getAttribute('division'));
   const runout = el.getAttribute('runoutBars') || 'off';
   st.maxBars = runout === 'off' ? 0 : snapRunout(Math.min(16, Math.max(1, parseInt(runout, 10) || 16)));
-  st.squares = squaresFromXml(el);
+  st.squares = squaresFromXml(el, STUTTER_DIVISIONS);
   st.defaultTrigger = triggerFromXml(el);
   st.afterRoute = el.getAttribute('afterRoute') !== 'false';
   st.latching = el.getAttribute('latching') === 'true';
@@ -214,12 +216,12 @@ export function serializePreset(state) {
   });
   lines.push('  </arps>');
   const ec = state.echo || defaultEcho();
-  lines.push(`  <echo division="${DIVISIONS[ec.division]}" repeats="${ec.repeats}" level="${ec.level}" afterRoute="${ec.afterRoute !== false}"${triggerAttrs(ec.defaultTrigger)}>`);
+  lines.push(`  <echo division="${DIVISIONS[ec.division]}" repeats="${ec.repeats}" level="${ec.level}" afterRoute="${ec.afterRoute !== false}" latching="${ec.latching !== false}" global="${!!ec.global}"${triggerAttrs(ec.defaultTrigger)}>`);
   squaresToXml(lines, ec.squares, '    ');
   lines.push('  </echo>');
   const stt = state.stutter || defaultStutter();
-  lines.push(`  <stutter division="${DIVISIONS[stt.division]}" runoutBars="${stt.maxBars === 0 ? 'off' : stt.maxBars}" afterRoute="${stt.afterRoute !== false}" latching="${!!stt.latching}" global="${!!stt.global}"${triggerAttrs(stt.defaultTrigger)}>`);
-  squaresToXml(lines, stt.squares, '    ');
+  lines.push(`  <stutter division="${STUTTER_DIVISIONS[stt.division]}" runoutBars="${stt.maxBars === 0 ? 'off' : stt.maxBars}" afterRoute="${stt.afterRoute !== false}" latching="${!!stt.latching}" global="${!!stt.global}"${triggerAttrs(stt.defaultTrigger)}>`);
+  squaresToXml(lines, stt.squares, '    ', STUTTER_DIVISIONS);
   lines.push('  </stutter>');
   const lp = state.looper || defaultLooper();
   lines.push(`  <looper length="${lp.bars ? lp.bars : 'free'}" quantize="${lp.quantize >= 0 ? DIVISIONS[lp.quantize] : 'off'}" autoOverdub="${lp.autoOverdub}" records="${lp.recordInputs ? 'inputs' : 'outputs'}" holdClears="${lp.holdClears}" loopUnrouted="${lp.loopUnrouted !== false}" recordCcs="${!!lp.recordCcs}"${triggerAttrs(lp.trigger)}>`);

@@ -97,7 +97,7 @@ constexpr uint8_t SYSEX_MFR_ID = 0x7D;   // reserved for non-commercial/educatio
 constexpr uint8_t SYSEX_DEVICE_ID = 0x4D; // 'M'
 constexpr uint8_t PROTOCOL_VERSION = 4; // 2: 45-byte routes with port masks, GET_STATUS. 3: clock settings, LEARN. 4: 53-byte routes with feature fields, feature blocks
 constexpr uint8_t FW_VERSION_MAJOR = 1;
-constexpr uint8_t FW_VERSION_MINOR = 57;
+constexpr uint8_t FW_VERSION_MINOR = 58;
 constexpr uint8_t FW_CHUNK_BYTES = 128;          // firmware bytes per FW_DATA message, 147 once packed
 constexpr uint32_t FW_REBOOT_DELAY_MS = 300;     // lets the FW_END ACK reach the host before rebooting
 const char DEVICE_NAME[] = "FoxWizard Mini MIDI Multitool"; // long name sent in the SysEx IDENTITY_REPLY
@@ -486,7 +486,9 @@ struct EchoSettings {
   uint8_t defaultTriggerChannel;
   uint8_t defaultTriggerNumber;
   uint8_t beforeRoute;   // 1.49: 1 echoes the route's incoming notes and plays the echoes back in through it, 0 echoes what it sends
-  uint8_t spare[9];
+  uint8_t momentary;     // 1.58: 0 (default) squares latch, 1 Echo only sounds while a square is held, at its division
+  uint8_t global;        // 1.58: 1 echoes everything the FoxWizard sends, every route and unrouted pass-through
+  uint8_t spare[7];
   DivisionSquare squares[ARP_SQUARES];
   uint8_t spare2[4];
 };
@@ -557,7 +559,11 @@ fw::HistoryRepeater stutterRepeater;
 uint16_t stutterRouteIdx = 0xFFFF;
 // Squares held, last pressed on top. ARP_SQUARES = the default square. ARP_SQUARES+1 and up = the
 // mapper's Stutter Length action (1/8, 1/4, 1/2, 1, 2 bars), bypassing the route's own squares.
-constexpr uint8_t STUTTER_LENGTH_PRESETS = 5;
+constexpr uint8_t STUTTER_LENGTH_PRESETS = 6; // 1/8, 1/4, 1/2, 1, 2, 4 bars
+// Stutter's own division codes past the 19 musical divisions (divisionPlus1 20 and 21), 1.58.
+constexpr uint8_t STUTTER_DIV_2_BARS = 20;
+constexpr uint8_t STUTTER_DIV_4_BARS = 21;
+uint64_t stutterHistoryStartUs = 0; // when the history began filling, 0 empty: how much it can loop
 uint8_t stutterHeld[ARP_SQUARES + 1 + STUTTER_LENGTH_PRESETS];
 uint8_t stutterHeldCount = 0;
 uint8_t stutterPlaying = 0xFF;        // the square looping now, 0xFF none
@@ -696,12 +702,6 @@ int16_t rampStartValue = 0;
 uint32_t rampStartMs = 0;
 uint32_t rampDurationMs = 0;
 
-// buttonParamA (0-127) is the pitch/mod ramp's speed: 127 is a true instant jump to the target
-// value, 0 is the slowest ramp, taking RAMP_MAX_SECONDS to sweep the full range. Squared (not
-// linear) so raw values near the fast/instant end cover a lot less time each than values near the
-// slow end. The web UI shows and accepts this as a plain seconds value using the exact same
-// formula, so keep both in sync.
-static const float RAMP_MAX_SECONDS = 4.0f;
 
 // Per (channel, original note): while Octave Up/Down is the active button action and this channel
 // is affected (see octaveShiftMatchesChannel), tracks what a currently-held note is ACTUALLY
@@ -1646,9 +1646,24 @@ bool anyArpRoute() {
   return false;
 }
 
+// A Pitch/Mod/CC Ramp with a musical length on a mapping whose feature some route has on.
+bool anyMappedRamp() {
+  auto isRamp = [](const MapAction &a) {
+    return (a.type == ACT_PITCH_RAMP || a.type == ACT_MOD_RAMP || a.type == ACT_CC_RAMP) && a.b;
+  };
+  uint16_t features = 0;
+  for (uint16_t i = 0; i < routeCount; ++i) features |= routes[i].features;
+  if (features & FEATURE_LAUNCHPAD) for (uint8_t k = 0; k < LAUNCHPAD_BUTTONS; ++k) if (isRamp(lpActions[k])) return true;
+  if (features & FEATURE_NOTE_TO_CC) for (uint8_t k = 0; k < MAP_ENTRIES; ++k) if (noteMap[k].sourcePlusOne && isRamp(noteMap[k].action)) return true;
+  if (features & FEATURE_CC_MAP) for (uint8_t k = 0; k < MAP_ENTRIES; ++k) if (ccMap[k].sourcePlusOne && isRamp(ccMap[k].action)) return true;
+  return false;
+}
+
 bool globalClockActive() {
-  return globalSettings.buttonAction == BTN_TAP_TEMPO || globalSettings.buttonAction == BTN_LOOPER ||
-         anyArpRoute() || echoRouteIdx != 0xFFFF || stutterRouteIdx != 0xFFFF;
+  const uint8_t b = globalSettings.buttonAction;
+  return b == BTN_TAP_TEMPO || b == BTN_LOOPER ||
+         ((b == BTN_PITCH_UP || b == BTN_PITCH_DOWN || b == BTN_MOD) && globalSettings.buttonParamA) ||
+         anyArpRoute() || echoRouteIdx != 0xFFFF || stutterRouteIdx != 0xFFFF || anyMappedRamp();
 }
 
 uint16_t effectiveBpm() {
@@ -1835,6 +1850,7 @@ void sendToOutputs(uint16_t mask, uint8_t statusHi, uint8_t channel, uint8_t dat
 }
 
 void upsertPendingMask(uint16_t mask, const PendingMsg &msg) {
+  if (msg.kind == MK_NOTE) globalEchoTap(mask, msg.channel, msg.statusHi == 0x90 && msg.data2, msg.data1, msg.data2);
   if (msg.kind == MK_NOTE && globalStutterTap(mask, msg.channel, msg.statusHi == 0x90 && msg.data2, msg.data1, msg.data2)) return;
   if (msg.kind == MK_NOTE && (mask & launchpadPorts)) { // Launchpad ports get lights, not notes
     const bool on = msg.statusHi == 0x90 && msg.data2;
@@ -2059,6 +2075,7 @@ uint16_t modeDefaultPorts(uint8_t inputDevice) {
 }
 
 void applyModeDefault(uint8_t inputDevice, uint8_t statusHi, uint8_t channel, uint8_t data1, uint8_t data2, uint8_t len) {
+  if (statusHi == 0x90 || statusHi == 0x80) globalEchoTap(modeDefaultPorts(inputDevice), channel, statusHi == 0x90 && data2, data1, data2);
   if ((statusHi == 0x90 || statusHi == 0x80) &&
       globalStutterTap(modeDefaultPorts(inputDevice), channel, statusHi == 0x90 && data2, data1, data2)) return;
   sendToOutputs(modeDefaultPorts(inputDevice), statusHi, channel, data1, data2, len);
@@ -2226,17 +2243,22 @@ fw::MusicalDivision echoCurrentDivision() {
 // Each note the Echo route sends, after its channels are picked.
 bool stutterBefore() { return stutterSettings.beforeRoute != 0 && stutterSettings.global == 0; }
 bool stutterGlobal() { return stutterSettings.global != 0; }
-bool echoBefore() { return echoSettings.beforeRoute != 0; }
+bool echoBefore() { return echoSettings.beforeRoute != 0 && echoSettings.global == 0; }
+bool echoGlobal() { return echoSettings.global != 0; }
+int8_t echoHeld = -1;           // momentary Echo: the square held now, -1 none (ARP_SQUARES the default)
+bool echoEmitting = false;      // a Global Echo repeat is going out, not echoed again
+uint16_t echoPortsFor[16][128]; // Global Echo: the ports each note last went to, where its echoes go
 
-void echoTap(const RouteData &r, bool incoming, uint8_t channel, bool on, uint8_t note, uint8_t velocity) {
-  if (!(r.features & FEATURE_ECHO) || echoRouteIdx >= routeCount || &routes[echoRouteIdx] != &r) return;
-  if (incoming != echoBefore() || echoReplaying) return; // an echo played back in isn't echoed again
+bool echoSilent() { return echoSettings.momentary ? echoHeld < 0 : echoOff; }
+
+// One note into the echo engine: a Note Off ends its echo, a Note On starts one unless Echo is off.
+void echoEngineTap(uint8_t channel, bool on, uint8_t note, uint8_t velocity) {
   const uint64_t now = time_us_64();
   if (!on || velocity == 0) {
     echoEngine.noteOff(now, 0, 0x80 | channel, note);
     return;
   }
-  if (echoOff) return; // echoes already sounding still fade out
+  if (echoSilent()) return; // echoes already sounding still fade out
   const uint8_t repeats = echoSettings.repeats >= 1 && echoSettings.repeats <= 32 ? echoSettings.repeats : 4;
   fw::EchoConfig config;
   config.delayUs = (uint32_t)fw::divisionDurationUs(echoCurrentDivision(), clockEngine.bpm());
@@ -2245,8 +2267,38 @@ void echoTap(const RouteData &r, bool incoming, uint8_t channel, bool on, uint8_
   echoEngine.noteOn(now, 0, 0x90 | channel, note, velocity, config);
 }
 
+// Global Echo hears every note going out, routed or not, except its own repeats.
+void globalEchoTap(uint16_t mask, uint8_t channel, bool on, uint8_t note, uint8_t velocity) {
+  if (!echoGlobal() || echoRouteIdx >= routeCount || echoEmitting || !mask) return;
+  if (on) echoPortsFor[channel & 0x0F][note & 0x7F] = mask;
+  echoEngineTap(channel, on, note, velocity);
+}
+
+void echoTap(const RouteData &r, bool incoming, uint8_t channel, bool on, uint8_t note, uint8_t velocity) {
+  if (!(r.features & FEATURE_ECHO) || echoRouteIdx >= routeCount || &routes[echoRouteIdx] != &r) return;
+  if (echoGlobal()) return; // Global Echo hears everything at the outputs instead
+  if (incoming != echoBefore() || echoReplaying) return; // an echo played back in isn't echoed again
+  echoEngineTap(channel, on, note, velocity);
+}
+
 void emitEcho(void *, uint8_t, const fw::EchoEvent &e) {
   if (echoRouteIdx >= routeCount) return;
+  if (echoGlobal()) {
+    PendingMsg g;
+    g.used = true;
+    g.channel = e.status & 0x0F;
+    g.kind = MK_NOTE;
+    g.statusHi = e.status & 0xF0;
+    g.number = e.data1;
+    g.data1 = e.data1;
+    g.data2 = e.data2;
+    g.len = 3;
+    const uint16_t ports = echoPortsFor[g.channel][g.data1 & 0x7F];
+    echoEmitting = true;
+    upsertPendingMask(ports ? ports : routeOutputsNow(routes[echoRouteIdx]), g);
+    echoEmitting = false;
+    return;
+  }
   if (echoBefore()) { // back in through the route, so the arp, Bypass and Bass all play the echoes
     echoReplaying = true;
     routeNoteIn(echoRouteIdx, (e.status & 0xF0) == 0x90 && e.data2, e.data1, e.data2);
@@ -2281,6 +2333,7 @@ void echoStop() {
 void echoRouteChanged() {
   echoStop();
   echoLatched = -1;
+  echoHeld = -1;
   echoRouteIdx = 0xFFFF;
   echoOff = false;
   for (uint16_t i = 0; i < routeCount; ++i) {
@@ -2311,6 +2364,18 @@ int8_t echoSquareFor(uint16_t routeIndex, uint8_t inputDevice, uint8_t type, uin
 }
 
 // A press: the default square turns Echo off and on, the others latch their division.
+// A square pressed or let go. Latching: a press toggles (the default square Echo off and on, the
+// others latch their division). Momentary: Echo sounds only while a square is held, at its division.
+void echoPress(int8_t square, bool down) {
+  if (!echoSettings.momentary) { if (down) echoLatch(square); return; }
+  if (down) {
+    echoHeld = square;
+    echoLatched = square == ARP_SQUARES ? -1 : square;
+  } else if (echoHeld == square) {
+    echoHeld = -1;
+  }
+}
+
 void echoLatch(int8_t square) {
   if (square == ARP_SQUARES) { echoOff = !echoOff; return; }
   echoLatched = echoLatched == square ? -1 : square;
@@ -2339,12 +2404,17 @@ uint32_t stutterPresetLengthUs(uint8_t preset) {
     case 1: return barUs / 4;
     case 2: return barUs / 2;
     case 4: return barUs * 2;
+    case 5: return barUs * 4;
     default: return barUs; // 1 bar
   }
 }
 
 uint32_t stutterLengthUsFor(uint8_t square) {
   if (square >= ARP_SQUARES + 1) return stutterPresetLengthUs(square - (ARP_SQUARES + 1));
+  const uint8_t d = (square < ARP_SQUARES && stutterSettings.squares[square].divisionPlus1)
+    ? stutterSettings.squares[square].divisionPlus1 : stutterSettings.divisionPlus1;
+  if (d == STUTTER_DIV_2_BARS) return stutterPresetLengthUs(4);
+  if (d == STUTTER_DIV_4_BARS) return stutterPresetLengthUs(5);
   return (uint32_t)fw::divisionDurationUs(stutterDivision(square), clockEngine.bpm());
 }
 
@@ -2409,7 +2479,9 @@ void stutterStop() {
 // A note heard by Stutter, on whichever side of the route it's set to: remembered for looping, and
 // tracked while sounding so it can be released when the loop takes over, or carried into it.
 void stutterRemember(uint8_t channel, bool on, uint8_t note, uint8_t velocity) {
-  stutterHistory.push(time_us_64(), 0, fw::EchoEvent{0, (uint8_t)((on ? 0x90 : 0x80) | channel), note, on ? velocity : (uint8_t)0});
+  const uint64_t now = time_us_64();
+  if (!stutterHistoryStartUs) stutterHistoryStartUs = now;
+  stutterHistory.push(now, 0, fw::EchoEvent{0, (uint8_t)((on ? 0x90 : 0x80) | channel), note, on ? velocity : (uint8_t)0});
   uint8_t &bits = stutterLiveOn[channel & 0x0F][note >> 3];
   if (on) { bits |= 1 << (note & 7); stutterLiveVel[channel & 0x0F][note & 0x7F] = velocity; }
   else bits &= ~(1 << (note & 7));
@@ -2422,6 +2494,9 @@ void stutterUpdate(uint64_t now) {
   stutterStop();
   if (want == 0xFF || stutterRouteIdx >= routeCount) return;
   const uint32_t lengthUs = stutterLengthUsFor(want);
+  // Not that much heard yet: wait while it's held (or latched) and start once there is. Let go
+  // first and nothing happens.
+  if (!stutterHistoryStartUs || now - stutterHistoryStartUs < lengthUs) return;
   if (!stutterRepeater.activate(stutterHistory, now, lengthUs, 0)) return; // nothing played yet, retried while held
   // Notes sounding now with nothing at all inside the slice started before it: carried.
   uint8_t touched[16][16];
@@ -2504,6 +2579,7 @@ void stutterRouteChanged() {
   memset(stutterLiveOn, 0, sizeof(stutterLiveOn));
   stutterCarryCount = 0;
   stutterHistory.reset();
+  stutterHistoryStartUs = 0;
   stutterRouteIdx = 0xFFFF;
   for (uint16_t i = 0; i < routeCount; ++i) {
     if (routes[i].features & FEATURE_STUTTER) { stutterRouteIdx = i; break; }
@@ -3886,7 +3962,7 @@ void dispatchNoteEvent(uint8_t inputDevice, uint8_t channel, bool isNoteOn, uint
     const int8_t echoSquare = echoSquareFor(i, inputDevice, 1, channel, rawNote);
     if (echoSquare >= 0) {
       matchedAny = true;
-      if (isNoteOn) echoLatch(echoSquare);
+      echoPress(echoSquare, isNoteOn);
       continue;
     }
     if (routeMatches(routes[i], inputDevice, channel, MK_NOTE, note)) {
@@ -4080,8 +4156,9 @@ void processIncomingEvent(uint8_t inputDevice, uint8_t statusHi, uint8_t channel
       const int8_t echoSquare = echoSquareFor(i, inputDevice, 2, channel, number);
       if (echoSquare >= 0) {
         matchedAny = true;
-        if (data2 >= 64 && !echoCcHeld[echoSquare]) echoLatch(echoSquare); // once per press
-        echoCcHeld[echoSquare] = data2 >= 64;
+        const bool down = data2 >= 64;
+        if (down != echoCcHeld[echoSquare]) echoPress(echoSquare, down); // once per press and release
+        echoCcHeld[echoSquare] = down;
         continue;
       }
     }
@@ -4960,6 +5037,15 @@ void sendPanic() {
   allLedConfirmationFlashes();
 }
 
+// buttonParamA for Pitch/Mod is the ramp's length for a full sweep (1.58): 0 instant, else a
+// fw::MusicalDivision + 1 at the current BPM, same as the mapped ramps. Anything past the division
+// list (a CC or note number from another button mode) plays as a quarter note.
+uint32_t rampLengthMs(uint8_t divisionPlus1) {
+  if (divisionPlus1 == 0) return 0;
+  const uint8_t d = divisionPlus1 <= fw::kMusicalDivisionCount ? divisionPlus1 : 6;
+  return (uint32_t)(fw::divisionDurationUs(arpDivisionFrom(d), clockEngine.bpm()) / 1000);
+}
+
 void startRamp(bool rising) {
   rampActive = true;
   rampRising = rising;
@@ -4974,9 +5060,7 @@ void startRamp(bool rising) {
   // of that distance — e.g. the button was released partway through the rise — scale the duration
   // down proportionally so the ramp's actual rate stays constant, instead of a short partial leg
   // taking just as long as a full sweep would.
-  float x = (127.0f - globalSettings.buttonParamA) / 127.0f;
-  float fullSweepSeconds = RAMP_MAX_SECONDS * x * x;
-  uint32_t fullSweepMs = (uint32_t)(fullSweepSeconds * 1000.0f + 0.5f);
+  const uint32_t fullSweepMs = rampLengthMs(globalSettings.buttonParamA);
   int32_t remainingDistance = abs((int32_t)target - (int32_t)rampStartValue);
   rampDurationMs = (uint32_t)((int64_t)remainingDistance * fullSweepMs / maxVal);
 }
@@ -5075,8 +5159,7 @@ void startMapperRamp(const void *owner, bool rising, bool isPitch, bool pitchDow
   r.owner = owner;
   r.startValue = r.value;
   r.startMs = millis();
-  const uint32_t fullSweepMs = (divisionPlus1 == 0 || divisionPlus1 > fw::kMusicalDivisionCount) ? 0
-    : (uint32_t)(fw::divisionDurationUs(arpDivisionFrom(divisionPlus1), clockEngine.bpm()) / 1000);
+  const uint32_t fullSweepMs = rampLengthMs(divisionPlus1);
   int32_t remainingDistance = abs((int32_t)target - (int32_t)r.startValue);
   r.durationMs = fullSweepMs == 0 ? 0 : (uint32_t)((int64_t)remainingDistance * fullSweepMs / maxVal);
 }

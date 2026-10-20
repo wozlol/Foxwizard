@@ -43,7 +43,7 @@ export const LOOPER_ACTIONS = ['Button', 'Play/Arm/Rec', 'Stop/Clear/Undo', 'Pla
 
 // The mapper's Stutter Length action (1.48): bar fractions, measured against the actual time
 // signature, rather than the arp-style musical divisions the route's own Stutter squares use.
-export const STUTTER_LENGTHS = ['1/8 bar', '1/4 bar', '1/2 bar', '1 bar', '2 bars'];
+export const STUTTER_LENGTHS = ['1/8 bar', '1/4 bar', '1/2 bar', '1 bar', '2 bars', '4 bars'];
 
 export const MAP_ENTRIES = 16;
 

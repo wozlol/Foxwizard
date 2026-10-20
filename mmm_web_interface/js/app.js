@@ -637,29 +637,6 @@ function noteSelectOptions(selected) {
   return opts;
 }
 
-// Pitch/mod ramp speed (buttonParamA, 0-127): 127 is an instant jump to the target value, 0 is
-// the slowest ramp. Curved (squared) rather than linear so slider steps near the fast/instant end
-// cover a lot less time per step than steps near the slow end — more usable resolution right where
-// it matters most. Must match RAMP_MAX_SECONDS/RAMP_GAMMA and the seconds formula in the
-// firmware's serviceRamp() exactly, since this is what makes the typed/displayed seconds value real.
-const RAMP_MAX_SECONDS = 4.0;
-const RAMP_GAMMA = 2;
-function rampSpeedToSeconds(speed) {
-  const x = (127 - speed) / 127;
-  return RAMP_MAX_SECONDS * Math.pow(x, RAMP_GAMMA);
-}
-function rampSecondsToSpeed(seconds) {
-  const clamped = Math.max(0, Math.min(RAMP_MAX_SECONDS, seconds));
-  const x = Math.pow(clamped / RAMP_MAX_SECONDS, 1 / RAMP_GAMMA);
-  return Math.round(127 - x * 127);
-}
-// Below a second, tenths alone can't tell 0.02s from 0.08s apart — hundredths matter there.
-// At/above a second, tenths are already fine enough and hundredths would just be visual noise.
-function formatRampSeconds(speed) {
-  const seconds = rampSpeedToSeconds(speed);
-  return seconds < 1 ? seconds.toFixed(2) : seconds.toFixed(1);
-}
-
 function channelSelectOptions(selected) {
   let opts = '';
   for (let c = 1; c <= 16; c++) opts += `<option value="${c - 1}" ${selected === c - 1 ? 'selected' : ''}>${c}</option>`;
@@ -674,26 +651,17 @@ function miniBoxMain(label, controlHtml) {
   return `<div class="mini-box-main"><p class="mini-box-label" title="${label}">${label}</p>${controlHtml}</div>`;
 }
 
-// A mini-box for a grid where every cell needs to look like the same kind of thing whether its
-// control is a select or a switch: the control sits in a fixed-height, vertically centered slot,
-// so a short switch doesn't just float at the top of whatever extra height the title reserved,
-// and its center lines up with a taller select's center instead of only their top edges matching.
 function renderGlobalCard() {
   const g = state.global;
   const isUsbAdaptor = g.mode === 0;
 
   let buttonExtraFields = '';
   if ([1, 2, 3].includes(g.buttonAction)) {
+    // Pitch/Mod ramp length (buttonParamA, 1.58): 0 Instant, else a musical division + 1, the same
+    // list the mapped ramps use, up to a whole bar.
+    const lenOpt = (v, label) => `<option value="${v}" ${g.buttonParamA === v ? 'selected' : ''}>${label}</option>`;
     buttonExtraFields = `
-      <div class="mini-box">
-        <div class="mini-box-main">
-          <div class="speed-label-row">
-            <p class="mini-box-label">Speed</p>
-            <input type="number" step="0.01" min="0" max="${RAMP_MAX_SECONDS}" value="${formatRampSeconds(g.buttonParamA)}" id="speedSecondsInput" class="speed-seconds-input" aria-label="Ramp time in seconds">
-          </div>
-          <input type="range" min="0" max="127" value="${g.buttonParamA}" data-global-field="buttonParamA" id="speedSlider" style="width:100%">
-        </div>
-      </div>
+      <div class="mini-box">${miniBoxMain('Length', `<select data-global-field="buttonParamA">${lenOpt(0, 'Instant')}${DIVISIONS.map((d, i) => lenOpt(i + 1, d)).join('')}</select>`)}</div>
       <div class="mini-box">${miniBoxMain('Channel', `<select data-global-field="buttonParamB">${channelSelectOptions(g.buttonParamB)}</select>`)}</div>`;
   } else if ([4, 5].includes(g.buttonAction)) {
     buttonExtraFields = `
@@ -766,7 +734,6 @@ function renderGlobalCard() {
   wireModeToggle();
   wireKnob();
   wireGlobalHeader();
-  wireSpeedSecondsInput();
 }
 
 // ============================================================================================
@@ -884,7 +851,13 @@ const clockRow = document.getElementById('clockRow');
 let clockReadout = { bpm: null, status: 0 };
 
 function clockRowActive() {
-  return state.global.buttonAction === 10 || state.global.buttonAction === 11 ||
+  const featureOn = (bit) => state.routes.some((r) => r.features & bit);
+  const isRamp = (a) => a && [ACT.PITCH_RAMP, ACT.MOD_RAMP, ACT.CC_RAMP].includes(a.type) && a.b > 0;
+  const rampMapped = (featureOn(FEATURE.LAUNCHPAD) && state.lpActions.some(isRamp)) ||
+    (featureOn(FEATURE.NOTE_TO_CC) && state.noteMap.some((e) => isRamp(e.action))) ||
+    (featureOn(FEATURE.CC_MAP) && state.ccMap.some((e) => isRamp(e.action)));
+  return [1, 2, 3].includes(state.global.buttonAction) || rampMapped ||
+    state.global.buttonAction === 10 || state.global.buttonAction === 11 ||
     state.looper.quantize >= 0 || state.looper.bars > 0 || // the looper needs a clock either way it's triggered now
     state.routes.some((r) => r.arpSlot || (r.features & (FEATURE.ECHO | FEATURE.STUTTER)));
 }
@@ -1208,23 +1181,6 @@ clockRow.addEventListener('click', async (e) => {
   renderClockRow();
 });
 
-// Only present for Pitch Up/Down/Mod (see buttonExtraFields above) — the seconds box is the
-// source of truth for typed input, the slider stays the source of truth for drag input, and each
-// side keeps the other in sync via rampSpeedToSeconds/rampSecondsToSpeed so both always agree.
-function wireSpeedSecondsInput() {
-  const input = document.getElementById('speedSecondsInput');
-  if (!input) return;
-  const slider = document.getElementById('speedSlider');
-  input.addEventListener('change', () => {
-    const seconds = parseFloat(input.value);
-    const speed = rampSecondsToSpeed(Number.isFinite(seconds) ? seconds : 0);
-    state.global.buttonParamA = speed;
-    slider.value = speed;
-    input.value = formatRampSeconds(speed);
-    syncGlobalLive();
-  });
-}
-
 // Mutates the toggle in place rather than re-rendering the whole card: a fresh element already
 // sitting at its final position never actually transitions (there's no "before" state to animate
 // from), which is what was silently skipping the slide. Keeping the same knob element alive lets
@@ -1358,6 +1314,8 @@ globalCard.addEventListener('change', (e) => {
   const field = e.target.dataset.globalField;
   if (!field) return;
   state.global[field] = parseInt(e.target.value, 10);
+  // Pitch/Mod read buttonParamA as a ramp length: a CC or note number left from another mode isn't one.
+  if (field === 'buttonAction' && [1, 2, 3].includes(state.global.buttonAction) && state.global.buttonParamA > DIVISIONS.length) state.global.buttonParamA = 6;
   if (field === 'buttonAction' || field === 'buttonToggleMomentary') renderGlobalCard();
   syncGlobalLive();
 });
@@ -1365,10 +1323,6 @@ globalCard.addEventListener('input', (e) => {
   const field = e.target.dataset.globalField;
   if (!field || e.target.type !== 'range') return;
   state.global[field] = parseInt(e.target.value, 10);
-  if (field === 'buttonParamA') {
-    const secondsInput = document.getElementById('speedSecondsInput');
-    if (secondsInput) secondsInput.value = formatRampSeconds(state.global.buttonParamA);
-  }
   syncGlobalLive();
 });
 
@@ -1980,14 +1934,16 @@ function echoSectionHtml(route, index) {
   return `<div class="${featureRowClass(true)}">
       <div class="feature-head">
         ${switchHtml(index, 'echoOn', true, 'Echo', 'switch-red')}
-        ${switchHtml(index, 'echoAfter', e.afterRoute !== false, 'Echo After Route')}
+        ${switchHtml(index, 'echoGlobal', !!e.global, 'Global Echo')}
+        ${switchHtml(index, 'echoLatching', e.latching !== false, 'Echo Latching')}
+        ${e.global ? '' : switchHtml(index, 'echoAfter', e.afterRoute !== false, 'Echo After Route')}
       </div>
       <div class="arp-fields">
         <div class="arp-field"><label>Repeats</label><input type="number" min="1" max="32" value="${e.repeats}" ${attrs('repeats')}></div>
         <div class="arp-field"><label>Level %</label><input type="number" min="1" max="100" value="${e.level}" ${attrs('level')}></div>
       </div>
       <label class="arp-table-label">Division</label>
-      ${divisionTableHtml(e, 'echo', index, 'Default, on/off')}
+      ${divisionTableHtml(e, 'echo', index, e.latching !== false ? 'Default, on/off' : 'Default')}
     </div>`;
 }
 
@@ -2037,7 +1993,9 @@ routesContainer.addEventListener('change', (e) => {
 function divisionTableHtml(owner, key, index, defaultLabel) {
   const opt = (v, cur, label) => `<option value="${v}" ${cur === v ? 'selected' : ''}>${label}</option>`;
   const ids = `data-arp-slot="${key}" data-route-index="${index}"`;
-  const divSelect = (k, cur) => `<select data-arp-square="${k}" ${ids}>${DIVISIONS.map((d, i) => opt(i, cur, d)).join('')}</select>`;
+  // Stutter also has 4 and 2 bars, listed longest first above the musical divisions.
+  const list = key === 'stutter' ? [[20, '4 bars'], [19, '2 bars'], ...DIVISIONS.map((d, i) => [i, d])] : DIVISIONS.map((d, i) => [i, d]);
+  const divSelect = (k, cur) => `<select data-arp-square="${k}" ${ids}>${list.map(([i, d]) => opt(i, cur, d)).join('')}</select>`;
   const squares = owner.squares.map((sq, k) => sq && `
       <div class="arp-square">
         ${divSelect(k, sq.division)}
@@ -2192,7 +2150,7 @@ function refreshRouteCard(index, animateStaple) {
 }
 
 // Structural changes (need a re-render): checkboxes that reveal/hide fields, staple toggle, delete
-const STRUCTURAL_FIELDS = new Set(['note', 'cc', 'ccMapEnabled', 'aftertouch', 'aftertouchMap', 'pressure', 'pressureMap', 'allInputTypes', 'allInputChannels', 'allInPorts', 'allOutPorts', 'monoRetrig', 'roundRobin', 'roundRobinRandom', 'noteToCc', 'ccMapOn', 'launchpad', 'scaleOn', 'autoChord', 'arpOn', 'echoOn', 'stutterOn', 'lpQuadEnabled', 'stutterGlobal']);
+const STRUCTURAL_FIELDS = new Set(['note', 'cc', 'ccMapEnabled', 'aftertouch', 'aftertouchMap', 'pressure', 'pressureMap', 'allInputTypes', 'allInputChannels', 'allInPorts', 'allOutPorts', 'monoRetrig', 'roundRobin', 'roundRobinRandom', 'noteToCc', 'ccMapOn', 'launchpad', 'scaleOn', 'autoChord', 'arpOn', 'echoOn', 'stutterOn', 'lpQuadEnabled', 'stutterGlobal', 'echoGlobal', 'echoLatching']);
 
 routesContainer.addEventListener('click', (e) => {
   const actionEl = e.target.closest('[data-action]');
@@ -2374,6 +2332,8 @@ function applyRouteFieldChange(route, field, el) {
   if (field === 'stutterLatching') { state.stutter.latching = el.checked; return; }
   if (field === 'stutterGlobal') { state.stutter.global = el.checked; return; }
   if (field === 'echoAfter') { state.echo.afterRoute = el.checked; return; }
+  if (field === 'echoLatching') { state.echo.latching = el.checked; return; }
+  if (field === 'echoGlobal') { state.echo.global = el.checked; return; }
   if (field === 'lpOctave') {
     route.lpOctave = parseInt(el.value, 10);
     return;
