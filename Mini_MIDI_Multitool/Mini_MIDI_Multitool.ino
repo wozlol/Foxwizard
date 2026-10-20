@@ -97,7 +97,7 @@ constexpr uint8_t SYSEX_MFR_ID = 0x7D;   // reserved for non-commercial/educatio
 constexpr uint8_t SYSEX_DEVICE_ID = 0x4D; // 'M'
 constexpr uint8_t PROTOCOL_VERSION = 4; // 2: 45-byte routes with port masks, GET_STATUS. 3: clock settings, LEARN. 4: 53-byte routes with feature fields, feature blocks
 constexpr uint8_t FW_VERSION_MAJOR = 1;
-constexpr uint8_t FW_VERSION_MINOR = 53;
+constexpr uint8_t FW_VERSION_MINOR = 54;
 constexpr uint8_t FW_CHUNK_BYTES = 128;          // firmware bytes per FW_DATA message, 147 once packed
 constexpr uint32_t FW_REBOOT_DELAY_MS = 300;     // lets the FW_END ACK reach the host before rebooting
 const char DEVICE_NAME[] = "FoxWizard Mini MIDI Multitool"; // long name sent in the SysEx IDENTITY_REPLY
@@ -2575,8 +2575,17 @@ enum : uint8_t { LS_CLEARED = 0, LS_ARMED, LS_RECORDING, LS_PLAYING, LS_STOPPED 
 bool looperMode() { return true; }
 
 bool routeLooperOff(const RouteData &r) { return (r.flags3 & 0x01) != 0; }
-bool looperRecordsOutputs() { return looperMode() && !looperSettings.recordInputs; }
-bool looperRecordsInputs() { return looperMode() && looperSettings.recordInputs; }
+// Which side the looper hears: an overdub keeps to the side its loop was recorded on, so flipping
+// Record After Routes with a loop in memory doesn't silently drop the overdub. The switch picks the
+// side for a fresh take.
+// Arming while a loop plays turns into an overdub on the first note (Looper::beginArmedRecording).
+bool looperAddsToLoop() {
+  const fw::LoopTrackState &t = looper.track(0);
+  return looper.overdubbing() || (looper.recordingArmed() && looper.playing() && t.lengthUs > 0 && t.count > 0 && !t.hidden);
+}
+bool looperCaptureInputs() { return looperAddsToLoop() ? loopTagsAreInputs : (bool)looperSettings.recordInputs; }
+bool looperRecordsOutputs() { return looperMode() && !looperCaptureInputs(); }
+bool looperRecordsInputs() { return looperMode() && looperCaptureInputs(); }
 void loopHeldUpdate(uint16_t tag, bool on, uint8_t channel, uint8_t note, uint8_t velocity);
 
 uint8_t looperState() {
@@ -2625,10 +2634,9 @@ void looperCapture(uint16_t tag, uint8_t status, uint8_t note, uint8_t velocity)
   const bool on = (status & 0xF0) == 0x90 && velocity;
   const uint8_t channel = status & 0x0F;
   static uint8_t heldMode = 0xFF; // the held list belongs to one side, outputs or inputs
-  if (heldMode != looperSettings.recordInputs) { loopHeldCount = 0; heldMode = looperSettings.recordInputs; }
-  // A fresh take follows the Records switch. An overdub never mixes inputs into an outputs loop.
-  if (looper.recordingArmed()) loopTagsAreInputs = looperSettings.recordInputs;
-  else if (looper.overdubbing() && loopTagsAreInputs != (bool)looperSettings.recordInputs) { loopHeldUpdate(tag, on, channel, note, velocity); return; }
+  if (heldMode != looperCaptureInputs()) { loopHeldCount = 0; heldMode = looperCaptureInputs(); }
+  // A fresh take follows the switch. An overdub keeps to its loop's side (see looperCaptureInputs).
+  if (looper.recordingArmed() && !looperAddsToLoop()) loopTagsAreInputs = looperSettings.recordInputs;
   const bool starting = looper.recordingArmed() && on;
   if (looper.recording() && looper.track(0).generation != loopPassGeneration) { // a new overdub pass
     loopPassGeneration = looper.track(0).generation;
@@ -3811,6 +3819,8 @@ void dispatchNoteEvent(uint8_t inputDevice, uint8_t channel, bool isNoteOn, uint
     const int8_t square = arpSquareFor(routes[i], inputDevice, 1, channel, rawNote);
     if (square >= 0) { // a division trigger, it doesn't pass through
       matchedAny = true;
+      // Recorded like the route's own notes, so loop playback changes the division again.
+      if (!routeLooperOff(routes[i])) matchedLooperRoute = true;
       arpSquarePress(routes[i].arpSlot - 1, square, isNoteOn);
       continue;
     }
@@ -3920,7 +3930,8 @@ void processIncomingEvent(uint8_t inputDevice, uint8_t statusHi, uint8_t channel
   // note. Gated on the button action itself, not just currentOctaveShift != 0 — a note held from
   // before the shift engages still needs to be tracked here, so a later shift change can find and
   // retrigger it (see retriggerHeldNotesForShiftChange).
-  if (kind == MK_NOTE && octaveShiftActionActive() && octaveShiftMatchesChannel(channel)) {
+  // Loop playback of recorded inputs was recorded after this shift already.
+  if (kind == MK_NOTE && !looperEmitting && octaveShiftActionActive() && octaveShiftMatchesChannel(channel)) {
     if (isNoteOn) {
       int16_t shifted = (int16_t)number + currentOctaveShift;
       if (shifted < 0 || shifted > 127) {
