@@ -15,6 +15,9 @@ hide it inside old gear for an easy USB upgrade.
 - Super easy web interface to program it (FoxWizard Patchling). Route any
   channel to any other, pipe CCs, block messages, transpose, split, do
   mono/poly tricks, and more.
+- Live performance features: Arp, Scale, Auto Chord, Echo, Stutter, a
+  looper with overdub layers, Launchpad support, per-note parameter
+  locks, and mappable Note/CC actions. See the manual.
 - One-click firmware updates from Patchling (firmware 1.2 and later).
 - Configurable front button for on-the-fly panic, pitch bend, mod,
   octave, CC, or trigger note.
