@@ -983,6 +983,7 @@ body.dragging-active { overflow: hidden; }
 .clock-row-heading { font-family: 'Russo One', sans-serif; font-size: 1.25rem; color: #fca5a5; margin: 0; white-space: nowrap; }
 .clock-readout { font-size: 0.86rem; font-weight: 600; color: #fecaca; }
 .switch-red input:checked + .switch-track { background: var(--red); }
+.switch-yellow input:checked + .switch-track { background: #eab308; }
 .clock-send { margin-top: 10px; }
 .time-sig { display: flex; align-items: center; gap: 6px; }
 .time-sig select { flex: 1; min-width: 0; }
@@ -1067,6 +1068,9 @@ body.dragging-active { overflow: hidden; }
   .looper-settings { grid-template-columns: repeat(2, minmax(0, 1fr)); }
 }
 .lp-quad-row { margin-top: 10px; }
+.looper-trigger { display: flex; align-items: center; flex-wrap: wrap; gap: 6px; margin-left: auto; }
+.looper-trigger-label { font-size: 0.72rem; color: var(--text-dim); }
+.looper-trigger input[type="number"] { width: 64px; }
 
 /* Arp settings, inside a route's output column. */
 .arp-fields { display: grid; grid-template-columns: repeat(auto-fill, minmax(150px, 1fr)); gap: 8px 12px; margin-top: 8px; }
@@ -1097,7 +1101,7 @@ body.dragging-active { overflow: hidden; }
 /* The mapper's action editor: action type, then its values. */
 .action-editor { display: inline-flex; flex-wrap: wrap; align-items: center; gap: 6px; }
 .action-editor select { flex: 1 1 auto; min-width: 0; }
-.notecc-row .action-editor { flex: 1 1 0; min-width: 0; flex-wrap: nowrap; }
+.notecc-row .action-editor { flex: 1 1 0; min-width: 0; flex-wrap: wrap; }
 .notecc-row .action-editor select { flex: 1 1 0; min-width: 90px; }
 /* Number boxes stay narrow so Learn and the trash button keep to the row. */
 .action-editor input[type="number"], .notecc-row > input[type="number"] { flex: 0 0 64px; width: 64px; min-width: 0; }

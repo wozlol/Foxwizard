@@ -784,11 +784,57 @@ function looperMapped() {
   // A mapping only counts while some route has that feature switched on, so the default
   // Launchpad table's two Looper buttons don't count with no Launchpad route.
   const featureOn = (bit) => state.routes.some((r) => r.features & bit);
-  return state.global.buttonAction === 11 ||
+  return state.global.buttonAction === 11 || (state.looper.trigger?.triggerType || 0) !== 0 ||
     (featureOn(FEATURE.LAUNCHPAD) && state.lpActions.some(usesLooper)) ||
     (featureOn(FEATURE.NOTE_TO_CC) && state.noteMap.some((e) => usesLooper(e.action))) ||
     (featureOn(FEATURE.CC_MAP) && state.ccMap.some((e) => usesLooper(e.action)));
 }
+
+// The looper's own one-button trigger: a note or CC that works like the front button in Looper
+// mode. Shown even while the row is collapsed, since setting it is itself a way in.
+function looperTriggerHtml() {
+  const t = state.looper.trigger || noTrigger();
+  const opt = (v, cur, label) => `<option value="${v}" ${cur === v ? 'selected' : ''}>${label}</option>`;
+  let channels = opt(16, t.triggerChannel, 'Any');
+  for (let c = 0; c < 16; c++) channels += opt(c, t.triggerChannel, c + 1);
+  const number = t.triggerType === 1
+    ? `<select data-looper-trigger="triggerNumber">${noteSelectOptions(t.triggerNumber)}</select>`
+    : `<input type="number" min="0" max="127" value="${t.triggerNumber}" data-looper-trigger="triggerNumber">`;
+  return `<div class="looper-trigger">
+      <span class="looper-trigger-label">Looper Button</span>
+      <select data-looper-trigger="triggerType">${opt(0, t.triggerType, 'None')}${opt(1, t.triggerType, 'Note')}${opt(2, t.triggerType, 'CC')}</select>
+      ${t.triggerType ? `<select data-looper-trigger="triggerChannel" title="Channel">${channels}</select>${number}` : ''}
+      <button type="button" class="btn btn-ghost btn-tiny" data-action="learnLooperTrigger">Learn</button>
+    </div>`;
+}
+
+looperRow.addEventListener('change', (e) => {
+  const field = e.target.dataset.looperTrigger;
+  if (!field) return;
+  const t = (state.looper.trigger = state.looper.trigger || noTrigger());
+  let v = parseInt(e.target.value, 10);
+  if (Number.isNaN(v)) return;
+  t[field] = field === 'triggerNumber' ? Math.min(127, Math.max(0, v)) : v;
+  markDirty();
+  renderRoutes(); // the trigger can make the looper reachable, which the route Looper switches follow
+});
+
+looperRow.addEventListener('click', async (e) => {
+  const btn = e.target.closest('[data-action="learnLooperTrigger"]');
+  if (!btn) return;
+  if (!device.connected) { toast('Not connected to a device', 'error'); return; }
+  btn.disabled = true;
+  btn.textContent = 'Play a note or move a control…';
+  try {
+    const r = await device.learn();
+    state.looper.trigger = { triggerType: r.type, triggerChannel: r.channel, triggerNumber: r.number };
+    markDirty();
+    toast(`Learned ${r.type === 1 ? `note ${noteName(r.number)}` : `CC ${r.number}`} on channel ${r.channel + 1}`, 'success');
+  } catch (err) {
+    toast('Nothing heard in 10 seconds', 'error');
+  }
+  renderRoutes();
+});
 
 function renderLooperRow() {
   looperRow.hidden = false;
@@ -805,6 +851,7 @@ function renderLooperRow() {
     <div class="looper-row-header">
       <h2 class="looper-row-heading">LOOPER</h2>
       <p class="note-hint">Set Button Action to Looper, or use 'Note/CC to Feature' and select Looper.</p>
+      ${looperTriggerHtml()}
     </div>
     ${mapped ? `<div class="looper-settings">${[
       ['Length', `<select data-looper-field="bars">${opt(0, l.bars, 'Free')}${Array.from({ length: 16 }, (_, k) => opt(k + 1, l.bars, `${k + 1} bar${k ? 's' : ''}`)).join('')}</select>`],
@@ -1602,7 +1649,7 @@ function renderRouteCard(route, index, animateStaple) {
               <p class="note-hint cc-map-hint">CC range now begins with this CC.</p>
             </div>
             ${looperMapped() ? `<div class="field-row">
-              ${switchHtml(index, 'looperEnabled', route.looperEnabled !== false, 'Looper')}
+              ${switchHtml(index, 'looperEnabled', route.looperEnabled !== false, 'Looper', 'switch-green')}
             </div>` : ''}
             <div class="field-row">
               ${switchHtml(index, 'monoRetrig', !!route.monoRetrig, 'Mono Retrig')}
@@ -1832,7 +1879,7 @@ function refreshArpCards() {
 function scaleSectionHtml(route, index) {
   const on = !!(route.features & FEATURE.SCALE);
   return `<div class="${featureRowClass(on)}">
-      ${switchHtml(index, 'scaleOn', on, 'Scale')}
+      ${switchHtml(index, 'scaleOn', on, 'Scale', 'switch-yellow')}
       ${on ? `<div class="scale-layout"><label>Layout</label>
         <select data-scale-field="layout" data-route-index="${index}">${LAYOUTS.map((l, i) => `<option value="${i}" ${(route.scaleLayout || 0) === i ? 'selected' : ''}>${l}</option>`).join('')}</select>
       </div>` : ''}
@@ -1873,7 +1920,7 @@ function autoChordSectionHtml(route, index) {
       <span class="switch-label">${diatonic ? k + 1 : CHROMATIC_POSITION_LABELS[k]}</span>
     </label>`).join('');
   return `<div class="${featureRowClass(on)}">
-      ${switchHtml(index, 'autoChord', on, 'Auto Chord')}
+      ${switchHtml(index, 'autoChord', on, 'Auto Chord', 'switch-yellow')}
       ${on ? `<div class="port-switches chord-positions">${chips}</div>` : ''}
     </div>`;
 }
@@ -1890,7 +1937,7 @@ routesContainer.addEventListener('change', (e) => {
 // Arp: up to 4 routes, each in its own slot, all on the global clock's grid.
 function arpSectionHtml(route, index) {
   const on = !!route.arpSlot;
-  if (!on) return `<div class="${featureRowClass(false)}">${switchHtml(index, 'arpOn', false, 'Arp')}</div>`;
+  if (!on) return `<div class="${featureRowClass(false)}">${switchHtml(index, 'arpOn', false, 'Arp', 'switch-red')}</div>`;
   const s = route.arpSlot - 1;
   const a = state.arps[s];
   const opt = (v, cur, label) => `<option value="${v}" ${cur === v ? 'selected' : ''}>${label}</option>`;
@@ -1902,7 +1949,7 @@ function arpSectionHtml(route, index) {
   const chOptions = (cur) => opt(0, cur, 'Off') + Array.from({ length: 16 }, (_, c) => opt(c + 1, cur, c + 1)).join('');
   const table = divisionTableHtml(a, s, index, 'Default, on/off');
   return `<div class="${featureRowClass(true)}">
-      ${switchHtml(index, 'arpOn', true, `Arp ${route.arpSlot}`)}
+      ${switchHtml(index, 'arpOn', true, `Arp ${route.arpSlot}`, 'switch-red')}
       <div class="arp-fields">
         ${field('Mode', `<select ${attrs('mode')}>${ARP_MODE_ORDER.map((i) => opt(i, a.mode, ARP_MODES[i])).join('')}</select>`)}
         ${field('Octaves', `<select ${attrs('octaves')}>${[1, 2, 3, 4].map((o) => opt(o, a.octaves, o)).join('')}</select>`)}
@@ -1926,11 +1973,11 @@ function arpSectionHtml(route, index) {
 // division square's trigger latches its division, pressed again it goes back to the default.
 function echoSectionHtml(route, index) {
   const on = !!(route.features & FEATURE.ECHO);
-  if (!on) return `<div class="${featureRowClass(false)}">${switchHtml(index, 'echoOn', false, 'Echo')}</div>`;
+  if (!on) return `<div class="${featureRowClass(false)}">${switchHtml(index, 'echoOn', false, 'Echo', 'switch-red')}</div>`;
   const e = state.echo;
   const attrs = (f) => `data-echo-field="${f}" data-route-index="${index}"`;
   return `<div class="${featureRowClass(true)}">
-      ${switchHtml(index, 'echoOn', true, 'Echo')}
+      ${switchHtml(index, 'echoOn', true, 'Echo', 'switch-red')}
       <div class="lp-quad-row">${switchHtml(index, 'echoAfter', e.afterRoute !== false, 'Echo After Route')}</div>
       <div class="arp-fields">
         <div class="arp-field"><label>Repeats</label><input type="number" min="1" max="32" value="${e.repeats}" ${attrs('repeats')}></div>
@@ -1945,10 +1992,10 @@ function echoSectionHtml(route, index) {
 // muting it live, until released or the runout. Every square is momentary, the default too.
 function stutterSectionHtml(route, index) {
   const on = !!(route.features & FEATURE.STUTTER);
-  if (!on) return `<div class="${featureRowClass(false)}">${switchHtml(index, 'stutterOn', false, 'Stutter')}</div>`;
+  if (!on) return `<div class="${featureRowClass(false)}">${switchHtml(index, 'stutterOn', false, 'Stutter', 'switch-red')}</div>`;
   const st = state.stutter;
   return `<div class="${featureRowClass(true)}">
-      ${switchHtml(index, 'stutterOn', true, 'Stutter')}
+      ${switchHtml(index, 'stutterOn', true, 'Stutter', 'switch-red')}
       <div class="lp-quad-row">${switchHtml(index, 'stutterAfter', st.afterRoute !== false, 'Stutter After Route')}</div>
       <div class="arp-fields">
         <div class="arp-field"><label>Runout Bars</label><input type="number" min="1" max="16" value="${st.maxBars}" data-stutter-field="maxBars" data-route-index="${index}"></div>

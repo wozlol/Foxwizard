@@ -152,11 +152,11 @@ export function bytesToEcho(b) {
 // holding the button clears and a double tap stops, 1 the other way), play/arm trigger (3), stop/clear
 // trigger (3), 37 spare.
 export function defaultLooper() {
-  return { bars: 0, quantize: -1, autoOverdub: false, recordInputs: false, holdClears: true, loopUnrouted: true };
+  return { bars: 0, quantize: -1, autoOverdub: false, recordInputs: false, holdClears: true, loopUnrouted: true, trigger: noTrigger() };
 }
 export function looperToBytes(l) {
   return [l.bars, l.quantize + 1, l.autoOverdub ? 1 : 0, l.recordInputs ? 1 : 0, l.holdClears ? 0 : 1,
-    l.loopUnrouted ? 0 : 1, ...new Array(42).fill(0)];
+    l.loopUnrouted ? 0 : 1, ...triggerToBytes(l.trigger), ...new Array(39).fill(0)];
 }
 export function bytesToLooper(b) {
   return {
@@ -165,7 +165,8 @@ export function bytesToLooper(b) {
     autoOverdub: b[2] === 1,
     recordInputs: b[3] === 1,
     holdClears: b[4] !== 1,
-    loopUnrouted: b[5] !== 1
+    loopUnrouted: b[5] !== 1,
+    trigger: bytesToTrigger(b, 6) // 1.49: the looper's own one-button trigger
   };
 }
 

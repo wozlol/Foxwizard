@@ -5,7 +5,8 @@ export const ACT = {
   NONE: 0, NOTE: 1, CC_MOMENTARY: 2, CC_TOGGLE: 3, CC_VALUE: 4, CC_LEVEL: 5, TRANSPORT: 6,
   PROGRAM: 7, PROGRAM_STEP: 8, LIVE_CHANNEL: 9, LIVE_VELOCITY: 10, LOOPER: 11, TAP_TEMPO: 12,
   LIVE_CHANNEL_STEP: 13, ARP_DIV_STEP: 14, STUTTER_LENGTH: 15, QUAD_TOGGLE: 16, ECHO_TOGGLE: 17, // 1.48
-  NOTE_TOGGLE: 18, PITCH_RAMP: 19, MOD_RAMP: 20, CC_RAMP: 21 // 1.48, button-mode parity
+  NOTE_TOGGLE: 18, PITCH_RAMP: 19, MOD_RAMP: 20, CC_RAMP: 21, // 1.48, button-mode parity
+  PANIC: 22, OCTAVE: 23 // 1.49, button-mode parity
 };
 
 export const ACTION_TYPES = [
@@ -30,7 +31,9 @@ export const ACTION_TYPES = [
   { v: ACT.NOTE_TOGGLE, l: 'Note Toggle' },
   { v: ACT.PITCH_RAMP, l: 'Pitch Ramp' },
   { v: ACT.MOD_RAMP, l: 'Mod Ramp' },
-  { v: ACT.CC_RAMP, l: 'CC Ramp' }
+  { v: ACT.CC_RAMP, l: 'CC Ramp' },
+  { v: ACT.PANIC, l: 'Panic' },
+  { v: ACT.OCTAVE, l: 'Octave Up/Down' }
 ];
 
 // Sent as MMC, and as MIDI Start, Stop or Continue where MIDI has one.
@@ -55,6 +58,7 @@ export function defaultAction(type = ACT.NONE) {
     case ACT.PITCH_RAMP: return { type, a: 1, b: 6 }; // up, a quarter note sweep
     case ACT.MOD_RAMP: return { type, a: 0, b: 6 };
     case ACT.CC_RAMP: return { type, a: 20, b: 6 };
+    case ACT.OCTAVE: return { type, a: 1, b: 0 }; // up, momentary
     default: return { type, a: 0, b: 0 };
   }
 }
@@ -65,7 +69,7 @@ export function actionToBytes(act) {
 }
 
 export function bytesToAction(b, o) {
-  const type = b[o] <= ACT.CC_RAMP ? b[o] : ACT.NONE;
+  const type = b[o] <= ACT.OCTAVE ? b[o] : ACT.NONE;
   return { type, a: (b[o + 1] || 0) & 0x7F, b: (b[o + 2] || 0) & 0x7F, c: (b[o + 3] || 0) & 0x7F };
 }
 
@@ -190,6 +194,10 @@ export function actionEditorHtml(act, attrs, noteSelectOptions, showColor, divis
       break;
     case ACT.CC_RAMP:
       fields = num('a', act.a, 0, 127, 'CC', 'CC number') + field('b', rampLengthSelect(act.b, divisions));
+      break;
+    case ACT.OCTAVE:
+      fields = field('a', `<select>${opt(1, act.a, 'Up')}${opt(0, act.a, 'Down')}</select>`) +
+        field('b', `<select>${opt(0, act.b, 'Momentary')}${opt(1, act.b, 'Toggle')}</select>`);
       break;
     default:
       break;

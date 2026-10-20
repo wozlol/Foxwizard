@@ -103,6 +103,7 @@ function looperFromXml(el) {
   lp.recordInputs = el.getAttribute('records') === 'inputs';
   lp.holdClears = el.getAttribute('holdClears') !== 'false';
   lp.loopUnrouted = el.getAttribute('loopUnrouted') !== 'false';
+  lp.trigger = triggerFromXml(el);
   return lp;
 }
 
@@ -217,7 +218,7 @@ export function serializePreset(state) {
   squaresToXml(lines, stt.squares, '    ');
   lines.push('  </stutter>');
   const lp = state.looper || defaultLooper();
-  lines.push(`  <looper length="${lp.bars ? lp.bars : 'free'}" quantize="${lp.quantize >= 0 ? DIVISIONS[lp.quantize] : 'off'}" autoOverdub="${lp.autoOverdub}" records="${lp.recordInputs ? 'inputs' : 'outputs'}" holdClears="${lp.holdClears}" loopUnrouted="${lp.loopUnrouted !== false}">`);
+  lines.push(`  <looper length="${lp.bars ? lp.bars : 'free'}" quantize="${lp.quantize >= 0 ? DIVISIONS[lp.quantize] : 'off'}" autoOverdub="${lp.autoOverdub}" records="${lp.recordInputs ? 'inputs' : 'outputs'}" holdClears="${lp.holdClears}" loopUnrouted="${lp.loopUnrouted !== false}"${triggerAttrs(lp.trigger)}>`);
   lines.push('  </looper>');
   lines.push('  <launchpad>');
   (state.lpActions || []).forEach((act, i) => {

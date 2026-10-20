@@ -97,7 +97,7 @@ constexpr uint8_t SYSEX_MFR_ID = 0x7D;   // reserved for non-commercial/educatio
 constexpr uint8_t SYSEX_DEVICE_ID = 0x4D; // 'M'
 constexpr uint8_t PROTOCOL_VERSION = 4; // 2: 45-byte routes with port masks, GET_STATUS. 3: clock settings, LEARN. 4: 53-byte routes with feature fields, feature blocks
 constexpr uint8_t FW_VERSION_MAJOR = 1;
-constexpr uint8_t FW_VERSION_MINOR = 49;
+constexpr uint8_t FW_VERSION_MINOR = 50;
 constexpr uint8_t FW_CHUNK_BYTES = 128;          // firmware bytes per FW_DATA message, 147 once packed
 constexpr uint32_t FW_REBOOT_DELAY_MS = 300;     // lets the FW_END ACK reach the host before rebooting
 const char DEVICE_NAME[] = "FoxWizard Mini MIDI Multitool"; // long name sent in the SysEx IDENTITY_REPLY
@@ -394,7 +394,8 @@ enum : uint8_t {
   ACT_NONE = 0, ACT_NOTE, ACT_CC_MOMENTARY, ACT_CC_TOGGLE, ACT_CC_VALUE, ACT_CC_LEVEL, ACT_TRANSPORT,
   ACT_PROGRAM, ACT_PROGRAM_STEP, ACT_LIVE_CHANNEL, ACT_LIVE_VELOCITY, ACT_LOOPER, ACT_TAP_TEMPO,
   ACT_LIVE_CHANNEL_STEP, ACT_ARP_DIV_STEP, ACT_STUTTER_LENGTH, ACT_QUAD_TOGGLE, ACT_ECHO_TOGGLE,
-  ACT_NOTE_TOGGLE, ACT_PITCH_RAMP, ACT_MOD_RAMP, ACT_CC_RAMP, ACT_COUNT // 1.48
+  ACT_NOTE_TOGGLE, ACT_PITCH_RAMP, ACT_MOD_RAMP, ACT_CC_RAMP, // 1.48
+  ACT_PANIC, ACT_OCTAVE, ACT_COUNT // 1.49
 };
 enum : uint8_t {
   TRANSPORT_PLAY = 0, TRANSPORT_STOP, TRANSPORT_CONTINUE, TRANSPORT_PAUSE, TRANSPORT_RECORD,
@@ -524,7 +525,12 @@ struct LooperSettings {
   uint8_t recordInputs;   // 0 records what the routes send out, 1 what comes in, replayed through the routes
   uint8_t doubleTapClears; // 0: holding the button clears (or undoes), a double tap stops. 1: the other way
   uint8_t loopUnroutedOff; // 1.48: 0 (a fresh preset's default) records a note no route matches at all, 1 skips it
-  uint8_t spare[42];
+  // 1.49: one note or CC that works exactly like the front button in Looper mode, Hold Clears
+  // included, without setting Button Action or a mapping. Type 0 none, 1 note, 2 CC. Channel 16 any.
+  uint8_t triggerType;
+  uint8_t triggerChannel;
+  uint8_t triggerNumber;
+  uint8_t spare[39];
 };
 #pragma pack(pop)
 LooperSettings looperSettings;
@@ -536,6 +542,7 @@ uint8_t launchpadOwner[PORT_COUNT]; // route index per port
 // The mapper's live, session-only route changes: an output channel (-1 none) and a velocity percent
 // (0 none, else 10-200 in place of the route's Velocity %), and the last program change sent.
 int8_t liveChannel[MAX_ROUTES];
+int8_t liveOctave[MAX_ROUTES]; // a mapped Octave Up/Down's shift on that route, -1 to 1, session only
 bool quadToggleOff[MAX_ROUTES]; // a mapped ACT_QUAD_TOGGLE's live override, session only
 uint8_t liveVelocity[MAX_ROUTES];
 uint8_t liveProgram[MAX_ROUTES];
@@ -853,6 +860,7 @@ void resetAllRouteNoteTracks() {
   memset(liveVelocity, 0, sizeof(liveVelocity));
   memset(liveProgram, 0, sizeof(liveProgram));
   memset(quadToggleOff, 0, sizeof(quadToggleOff));
+  memset(liveOctave, 0, sizeof(liveOctave));
   for (uint8_t s = 0; s < ARP_SLOTS; ++s) liveArpDivision[s] = -1;
   memset(heldPool, 0, sizeof(heldPool));
   arpForgetAll(); // the arps point at routes by index, which a route change can move
@@ -934,6 +942,8 @@ uint8_t routeVelocityScale(const RouteData &r) {
 int16_t routeTranspose(const RouteData &r) {
   int16_t t = (int16_t)r.transpose - 64;
   if (r.features & FEATURE_LAUNCHPAD) t -= 12 * min<uint8_t>(r.launchpadOctave, 2);
+  const uint16_t i = &r - routes;
+  if (i < MAX_ROUTES) t += 12 * liveOctave[i];
   return t;
 }
 
@@ -1756,6 +1766,21 @@ bool captureLearnOrTap(uint8_t inputDevice, MsgKind kind, bool isNoteOn, uint8_t
         tapCcHeld = data2 >= 64;
       }
       return true; // the trigger doesn't pass through, its Note Off and zero CCs included
+    }
+  }
+  if (looperSettings.triggerType) {
+    const bool typeMatch = (looperSettings.triggerType == 1 && kind == MK_NOTE) || (looperSettings.triggerType == 2 && kind == MK_CC);
+    const bool channelMatch = looperSettings.triggerChannel > 15 || looperSettings.triggerChannel == channel;
+    if (typeMatch && channelMatch && data1 == looperSettings.triggerNumber) {
+      // Held and released like the front button, so Hold Clears works from it too. A CC is held
+      // while it's 64 or more.
+      static bool loopTriggerHeld = false;
+      const bool down = kind == MK_NOTE ? isNoteOn : data2 >= 64;
+      if (down != loopTriggerHeld) {
+        loopTriggerHeld = down;
+        looperAction(LOOP_ACT_BUTTON, down);
+      }
+      return true;
     }
   }
   return false;
@@ -3099,6 +3124,18 @@ void setLiveChannel(uint16_t routeIndex, int8_t channel) {
   if (slot && slot <= ARP_SLOTS) arpReleaseSlot(slot - 1);
 }
 
+// Held notes would end up released at the wrong pitch, so the route's channels get All Notes Off
+// first, same as a live channel change.
+void setLiveOctave(uint16_t routeIndex, int8_t octave) {
+  if (liveOctave[routeIndex] == octave) return;
+  const uint16_t mask = routeChannelMask(routeIndex);
+  const uint16_t ports = routeOutputsNow(routes[routeIndex]);
+  for (uint8_t c = 0; c < 16; ++c) if (mask & (1u << c)) sendToOutputs(ports, 0xB0, c, 123, 0, 3);
+  const uint8_t slot = routes[routeIndex].arpSlot;
+  if (slot && slot <= ARP_SLOTS) arpReleaseSlot(slot - 1);
+  liveOctave[routeIndex] = octave;
+}
+
 // The looper's mappable actions. The Button one is the FoxWizard button in Looper mode, hold included.
 void looperAction(uint8_t id, bool down) {
   const uint64_t now = time_us_64();
@@ -3255,6 +3292,15 @@ void runAction(uint16_t routeIndex, const MapAction &act, uint8_t phase, uint8_t
     case ACT_CC_RAMP: // a: CC number, b: divisionPlus1
       if (press || release) startMapperRamp(&act, press, false, false, act.a, chans, ports, act.b);
       break;
+    case ACT_PANIC:
+      if (press) sendPanic();
+      break;
+    case ACT_OCTAVE: { // a: 0 down, 1 up. b: 0 momentary, 1 toggle, like the front button's
+      const int8_t target = act.a ? 1 : -1;
+      if (press) setLiveOctave(routeIndex, (act.b && liveOctave[routeIndex] == target) ? 0 : target);
+      else if (release && !act.b) setLiveOctave(routeIndex, 0);
+      break;
+    }
   }
   flushPending();
 }
