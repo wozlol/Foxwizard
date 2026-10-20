@@ -1599,7 +1599,7 @@ function renderRouteCard(route, index, animateStaple) {
                 ${switchHtml(index, 'ccMapEnabled', ccMapEnabled, `CC Map Start${ccMapInvalid ? ' — too high' : ''}`)}
                 <input type="number" min="0" max="127" value="${ccMapDisplayValue}" data-route-index="${index}" data-field="ccMapStart" ${ccMapEnabled ? '' : 'disabled'} ${ccMapInvalid ? 'style="border-color:var(--red)"' : ''}>
               </div>
-              <p class="note-hint">CC range now begins with this CC.</p>
+              <p class="note-hint cc-map-hint">CC range now begins with this CC.</p>
             </div>
             ${looperMapped() ? `<div class="field-row">
               ${switchHtml(index, 'looperEnabled', route.looperEnabled !== false, 'Looper')}
@@ -2138,7 +2138,7 @@ function refreshRouteCard(index, animateStaple) {
 }
 
 // Structural changes (need a re-render): checkboxes that reveal/hide fields, staple toggle, delete
-const STRUCTURAL_FIELDS = new Set(['note', 'cc', 'ccMapEnabled', 'aftertouch', 'aftertouchMap', 'pressure', 'pressureMap', 'allInputTypes', 'allInputChannels', 'allInPorts', 'allOutPorts', 'roundRobin', 'roundRobinRandom', 'noteToCc', 'ccMapOn', 'launchpad', 'scaleOn', 'autoChord', 'arpOn', 'echoOn', 'stutterOn', 'lpQuadEnabled']);
+const STRUCTURAL_FIELDS = new Set(['note', 'cc', 'ccMapEnabled', 'aftertouch', 'aftertouchMap', 'pressure', 'pressureMap', 'allInputTypes', 'allInputChannels', 'allInPorts', 'allOutPorts', 'monoRetrig', 'roundRobin', 'roundRobinRandom', 'noteToCc', 'ccMapOn', 'launchpad', 'scaleOn', 'autoChord', 'arpOn', 'echoOn', 'stutterOn', 'lpQuadEnabled']);
 
 routesContainer.addEventListener('click', (e) => {
   const actionEl = e.target.closest('[data-action]');

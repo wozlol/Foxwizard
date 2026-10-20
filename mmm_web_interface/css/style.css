@@ -857,6 +857,13 @@ button.connection-pill.connecting { cursor: default; transform: none; }
 .cc-map-row input[type="number"] { flex: 1; min-width: 56px; }
 .cc-map-row .switch-label { font-size: 0.68rem; }
 .cc-map-row input:disabled { opacity: 0.5; }
+/* Phones: Transpose and Velocity % titles take the CC Map Start switch's height and gap, so all
+   three boxes sit on one line. The CC Map Start hint is dropped there to save the space. */
+@media (max-width: 640px) {
+  .cc-map-hint { display: none; }
+  .field-row-cols .field-subrow { gap: 8px; }
+  .field-row-cols .field-subrow label { min-height: 22px; display: flex; align-items: center; }
+}
 /* The little "↳" branch mark on the switch label already reads as a sub-item, this indent just
    reinforces it visually as nested under the switch directly above. No margin-top here — the
    parent .field-row's own gap already spaces it from the switch above, same as .range-row in the
