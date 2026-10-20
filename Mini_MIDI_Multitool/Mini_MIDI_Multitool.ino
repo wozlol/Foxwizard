@@ -97,7 +97,7 @@ constexpr uint8_t SYSEX_MFR_ID = 0x7D;   // reserved for non-commercial/educatio
 constexpr uint8_t SYSEX_DEVICE_ID = 0x4D; // 'M'
 constexpr uint8_t PROTOCOL_VERSION = 4; // 2: 45-byte routes with port masks, GET_STATUS. 3: clock settings, LEARN. 4: 53-byte routes with feature fields, feature blocks
 constexpr uint8_t FW_VERSION_MAJOR = 1;
-constexpr uint8_t FW_VERSION_MINOR = 59;
+constexpr uint8_t FW_VERSION_MINOR = 60;
 constexpr uint8_t FW_CHUNK_BYTES = 128;          // firmware bytes per FW_DATA message, 147 once packed
 constexpr uint32_t FW_REBOOT_DELAY_MS = 300;     // lets the FW_END ACK reach the host before rebooting
 const char DEVICE_NAME[] = "FoxWizard Mini MIDI Multitool"; // long name sent in the SysEx IDENTITY_REPLY
@@ -407,7 +407,9 @@ enum : uint8_t {
 };
 enum : uint8_t {
   LOOP_ACT_BUTTON = 0, LOOP_ACT_PLAY_ARM_REC, LOOP_ACT_STOP_CLEAR_UNDO, LOOP_ACT_PLAY, LOOP_ACT_STOP,
-  LOOP_ACT_PAUSE, LOOP_ACT_OVERDUB, LOOP_ACT_CLEAR, LOOP_ACT_UNDO, LOOP_ACT_REC_ARM, LOOP_ACT_COUNT
+  LOOP_ACT_PAUSE, LOOP_ACT_OVERDUB, LOOP_ACT_CLEAR, LOOP_ACT_UNDO, LOOP_ACT_REC_ARM,
+  LOOP_ACT_UN_OVERDUB, LOOP_ACT_RE_OVERDUB, LOOP_ACT_DOUBLE, LOOP_ACT_HALF, // 1.60
+  LOOP_ACT_COUNT
 };
 constexpr uint8_t MAP_ENTRIES = 16;
 enum : uint8_t { PHASE_RELEASE = 0, PHASE_PRESS = 1, PHASE_VALUE = 2 };
@@ -1408,7 +1410,34 @@ void noteActivity(ActivityLed &led) {
   led.activitySeen = true;
 }
 
+// All three lights flash together, a count the eye can follow: the loop's length in bars after
+// Double or Half (1.60). Runs over the top of whatever the lights were showing.
+uint8_t ledFlashLeft = 0;
+bool ledFlashLit = false;
+uint32_t ledFlashAtMs = 0;
+constexpr uint32_t LED_COUNT_ON_MS = 140;
+constexpr uint32_t LED_COUNT_OFF_MS = 220;
+
+void flashAllLedsCount(uint8_t count) {
+  ledFlashLeft = count;
+  ledFlashLit = false;
+  ledFlashAtMs = millis() + 150; // a short gap first, so the count reads as its own thing
+  setAllLedLevels(0, 0, 0);
+}
+
 void serviceLeds() {
+  if (ledFlashLeft) {
+    if ((int32_t)(millis() - ledFlashAtMs) < 0) return;
+    ledFlashLit = !ledFlashLit;
+    if (!ledFlashLit) --ledFlashLeft;
+    ledFlashAtMs = millis() + (ledFlashLit ? LED_COUNT_ON_MS : LED_COUNT_OFF_MS);
+    setAllLedLevels(ledFlashLit ? ledOut.maxLevel : 0, ledFlashLit ? ledUsb.maxLevel : 0, ledFlashLit ? ledIn.maxLevel : 0);
+    if (!ledFlashLeft) {
+      ledOut.currentLevel = ledUsb.currentLevel = ledIn.currentLevel = 0;
+      ledOut.phase = ledUsb.phase = ledIn.phase = LED_OFF;
+    }
+    return;
+  }
   if (globalSettings.buttonAction == BTN_LOOPER) { serviceLooperLeds(); return; }
   serviceActivityLed(ledOut);
   serviceActivityLed(ledUsb);
@@ -3149,7 +3178,7 @@ uint32_t loopChecksum(uint32_t sum, const uint8_t *data, size_t n) {
 uint32_t loopSignature() {
   const fw::LoopTrackState &t = looper.track(0);
   uint32_t sig = 2166136261u;
-  const uint32_t parts[5] = {t.count, t.lengthUs, t.generation, (uint32_t)t.hidden, (uint32_t)loopTagsAreInputs};
+  const uint32_t parts[6] = {t.count, t.lengthUs, t.generation, (uint32_t)t.hidden, (uint32_t)loopTagsAreInputs, looper.layerStamp()};
   return loopChecksum(sig, (const uint8_t *)parts, sizeof(parts));
 }
 
@@ -3188,7 +3217,7 @@ bool saveLoop() {
     ok = (bool)file;
     LoopFileHeader h{};
     h.magic = LOOP_FILE_MAGIC;
-    h.eventCount = t.count;
+    h.eventCount = looper.visibleCount(); // undone layers aren't saved
     h.lengthUs = t.lengthUs;
     h.storedLengthUs = t.storedLengthUs;
     h.generation = t.generation;
@@ -3469,6 +3498,46 @@ void setLiveOctave(uint16_t routeIndex, int8_t octave) {
   liveOctave[routeIndex] = octave;
 }
 
+// After layers hide or show, or the loop changes length mid-play: everything the loop is sounding
+// lets go, then whatever should be sounding at this point plays again, each to where it came from.
+// Nothing sticks, and a note held across the change doesn't drop out.
+void looperRetriggerHeld(void *, uint8_t, uint16_t tag, uint8_t channel, uint8_t note, uint8_t velocity) {
+  fw::LoopMidiEvent e;
+  e.status = 0x90 | channel;
+  e.data1 = note;
+  e.data2 = velocity;
+  e.tag = tag;
+  looperEmit(nullptr, 0, e);
+}
+
+void looperRetrigger() {
+  looperRelease(nullptr, 0);
+  if (looper.playing()) looper.collectHeldNotes(0, looperRetriggerHeld, nullptr);
+  flushPending();
+}
+
+// Double copies the loop so it's there twice, ready to overdub something twice as long over it;
+// Half plays the first half. Half then Double gets the original back, nothing copied. An overdub in
+// progress becomes its own layer first, then carries on over the new length. The lights count the
+// new length in bars.
+void looperResize(bool grow) {
+  const fw::LoopTrackState &t = looper.track(0);
+  if (t.count == 0 || t.hidden || t.lengthUs == 0) return;
+  if (looper.recording() && !looper.overdubbing()) return; // a first take's length isn't set yet
+  const uint64_t now = time_us_64();
+  const bool wasOverdubbing = looper.overdubbing();
+  if (wasOverdubbing) looperFinish(now, false);
+  const uint32_t barUs = looperBarUs();
+  const uint32_t beatUs = barUs / (globalSettings.beatsPerBar ? globalSettings.beatsPerBar : 4);
+  const uint64_t target = grow ? (uint64_t)t.lengthUs * 2 : t.lengthUs / 2;
+  const bool fits = grow ? target <= (uint64_t)barUs * 64 : target >= beatUs; // 64 bars, one beat
+  if (fits && looper.resizeTrack(0, (uint32_t)target, now, looperRelease, nullptr)) looperRetrigger();
+  if (wasOverdubbing) { looperSetQuantize(); looper.armRecord(0, 0, true); }
+  const uint32_t bars = barUs ? (looper.track(0).lengthUs + barUs / 2) / barUs : 1;
+  flashAllLedsCount(bars < 1 ? 1 : (bars > 64 ? 64 : bars));
+  flushPending();
+}
+
 // The looper's mappable actions. The Button one is the FoxWizard button in Looper mode, hold included.
 void looperAction(uint8_t id, bool down) {
   const uint64_t now = time_us_64();
@@ -3510,6 +3579,14 @@ void looperAction(uint8_t id, bool down) {
     case LOOP_ACT_UNDO:
       if (looper.track(0).hidden) looperUndoAndPlay(now);
       break;
+    case LOOP_ACT_UN_OVERDUB: // the newest overdub layer goes, a pass in progress first
+      if (looper.unOverdub(now)) looperRetrigger();
+      break;
+    case LOOP_ACT_RE_OVERDUB:
+      if (looper.reOverdub()) looperRetrigger();
+      break;
+    case LOOP_ACT_DOUBLE: looperResize(true); break;
+    case LOOP_ACT_HALF: looperResize(false); break;
     case LOOP_ACT_REC_ARM: // arms, and a second press while armed starts recording right away
       switch (looperState()) {
         case LS_ARMED: looper.beginArmedRecording(now); break;

@@ -31,6 +31,112 @@ void Looper::reset() {
   recordStartCount_ = 0;
   memset(importing_, 0, sizeof(importing_));
   memset(recordHeld_, 0, sizeof(recordHeld_));
+  resetLayers();
+}
+
+void Looper::resetLayers() {
+  layerCount_ = hiddenCount_ = 0;
+  memset(layerHiddenBits_, 0, sizeof(layerHiddenBits_));
+  currentLayer_ = 0;
+  ++layerStamp_;
+}
+
+void Looper::setLayerHidden(uint8_t layer, bool hidden) {
+  if (hidden) layerHiddenBits_[layer >> 3] |= (1U << (layer & 7));
+  else layerHiddenBits_[layer >> 3] &= ~(1U << (layer & 7));
+  ++layerStamp_;
+}
+
+// Drops a layer from the bookkeeping, its events untouched.
+void Looper::forgetLayer(uint8_t layer) {
+  uint8_t n = 0;
+  for (uint8_t i = 0; i < layerCount_; ++i) if (layers_[i] != layer) layers_[n++] = layers_[i];
+  layerCount_ = n;
+  n = 0;
+  for (uint8_t i = 0; i < hiddenCount_; ++i) if (hidden_[i] != layer) hidden_[n++] = hidden_[i];
+  hiddenCount_ = n;
+  setLayerHidden(layer, false);
+}
+
+// Removes a layer's events for good.
+void Looper::deleteLayer(uint8_t layer) {
+  LoopTrackState &track = tracks_[recordingTrack_];
+  uint16_t previous = kNoLoopEvent;
+  uint16_t slot = track.head;
+  while (slot != kNoLoopEvent) {
+    const uint16_t next = slots_[slot].next;
+    if (slots_[slot].layer == layer) {
+      if (previous == kNoLoopEvent) track.head = next;
+      else slots_[previous].next = next;
+      if (track.tail == slot) track.tail = previous;
+      if (track.playCursor == slot) track.playCursor = next;
+      freeSlot(slot);
+      if (track.count) --track.count;
+    } else {
+      previous = slot;
+    }
+    slot = next;
+  }
+  forgetLayer(layer);
+}
+
+// Memory full: the layer undone longest ago goes for good, so recording can carry on.
+bool Looper::dropOldestHiddenLayer() {
+  if (hiddenCount_ == 0) return false;
+  deleteLayer(hidden_[0]);
+  return true;
+}
+
+// A new overdub pass gets a layer of its own. Past kMaxUndoLayers the oldest becomes permanent:
+// part of the take if it's showing, gone if it was undone.
+void Looper::startOverdubLayer() {
+  if (layerCount_ >= kMaxUndoLayers) {
+    const uint8_t oldest = layers_[0];
+    if (layerHidden(oldest)) {
+      deleteLayer(oldest);
+    } else {
+      LoopTrackState &track = tracks_[recordingTrack_];
+      for (uint16_t slot = track.head; slot != kNoLoopEvent; slot = slots_[slot].next) {
+        if (slots_[slot].layer == oldest) slots_[slot].layer = 0;
+      }
+      forgetLayer(oldest);
+    }
+  }
+  uint8_t id = 1;
+  for (; id != 0; ++id) {
+    bool used = false;
+    for (uint8_t i = 0; i < layerCount_; ++i) used |= layers_[i] == id;
+    if (!used) break;
+  }
+  if (id == 0) id = 1; // can't happen with 16 layers out of 255 ids
+  layers_[layerCount_++] = id;
+  currentLayer_ = id;
+}
+
+bool Looper::unOverdub(uint64_t nowUs) {
+  if (recording_ && overdubbing_) finishRecording(nowUs); // the pass so far is the newest layer
+  for (int8_t i = static_cast<int8_t>(layerCount_) - 1; i >= 0; --i) {
+    const uint8_t layer = layers_[i];
+    if (layerHidden(layer)) continue;
+    setLayerHidden(layer, true);
+    hidden_[hiddenCount_++] = layer;
+    return true;
+  }
+  return false;
+}
+
+bool Looper::reOverdub() {
+  if (hiddenCount_ == 0) return false;
+  setLayerHidden(hidden_[--hiddenCount_], false);
+  return true;
+}
+
+uint16_t Looper::visibleCount() const {
+  uint16_t count = 0;
+  for (uint16_t slot = tracks_[0].head; slot != kNoLoopEvent; slot = slots_[slot].next) {
+    if (!layerHidden(slots_[slot].layer)) ++count;
+  }
+  return count;
 }
 
 uint16_t Looper::allocateSlot() {
@@ -101,6 +207,7 @@ void Looper::armRecord(uint8_t track, uint32_t fixedLengthUs, bool overdub) {
   // a first note the way a replacement arm does, so its start count has to be
   // captured now too.
   if (overdub) recordStartCount_ = tracks_[track].count;
+  if (overdub) startOverdubLayer();
   memset(recordHeld_, 0, sizeof(recordHeld_));
   // Arming stays non-destructive.  A cleared track keeps its undo material
   // until the first captured event actually replaces it, so the armed target
@@ -120,10 +227,12 @@ bool Looper::beginArmedRecording(uint64_t nowUs) {
   if (overdubbing_) {
     recordStartUs_ = transportStartUs_;
     recordStartCount_ = track.count;
+    startOverdubLayer();
   } else {
     recordStartUs_ = nowUs;
     permanentlyClear(recordingTrack_);
     recordStartCount_ = 0;
+    currentLayer_ = 0;
   }
   track.generation = ++generationCounter_;
   return true;
@@ -148,6 +257,7 @@ bool Looper::capture(uint64_t nowUs, const LoopMidiEvent &input) {
     atUs = static_cast<uint32_t>(elapsed);
   }
   LoopMidiEvent event = input;
+  event.layer = overdubbing_ ? currentLayer_ : 0;
   if (recordQuantizeUs_ > 0) {
     atUs = static_cast<uint32_t>(
         ((static_cast<uint64_t>(atUs) + recordQuantizeUs_ / 2U) / recordQuantizeUs_) *
@@ -156,7 +266,9 @@ bool Looper::capture(uint64_t nowUs, const LoopMidiEvent &input) {
     if (limit > 0 && atUs >= limit) atUs = limit - 1U;
   }
   event.atUs = atUs;
-  if (!insertEvent(recordingTrack_, event)) return false;
+  while (!insertEvent(recordingTrack_, event)) {
+    if (!dropOldestHiddenLayer()) return false; // full: undone layers make room first
+  }
 
   if (type == 0x90 || type == 0x80) {
     const uint8_t channel = input.status & 0x0F;
@@ -171,7 +283,8 @@ void Looper::closeHeldRecordingNotes(uint32_t boundaryUs) {
       if (!recordHeld_[channel][note]) continue;
       insertEvent(recordingTrack_, LoopMidiEvent{boundaryUs,
           static_cast<uint8_t>(0x80 | channel), note, 0,
-          static_cast<uint16_t>(recordHeld_[channel][note] - 1U)});
+          static_cast<uint16_t>(recordHeld_[channel][note] - 1U),
+          static_cast<uint8_t>(overdubbing_ ? currentLayer_ : 0)}); // the pass's own layer
       recordHeld_[channel][note] = 0;
     }
   }
@@ -206,6 +319,9 @@ bool Looper::finishRecording(uint64_t nowUs) {
     closeAtUs = static_cast<uint32_t>((nowUs - track.cycleStartUs) % track.lengthUs);
   }
   closeHeldRecordingNotes(closeAtUs);
+  // An overdub pass that captured nothing isn't a layer to undo.
+  if (overdubbing_ && currentLayer_ && track.count <= recordStartCount_) forgetLayer(currentLayer_);
+  currentLayer_ = 0;
   recording_ = false;
   overdubbing_ = false;
   memset(recordHeld_, 0, sizeof(recordHeld_));
@@ -405,23 +521,27 @@ void Looper::collectHeldNotes(uint8_t track, HeldNoteFn fn, void *context) const
   // is empty or because the cursor sits at the very top of its cycle.
   if (state.head == kNoLoopEvent || state.head == state.playCursor) return;
 
-  bool held[16][128] = {};
-  uint8_t velocity[16][128] = {};
+  // FoxWizard: the tag (+ 1, 0 not held) says where the note plays back to. Hidden layers don't sound.
+  static uint16_t heldTag[16][128];
+  static uint8_t velocity[16][128];
+  memset(heldTag, 0, sizeof(heldTag));
   uint16_t slot = state.head;
   while (slot != kNoLoopEvent && slot != state.playCursor) {
     const LoopMidiEvent event = slots_[slot].event();
     const uint8_t type = event.status & 0xF0;
-    if ((type == 0x90 || type == 0x80) && event.data1 <= 127) {
+    if ((type == 0x90 || type == 0x80) && event.data1 <= 127 && !layerHidden(event.layer)) {
       const uint8_t channel = event.status & 0x0F;
       const bool on = type == 0x90 && event.data2 > 0;
-      held[channel][event.data1] = on;
+      heldTag[channel][event.data1] = on ? static_cast<uint16_t>(event.tag + 1U) : 0;
       if (on) velocity[channel][event.data1] = event.data2;
     }
     slot = slots_[slot].next;
   }
   for (uint8_t channel = 0; channel < 16; ++channel) {
     for (uint8_t note = 0; note < 128; ++note) {
-      if (held[channel][note]) fn(context, track, channel, note, velocity[channel][note]);
+      if (heldTag[channel][note]) {
+        fn(context, track, static_cast<uint16_t>(heldTag[channel][note] - 1U), channel, note, velocity[channel][note]);
+      }
     }
   }
 }
@@ -449,7 +569,7 @@ void Looper::tick(uint64_t nowUs, EmitFn emit, ReleaseFn release,
     while (track.playCursor != kNoLoopEvent && processed < maxEvents) {
       const EventSlot &slot = slots_[track.playCursor];
       if (slot.atUs > elapsed) break;
-      if (canEmit && emit) emit(context, trackIndex, slot.event());
+      if (canEmit && emit && !layerHidden(slot.layer)) emit(context, trackIndex, slot.event());
       track.playCursor = slot.next;
       ++processed;
     }
@@ -499,6 +619,7 @@ void Looper::permanentlyClear(uint8_t trackIndex) {
     slot = next;
   }
   tracks_[trackIndex] = LoopTrackState{};
+  resetLayers();
 }
 
 void Looper::clearAll(ReleaseFn release, void *context) {
@@ -567,7 +688,8 @@ bool Looper::visitEvents(VisitFn visitor, void *context) const {
   for (uint8_t track = 0; track < kLoopTrackCount; ++track) {
     uint16_t slot = tracks_[track].head;
     while (slot != kNoLoopEvent) {
-      if (!visitor(context, track, slots_[slot].event())) return false;
+      // A save keeps what's showing: undone layers don't outlive a power cycle.
+      if (!layerHidden(slots_[slot].layer) && !visitor(context, track, slots_[slot].event())) return false;
       slot = slots_[slot].next;
     }
   }

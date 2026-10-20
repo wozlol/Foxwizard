@@ -41,7 +41,9 @@ export const ACTION_TYPES = [
 // Sent as MMC, and as MIDI Start, Stop or Continue where MIDI has one.
 export const TRANSPORTS = ['Play', 'Stop', 'Continue', 'Pause', 'Record', 'Record Exit', 'Rewind', 'Fast Forward', 'Return to Start'];
 
-export const LOOPER_ACTIONS = ['1-Button', 'Play/Arm/Rec', 'Stop/Clear/Undo', 'Play', 'Stop', 'Pause', 'Overdub', 'Clear', 'Undo', 'Rec/Arm'];
+// Undo here is Un-Clear: it brings back a cleared loop. Un-Overdub and Re-Overdub (1.60) step through
+// overdub layers instead. Double and Half change the loop's length while it plays.
+export const LOOPER_ACTIONS = ['1-Button', 'Play/Arm/Rec', 'Stop/Clear/Undo', 'Play', 'Stop', 'Pause', 'Overdub', 'Clear', 'Un-Clear', 'Rec/Arm', 'Un-Overdub', 'Re-Overdub', 'Double', 'Half'];
 
 // The mapper's Stutter Length action (1.48): bar fractions, measured against the actual time
 // signature, rather than the arp-style musical divisions the route's own Stutter squares use.

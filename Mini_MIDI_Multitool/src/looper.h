@@ -24,6 +24,7 @@ struct LoopMidiEvent {
   uint8_t data1 = 0;
   uint8_t data2 = 0;
   uint16_t tag = 0; // FoxWizard: where it plays back to, set by the sketch
+  uint8_t layer = 0; // FoxWizard 1.60: the recording pass it came from, 0 the take itself
 };
 
 struct LoopTrackState {
@@ -50,7 +51,7 @@ class Looper {
   using EmitFn = void (*)(void *context, uint8_t track, const LoopMidiEvent &event);
   using ReleaseFn = void (*)(void *context, uint8_t track);
   using VisitFn = bool (*)(void *context, uint8_t track, const LoopMidiEvent &event);
-  using HeldNoteFn = void (*)(void *context, uint8_t track, uint8_t channel,
+  using HeldNoteFn = void (*)(void *context, uint8_t track, uint16_t tag, uint8_t channel,
                               uint8_t note, uint8_t velocity);
 
   Looper();
@@ -83,6 +84,18 @@ class Looper {
             uint16_t maxEvents = 96);
   bool playing() const { return playing_; }
   bool paused() const { return paused_; } // FoxWizard: Pause resumes where it stopped
+
+  // FoxWizard 1.60, overdub layers. Every overdub pass is its own layer. Un-Overdub hides the
+  // newest one still showing (ending a pass in progress first, which becomes that layer), and
+  // Re-Overdub shows the one hidden most recently. Hidden layers stay until memory runs short or
+  // they fall past the last kMaxUndoLayers, so a layer undone before a newer overdub can still come
+  // back. The take itself (layer 0) is only ever cleared, never un-overdubbed.
+  static constexpr uint8_t kMaxUndoLayers = 16;
+  bool unOverdub(uint64_t nowUs);
+  bool reOverdub();
+  bool layerHidden(uint8_t layer) const { return layerHiddenBits_[layer >> 3] & (1U << (layer & 7)); }
+  uint16_t visibleCount() const; // events not in a hidden layer: what a save keeps
+  uint32_t layerStamp() const { return layerStamp_; } // changes whenever a layer hides or shows
 
   void safeClear(uint8_t track, ReleaseFn release, void *context);
   void undoClear(uint8_t track);
@@ -127,8 +140,9 @@ class Looper {
     uint8_t status = 0;
     uint8_t data1 = 0;
     uint8_t data2 = 0;
-    LoopMidiEvent event() const { return LoopMidiEvent{atUs, status, data1, data2, tag}; }
-    void setEvent(const LoopMidiEvent &e) { atUs = e.atUs; status = e.status; data1 = e.data1; data2 = e.data2; tag = e.tag; }
+    uint8_t layer = 0; // the slot's one spare byte, so it stays 12
+    LoopMidiEvent event() const { return LoopMidiEvent{atUs, status, data1, data2, tag, layer}; }
+    void setEvent(const LoopMidiEvent &e) { atUs = e.atUs; status = e.status; data1 = e.data1; data2 = e.data2; tag = e.tag; layer = e.layer; }
   };
   static_assert(sizeof(EventSlot) == 12, "a loop event slot is 12 bytes");
 
@@ -142,6 +156,12 @@ class Looper {
                                   ReleaseFn release, void *context);
   void resetPlaybackCursors(uint64_t nowUs);
   void closeHeldRecordingNotes(uint32_t boundaryUs);
+  void resetLayers();
+  void startOverdubLayer();
+  void forgetLayer(uint8_t layer);
+  void deleteLayer(uint8_t layer);
+  void setLayerHidden(uint8_t layer, bool hidden);
+  bool dropOldestHiddenLayer();
 
   EventSlot slots_[kLoopEventPoolSize]{};
   LoopTrackState tracks_[kLoopTrackCount]{};
@@ -170,6 +190,13 @@ class Looper {
   uint16_t recordStartCount_ = 0;
   bool importing_[kLoopTrackCount]{};
   uint16_t recordHeld_[16][128]{}; // FoxWizard: the held note's tag + 1, 0 not held
+  uint8_t layers_[kMaxUndoLayers]{};  // overdub layers, oldest first, hidden ones included
+  uint8_t layerCount_ = 0;
+  uint8_t hidden_[kMaxUndoLayers]{};  // hidden layers in the order they were hidden
+  uint8_t hiddenCount_ = 0;
+  uint8_t layerHiddenBits_[32]{};
+  uint8_t currentLayer_ = 0;          // the layer the pass being recorded writes
+  uint32_t layerStamp_ = 0;
 };
 
 }  // namespace fw
