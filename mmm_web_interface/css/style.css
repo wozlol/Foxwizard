@@ -1041,12 +1041,12 @@ body.dragging-active { overflow: hidden; }
 .looper-row-header { display: flex; align-items: center; flex-wrap: wrap; gap: 6px 14px; }
 .looper-row-heading { font-family: 'Russo One', sans-serif; font-size: 1.25rem; color: #86efac; margin: 0; white-space: nowrap; }
 .switch-green input:checked + .switch-track { background: var(--green); }
-/* Looper settings: 6 across on desktop, 3 on tablets, 2 on phones. Each cell spans two rows of
+/* Looper settings: 7 across on desktop, 4 on tablets, 2 on phones. Each cell spans two rows of
    the parent grid and shares them through subgrid, so every title in a visual row sits in one
    title track and every control in one control track. A title that wraps to two lines makes that
    whole row's title track taller, so the tops of all titles and all controls stay level. Controls
    are centered in their track, so a switch sits on the same center line as a taller dropdown. */
-.looper-settings { display: grid; grid-template-columns: repeat(6, minmax(0, 1fr)); column-gap: 10px; row-gap: 10px; margin-top: 14px; }
+.looper-settings { display: grid; grid-template-columns: repeat(7, minmax(0, 1fr)); column-gap: 10px; row-gap: 10px; margin-top: 14px; }
 .looper-cell {
   grid-row: span 2;
   display: grid;
@@ -1062,7 +1062,7 @@ body.dragging-active { overflow: hidden; }
 .looper-cell-control select { width: 100%; }
 .looper-switch { display: inline-flex; }
 @media (max-width: 900px) {
-  .looper-settings { grid-template-columns: repeat(3, minmax(0, 1fr)); }
+  .looper-settings { grid-template-columns: repeat(4, minmax(0, 1fr)); }
 }
 @media (max-width: 500px) {
   .looper-settings { grid-template-columns: repeat(2, minmax(0, 1fr)); }

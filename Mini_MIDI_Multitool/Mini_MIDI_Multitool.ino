@@ -97,7 +97,7 @@ constexpr uint8_t SYSEX_MFR_ID = 0x7D;   // reserved for non-commercial/educatio
 constexpr uint8_t SYSEX_DEVICE_ID = 0x4D; // 'M'
 constexpr uint8_t PROTOCOL_VERSION = 4; // 2: 45-byte routes with port masks, GET_STATUS. 3: clock settings, LEARN. 4: 53-byte routes with feature fields, feature blocks
 constexpr uint8_t FW_VERSION_MAJOR = 1;
-constexpr uint8_t FW_VERSION_MINOR = 54;
+constexpr uint8_t FW_VERSION_MINOR = 55;
 constexpr uint8_t FW_CHUNK_BYTES = 128;          // firmware bytes per FW_DATA message, 147 once packed
 constexpr uint32_t FW_REBOOT_DELAY_MS = 300;     // lets the FW_END ACK reach the host before rebooting
 const char DEVICE_NAME[] = "FoxWizard Mini MIDI Multitool"; // long name sent in the SysEx IDENTITY_REPLY
@@ -531,7 +531,8 @@ struct LooperSettings {
   uint8_t triggerType;
   uint8_t triggerChannel;
   uint8_t triggerNumber;
-  uint8_t spare[39];
+  uint8_t recordCcs; // 1.55: 1 records CCs too (input side or output side, same as notes)
+  uint8_t spare[38];
 };
 #pragma pack(pop)
 LooperSettings looperSettings;
@@ -1858,6 +1859,7 @@ void upsertPendingMask(uint16_t mask, const PendingMsg &msg) {
 queued:
   if (msg.kind == MK_NOTE) lastMusicMs = millis();
   if (msg.kind == MK_NOTE && !looperEmitting && looperRecordsOutputs()) looperCapture(mask, msg.statusHi | msg.channel, msg.data1, msg.data2);
+  if (msg.kind == MK_CC && !looperEmitting && looperRecordsOutputs()) looperCaptureCc(mask, msg.channel, msg.data1, msg.data2);
   for (uint8_t i = 0; i < PORT_COUNT; ++i) {
     if (mask & (1u << i)) upsertPending(pending[i], pendingCount[i], msg);
   }
@@ -2630,6 +2632,17 @@ void loopHeldUpdate(uint16_t tag, bool on, uint8_t channel, uint8_t note, uint8_
   }
 }
 
+// A CC only goes into a take already recording (a Note On starts a take, a CC never does).
+void looperCaptureCc(uint16_t tag, uint8_t channel, uint8_t number, uint8_t value) {
+  if (!looperSettings.recordCcs || !looper.recording()) return;
+  fw::LoopMidiEvent e;
+  e.status = 0xB0 | (channel & 0x0F);
+  e.data1 = number;
+  e.data2 = value;
+  e.tag = tag;
+  looper.capture(time_us_64(), e);
+}
+
 void looperCapture(uint16_t tag, uint8_t status, uint8_t note, uint8_t velocity) {
   const bool on = (status & 0xF0) == 0x90 && velocity;
   const uint8_t channel = status & 0x0F;
@@ -2692,8 +2705,30 @@ void looperSend(uint16_t tag, bool on, uint8_t channel, uint8_t note, uint8_t ve
   looperEmitting = false;
 }
 
+void looperSendCc(uint16_t tag, uint8_t channel, uint8_t number, uint8_t value) {
+  looperEmitting = true;
+  if (loopTagsAreInputs) {
+    const uint8_t device = tag >> 8;
+    if (device == DEV_HOST) currentHostPort = tag & 0xFF;
+    processIncomingEvent(device, 0xB0, channel, number, value, 3);
+  } else {
+    PendingMsg msg;
+    msg.used = true;
+    msg.channel = channel;
+    msg.kind = MK_CC;
+    msg.statusHi = 0xB0;
+    msg.number = number;
+    msg.data1 = number;
+    msg.data2 = value;
+    msg.len = 3;
+    upsertPendingMask(tag, msg);
+  }
+  looperEmitting = false;
+}
+
 void looperEmit(void *, uint8_t, const fw::LoopMidiEvent &e) {
   const uint8_t type = e.status & 0xF0;
+  if (type == 0xB0) { looperSendCc(e.tag, e.status & 0x0F, e.data1, e.data2); return; }
   if (type != 0x90 && type != 0x80) return;
   const bool on = type == 0x90 && e.data2;
   const uint8_t channel = e.status & 0x0F;
@@ -3981,6 +4016,7 @@ void processIncomingEvent(uint8_t inputDevice, uint8_t statusHi, uint8_t channel
   }
 
   bool matchedAny = false;
+  bool matchedLooperRoute = false; // a CC that's this route's own (passed, a division square, Hold), Looper switch on
   for (uint16_t i = 0; i < routeCount; ++i) {
     if (kind == MK_CC && (routes[i].features & FEATURE_LAUNCHPAD) && number >= LP_TOP_BUTTON_CC && number < LP_TOP_BUTTON_CC + 8) {
       const uint8_t button = number - LP_TOP_BUTTON_CC;
@@ -4008,6 +4044,7 @@ void processIncomingEvent(uint8_t inputDevice, uint8_t statusHi, uint8_t channel
       const int8_t square = arpSquareFor(routes[i], inputDevice, 2, channel, number);
       if (square >= 0) {
         matchedAny = true;
+        if (!routeLooperOff(routes[i])) matchedLooperRoute = true;
         const uint8_t slot = routes[i].arpSlot - 1;
         const bool down = data2 >= 64;
         if (down != arpCcHeld[slot][square]) arpSquarePress(slot, square, down); // once per press
@@ -4038,11 +4075,13 @@ void processIncomingEvent(uint8_t inputDevice, uint8_t statusHi, uint8_t channel
     }
     if (kind == MK_CC && arpHoldMatches(routes[i], inputDevice, channel, number)) {
       matchedAny = true;
+      if (!routeLooperOff(routes[i])) matchedLooperRoute = true;
       arpSetHold(routes[i].arpSlot - 1, data2 >= 64);
       continue;
     }
     if (routeMatches(routes[i], inputDevice, channel, kind, number)) {
       matchedAny = true;
+      if (kind == MK_CC && !routeLooperOff(routes[i])) matchedLooperRoute = true;
       applyRouteOutput(routes[i], inputDevice, channel, kind, number, statusHi, data1, data2);
     }
   }
@@ -4053,6 +4092,12 @@ void processIncomingEvent(uint8_t inputDevice, uint8_t statusHi, uint8_t channel
   } else {
     // still count as "seen" on the input side for the IN LED even if fully consumed by routes
     if (inputDevice == DEV_USB) noteActivity(ledUsb); else noteActivity(ledIn);
+  }
+
+  // The looper's input-side CC capture, the same rule as notes (see dispatchNoteEvent).
+  if (kind == MK_CC && !looperEmitting && looperRecordsInputs() &&
+      (matchedLooperRoute || (!matchedAny && !looperSettings.loopUnroutedOff))) {
+    looperCaptureCc((uint16_t)((inputDevice << 8) | (inputDevice == DEV_HOST ? currentHostPort : 0)), channel, number, data2);
   }
 }
 

@@ -859,7 +859,8 @@ function renderLooperRow() {
       ['Auto Overdub', sw('autoOverdub', l.autoOverdub)],
       ['Record After Routes', sw('recordAfter', !l.recordInputs)],
       ['Hold Clears', sw('holdClears', l.holdClears)],
-      ['Loop Unrouted Channels', sw('loopUnrouted', l.loopUnrouted)]
+      ['Loop Unrouted Channels', sw('loopUnrouted', l.loopUnrouted)],
+      ['Record CCs', sw('recordCcs', !!l.recordCcs)]
     ].map(([title, control]) => `<div class="looper-cell"><p class="looper-cell-title">${title}</p><div class="looper-cell-control">${control}</div></div>`).join('')}</div>` : ''}`;
 }
 
@@ -1771,14 +1772,11 @@ function launchpadSectionHtml(route, index) {
       </div>
       <div class="arp-fields">
         <div class="arp-field"><label>Octave</label><select data-field="lpOctave" ${qAttrs}>${opt(0, octave, '0')}${opt(1, octave, '-1')}${opt(2, octave, '-2')}</select></div>
-      </div>` : switchHtml(index, 'launchpad', on, 'Launchpad')}
-      ${on ? `
-      ${quad.enabled ? `<div class="arp-fields">
-        <div class="arp-field"><label>Quadrant</label><select data-lp-quad-field="block" ${qAttrs}>${QUAD_BLOCK_LABELS.map((l, i2) => opt(i2, quad.block, l)).join('')}</select></div>
+        ${quad.enabled ? `<div class="arp-field"><label>Quadrant</label><select data-lp-quad-field="block" ${qAttrs}>${QUAD_BLOCK_LABELS.map((l, i2) => opt(i2, quad.block, l)).join('')}</select></div>
         <div class="arp-field"><label>Channel</label><select data-lp-quad-field="channel" ${qAttrs}>${Array.from({ length: 16 }, (_, c) => opt(c, quad.channel, c + 1)).join('')}</select></div>
-        <div class="arp-field"><label>Start Note</label><select data-lp-quad-field="startNote" ${qAttrs}>${noteSelectOptions(quad.startNote)}</select></div>
-      </div>` : ''}
-      <div class="lp-buttons-header">
+        <div class="arp-field"><label>Start Note</label><select data-lp-quad-field="startNote" ${qAttrs}>${noteSelectOptions(quad.startNote)}</select></div>` : ''}
+      </div>` : switchHtml(index, 'launchpad', on, 'Launchpad')}
+      ${on ? `<div class="lp-buttons-header">
         <p class="note-hint">Button light color is a raw Launchpad velocity, 0 keeps the usual channel-color indicator.</p>
         <button type="button" class="btn btn-ghost btn-tiny" data-action="resetLpDefaults">Reset to Defaults</button>
       </div>
