@@ -900,6 +900,11 @@ uint8_t randomChannelInMask(uint16_t outMask) {
 // unchanged, so the pressed pad or button lights. Then that port is left out of everything the route
 // sends for that message, in every mode, so the remapped note never reaches it too.
 uint16_t launchpadExcludePorts = 0;
+// Set around the one dispatchNoteEvent() call for a note that was translated from a Launchpad at
+// the input edge: the Launchpad's port (Launchpad routes don't send back to it, same as before)
+// and, for a Break Off a Quad note, the route that broke it off, which that note skips.
+uint16_t edgeLaunchpadPort = 0;
+int16_t edgeSkipRoute = -1;
 
 
 uint16_t routeChannelMask(uint16_t routeIndex) {
@@ -3615,8 +3620,9 @@ void dispatchNoteEvent(uint8_t inputDevice, uint8_t channel, bool isNoteOn, uint
   bool matchedAny = false;
   bool matchedLooperRoute = false; // a route whose own notes these are, with its Looper switch on
   for (uint16_t i = 0; i < routeCount; ++i) {
-    uint8_t note = rawNote;
-    launchpadExcludePorts = 0;
+    if ((int16_t)i == edgeSkipRoute) continue;
+    const uint8_t note = rawNote;
+    launchpadExcludePorts = (routes[i].features & FEATURE_LAUNCHPAD) ? edgeLaunchpadPort : 0;
     const int8_t square = arpSquareFor(routes[i], inputDevice, 1, channel, rawNote);
     if (square >= 0) { // a division trigger, it doesn't pass through
       matchedAny = true;
@@ -3635,37 +3641,12 @@ void dispatchNoteEvent(uint8_t inputDevice, uint8_t channel, bool isNoteOn, uint
       if (isNoteOn) echoLatch(echoSquare);
       continue;
     }
-    if (routes[i].features & FEATURE_LAUNCHPAD) {
-      if (!routeAcceptsSource(routes[i], inputDevice, channel)) continue;
-      launchpadExcludePorts = sourcePort(inputDevice);
-      launchpadLearnPort(launchpadExcludePorts, i);
-      {
-        const uint8_t side = launchpadSideButton(rawNote);
-        // A mapped side button with a custom color (1.48) lights with that instead of the usual
-        // channel-color echo, so a button's mapping is visible on the hardware at a glance.
-        const uint8_t litColor = (side != 0xFF && side < LAUNCHPAD_BUTTONS && lpActions[side].c)
-          ? lpActions[side].c : launchpadChannelColor(channel);
-        sendToOutputs(launchpadExcludePorts, isNoteOn ? 0x90 : 0x80, channel, rawNote, isNoteOn ? litColor : 0, 3);
-      }
-      const uint8_t side = launchpadSideButton(rawNote);
-      if (side != 0xFF) {
-        matchedAny = true;
-        handleLaunchpadButton(i, side, isNoteOn);
-        continue;
-      }
-      note = launchpadGridNote(rawNote);
-      if (note == LP_NOT_GRID) continue;
-      const int16_t quadNote = quadRemap(routes[i], note);
-      if (quadNote >= 0) {
-        matchedAny = true;
-        dispatchNoteEvent(inputDevice, quadChannel(routes[i]), isNoteOn, (uint8_t)quadNote, velocity);
-        continue;
-      }
-    }
     if (routeMatches(routes[i], inputDevice, channel, MK_NOTE, note)) {
       matchedAny = true;
-      if (!routeLooperOff(routes[i])) matchedLooperRoute = true;
+      // A note a Note to Feature mapping consumes is a control press, not music: recording it would
+      // make loop playback fire that action again from inside the looper.
       if (handleNoteMap(i, isNoteOn, note, velocity)) continue;
+      if (!routeLooperOff(routes[i])) matchedLooperRoute = true;
       if (routes[i].features & (FEATURE_SCALE | FEATURE_AUTO_CHORD)) {
         // A Note Off releases exactly what its Note On played, even if the settings changed between.
         uint8_t outs[CHORD_MAX];
@@ -3752,6 +3733,44 @@ void processIncomingEvent(uint8_t inputDevice, uint8_t statusHi, uint8_t channel
 
   bool isNoteOn = (kind == MK_NOTE) && (statusHi == 0x90 && data2 > 0);
   if (kind == MK_NOTE) lastMusicMs = millis();
+
+  // A Launchpad's grid and side buttons are translated here, at the input edge, before Learn, the
+  // Octave buttons, the looper or any route sees them: everything downstream gets real drum pad
+  // notes as if a normal controller sent them, and each press is translated exactly once. Loop
+  // playback of recorded inputs is already translated, so it skips this.
+  uint16_t lpPort = 0;
+  int16_t lpSkipRoute = -1;
+  if (kind == MK_NOTE && !looperEmitting) {
+    int16_t lp = -1;
+    for (uint16_t i = 0; i < routeCount; ++i) {
+      if ((routes[i].features & FEATURE_LAUNCHPAD) && routeAcceptsSource(routes[i], inputDevice, channel)) { lp = i; break; }
+    }
+    if (lp >= 0) {
+      const uint16_t port = sourcePort(inputDevice);
+      launchpadLearnPort(port, lp);
+      const uint8_t side = launchpadSideButton(number);
+      // A mapped side button with a custom color lights with that, otherwise the channel's color.
+      const uint8_t litColor = (side < LAUNCHPAD_BUTTONS && lpActions[side].c) ? lpActions[side].c : launchpadChannelColor(channel);
+      sendToOutputs(port, isNoteOn ? 0x90 : 0x80, channel, number, isNoteOn ? litColor : 0, 3);
+      if (side != 0xFF) {
+        handleLaunchpadButton(lp, side, isNoteOn);
+        return;
+      }
+      const uint8_t grid = launchpadGridNote(number);
+      if (grid != LP_NOT_GRID) {
+        lpPort = port;
+        const int16_t quadNote = quadRemap(routes[lp], grid);
+        if (quadNote >= 0) { // arrives fresh on its own channel, past the route that broke it off
+          channel = quadChannel(routes[lp]);
+          lpSkipRoute = lp;
+          number = data1 = (uint8_t)quadNote;
+        } else {
+          number = data1 = grid;
+        }
+      }
+    }
+  }
+
   if (captureLearnOrTap(inputDevice, kind, isNoteOn, channel, data1, data2)) return;
   if (kind == MK_NOTE && !looperEmitting && (inputDevice == DEV_HOST || inputDevice == DEV_TRS2)) {
     sidecarHeld[channel][data1] = !isNoteOn ? 0 : (inputDevice == DEV_HOST ? currentHostPort : 0x80);
@@ -3803,7 +3822,11 @@ void processIncomingEvent(uint8_t inputDevice, uint8_t statusHi, uint8_t channel
   }
 
   if (kind == MK_NOTE) {
+    edgeLaunchpadPort = lpPort;
+    edgeSkipRoute = lpSkipRoute;
     dispatchNoteEvent(inputDevice, channel, isNoteOn, number, data2);
+    edgeLaunchpadPort = 0;
+    edgeSkipRoute = -1;
     return;
   }
 
