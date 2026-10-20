@@ -1931,6 +1931,7 @@ function echoSectionHtml(route, index) {
   const attrs = (f) => `data-echo-field="${f}" data-route-index="${index}"`;
   return `<div class="${featureRowClass(true)}">
       ${switchHtml(index, 'echoOn', true, 'Echo')}
+      <div class="lp-quad-row">${switchHtml(index, 'echoAfter', e.afterRoute !== false, 'Echo After Route')}</div>
       <div class="arp-fields">
         <div class="arp-field"><label>Repeats</label><input type="number" min="1" max="32" value="${e.repeats}" ${attrs('repeats')}></div>
         <div class="arp-field"><label>Level %</label><input type="number" min="1" max="100" value="${e.level}" ${attrs('level')}></div>
@@ -1948,8 +1949,9 @@ function stutterSectionHtml(route, index) {
   const st = state.stutter;
   return `<div class="${featureRowClass(true)}">
       ${switchHtml(index, 'stutterOn', true, 'Stutter')}
+      <div class="lp-quad-row">${switchHtml(index, 'stutterAfter', st.afterRoute !== false, 'Stutter After Route')}</div>
       <div class="arp-fields">
-        <div class="arp-field"><label>Runout bars</label><input type="number" min="1" max="16" value="${st.maxBars}" data-stutter-field="maxBars" data-route-index="${index}"></div>
+        <div class="arp-field"><label>Runout Bars</label><input type="number" min="1" max="16" value="${st.maxBars}" data-stutter-field="maxBars" data-route-index="${index}"></div>
       </div>
       <label class="arp-table-label">Division</label>
       ${divisionTableHtml(st, 'stutter', index, '')}
@@ -2316,6 +2318,8 @@ function applyRouteFieldChange(route, field, el) {
     renderClockRow();
     return;
   }
+  if (field === 'stutterAfter') { state.stutter.afterRoute = el.checked; return; }
+  if (field === 'echoAfter') { state.echo.afterRoute = el.checked; return; }
   if (field === 'lpOctave') {
     route.lpOctave = parseInt(el.value, 10);
     return;

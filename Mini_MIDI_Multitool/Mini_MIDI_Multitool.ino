@@ -484,7 +484,8 @@ struct EchoSettings {
   uint8_t defaultTriggerType;    // the default square's trigger: turns Echo off and on until power off
   uint8_t defaultTriggerChannel;
   uint8_t defaultTriggerNumber;
-  uint8_t spare[10];
+  uint8_t beforeRoute;   // 1.49: 1 echoes the route's incoming notes and plays the echoes back in through it, 0 echoes what it sends
+  uint8_t spare[9];
   DivisionSquare squares[ARP_SQUARES];
   uint8_t spare2[4];
 };
@@ -506,7 +507,8 @@ struct StutterSettings {
   uint8_t defaultTriggerType;
   uint8_t defaultTriggerChannel;
   uint8_t defaultTriggerNumber;
-  uint8_t spare[11];
+  uint8_t beforeRoute;   // 1.49: 1 loops the route's incoming notes and plays the loop back in through it, 0 loops what it sends
+  uint8_t spare[10];
   DivisionSquare squares[ARP_SQUARES];
   uint8_t spare2[4];
 };
@@ -551,6 +553,17 @@ uint8_t stutterHeldCount = 0;
 uint8_t stutterPlaying = 0xFF;        // the square looping now, 0xFF none
 uint64_t stutterStopUs = 0;
 uint8_t stutterLiveOn[16][16];        // live notes sounding per channel, a bit each, released on start
+uint8_t stutterLiveVel[16][128];      // each live note's velocity, to carry it into the loop
+// Notes already sounding when the looped slice began (a held Bypass or Bass note, a held key) have
+// no Note On inside the slice, so the slice alone would drop them. They're carried instead: played
+// again at the start of every repeat.
+struct StutterCarry { uint8_t channel, note, velocity; };
+constexpr uint8_t STUTTER_CARRY_MAX = 32;
+StutterCarry stutterCarry[STUTTER_CARRY_MAX];
+uint8_t stutterCarryCount = 0;
+uint32_t stutterCycleSeen = 0;
+bool stutterReplaying = false; // a Before Route loop note is going back into the route
+bool echoReplaying = false;    // a Before Route echo is going back into the route
 bool stutterCcHeld[ARP_SQUARES + 1];
 
 constexpr uint8_t ARP_MAX_OUT = 48;        // drum mode: notes x octaves at once
@@ -2177,8 +2190,12 @@ fw::MusicalDivision echoCurrentDivision() {
 }
 
 // Each note the Echo route sends, after its channels are picked.
-void echoTap(const RouteData &r, uint8_t channel, bool on, uint8_t note, uint8_t velocity) {
+bool stutterBefore() { return stutterSettings.beforeRoute != 0; }
+bool echoBefore() { return echoSettings.beforeRoute != 0; }
+
+void echoTap(const RouteData &r, bool incoming, uint8_t channel, bool on, uint8_t note, uint8_t velocity) {
   if (!(r.features & FEATURE_ECHO) || echoRouteIdx >= routeCount || &routes[echoRouteIdx] != &r) return;
+  if (incoming != echoBefore() || echoReplaying) return; // an echo played back in isn't echoed again
   const uint64_t now = time_us_64();
   if (!on || velocity == 0) {
     echoEngine.noteOff(now, 0, 0x80 | channel, note);
@@ -2195,6 +2212,12 @@ void echoTap(const RouteData &r, uint8_t channel, bool on, uint8_t note, uint8_t
 
 void emitEcho(void *, uint8_t, const fw::EchoEvent &e) {
   if (echoRouteIdx >= routeCount) return;
+  if (echoBefore()) { // back in through the route, so the arp, Bypass and Bass all play the echoes
+    echoReplaying = true;
+    routeNoteIn(echoRouteIdx, (e.status & 0xF0) == 0x90 && e.data2, e.data1, e.data2);
+    echoReplaying = false;
+    return;
+  }
   PendingMsg msg;
   msg.used = true;
   msg.channel = e.status & 0x0F;
@@ -2303,17 +2326,44 @@ void stutterEmitMsg(const fw::EchoEvent &e) {
   msg.len = 3;
   const RouteData &r = routes[stutterRouteIdx];
   upsertPendingMask(routeOutputsNow(r), msg);
-  echoTap(r, msg.channel, msg.statusHi == 0x90 && msg.data2, msg.data1, msg.data2); // the loop feeds Echo
+  echoTap(r, false, msg.channel, msg.statusHi == 0x90 && msg.data2, msg.data1, msg.data2); // the loop feeds Echo
+}
+
+void stutterOut(const fw::EchoEvent &e) {
+  if (stutterRouteIdx >= routeCount) return;
+  if (!stutterBefore()) { stutterEmitMsg(e); return; }
+  stutterReplaying = true;
+  routeNoteIn(stutterRouteIdx, (e.status & 0xF0) == 0x90 && e.data2, e.data1, e.data2);
+  stutterReplaying = false;
 }
 
 void emitStutter(void *, uint8_t, const fw::EchoEvent &e) {
-  if ((e.status & 0xF0) == 0x90 || (e.status & 0xF0) == 0x80) stutterEmitMsg(e);
+  if ((e.status & 0xF0) == 0x90 || (e.status & 0xF0) == 0x80) stutterOut(e);
+}
+
+void stutterCarryPlay(bool on) {
+  for (uint8_t k = 0; k < stutterCarryCount; ++k) {
+    const StutterCarry &c = stutterCarry[k];
+    stutterOut(fw::EchoEvent{0, (uint8_t)((on ? 0x90 : 0x80) | c.channel), c.note, on ? c.velocity : (uint8_t)0});
+  }
 }
 
 void stutterStop() {
   if (stutterActive()) stutterRepeater.deactivate(emitStutter, nullptr);
+  stutterCarryPlay(false);
+  stutterCarryCount = 0;
   stutterPlaying = 0xFF;
   flushPending();
+}
+
+// A note heard by Stutter, on whichever side of the route it's set to: remembered for looping, and
+// tracked while sounding so it can be released when the loop takes over, or carried into it.
+void stutterRemember(uint8_t channel, bool on, uint8_t note, uint8_t velocity) {
+  stutterHistory.push(time_us_64(), 0, fw::EchoEvent{0, (uint8_t)((on ? 0x90 : 0x80) | channel), note, on ? velocity : (uint8_t)0});
+  if (stutterActive()) return;
+  uint8_t &bits = stutterLiveOn[channel & 0x0F][note >> 3];
+  if (on) { bits |= 1 << (note & 7); stutterLiveVel[channel & 0x0F][note & 0x7F] = velocity; }
+  else bits &= ~(1 << (note & 7));
 }
 
 // Loops the square on top of the held ones, or stops when none is held.
@@ -2324,14 +2374,26 @@ void stutterUpdate(uint64_t now) {
   if (want == 0xFF || stutterRouteIdx >= routeCount) return;
   const uint32_t lengthUs = stutterLengthUsFor(want);
   if (!stutterRepeater.activate(stutterHistory, now, lengthUs, 0)) return; // nothing played yet, retried while held
+  // Notes sounding now with nothing at all inside the slice started before it: carried.
+  uint8_t touched[16][16];
+  memset(touched, 0, sizeof(touched));
+  fw::HistorySnapshot snap = stutterHistory.snapshot(now, lengthUs, 0);
+  fw::EchoEvent ev;
+  while (stutterHistory.readNext(snap, ev)) touched[ev.status & 0x0F][ev.data1 >> 3] |= 1 << (ev.data1 & 7);
+  stutterCarryCount = 0;
   // Live notes still sounding stop, the loop takes over.
   for (uint8_t ch = 0; ch < 16; ++ch) {
     for (uint8_t n = 0; n < 128; ++n) {
       if (!(stutterLiveOn[ch][n >> 3] & (1 << (n & 7)))) continue;
-      stutterEmitMsg(fw::EchoEvent{0, (uint8_t)(0x80 | ch), n, 0});
+      stutterOut(fw::EchoEvent{0, (uint8_t)(0x80 | ch), n, 0});
+      if (!(touched[ch][n >> 3] & (1 << (n & 7))) && stutterCarryCount < STUTTER_CARRY_MAX) {
+        stutterCarry[stutterCarryCount++] = StutterCarry{ch, n, stutterLiveVel[ch][n]};
+      }
     }
   }
   memset(stutterLiveOn, 0, sizeof(stutterLiveOn));
+  stutterCarryPlay(true);
+  stutterCycleSeen = stutterRepeater.completedCycles();
   echoStop();
   stutterPlaying = want;
   if (stutterHeldCount == 1) { // the runout counts from the first press
@@ -2369,6 +2431,11 @@ void serviceStutter() {
     return;
   }
   stutterRepeater.tick(now, stutterHistory, emitStutter, nullptr);
+  if (stutterRepeater.completedCycles() != stutterCycleSeen) { // a new repeat: carried notes again
+    stutterCycleSeen = stutterRepeater.completedCycles();
+    stutterCarryPlay(false);
+    stutterCarryPlay(true);
+  }
   flushPending();
 }
 
@@ -2377,6 +2444,7 @@ void stutterRouteChanged() {
   stutterHeldCount = 0;
   memset(stutterCcHeld, 0, sizeof(stutterCcHeld));
   memset(stutterLiveOn, 0, sizeof(stutterLiveOn));
+  stutterCarryCount = 0;
   stutterHistory.reset();
   stutterRouteIdx = 0xFFFF;
   for (uint16_t i = 0; i < routeCount; ++i) {
@@ -2427,14 +2495,22 @@ void launchpadReverseLight(const RouteData &r, bool on, uint8_t outNote, uint16_
 // Every note a route sends goes out here. The Stutter route remembers it and is muted while looping.
 void routeNoteOut(const RouteData &r, const PendingMsg &msg) {
   const bool on = msg.statusHi == 0x90 && msg.data2;
-  if (stutterRouteIdx < routeCount && &routes[stutterRouteIdx] == &r) {
-    stutterHistory.push(time_us_64(), 0, fw::EchoEvent{0, (uint8_t)((on ? 0x90 : 0x80) | msg.channel), msg.data1, on ? msg.data2 : (uint8_t)0});
-    if (stutterActive()) return;
-    uint8_t &bits = stutterLiveOn[msg.channel & 0x0F][msg.data1 >> 3];
-    if (on) bits |= 1 << (msg.data1 & 7); else bits &= ~(1 << (msg.data1 & 7));
+  if (!stutterBefore() && stutterRouteIdx < routeCount && &routes[stutterRouteIdx] == &r) {
+    stutterRemember(msg.channel, on, msg.data1, msg.data2);
+    if (stutterActive()) return; // muted while the loop plays
   }
   upsertPendingMask(routeOutputsNow(r), msg);
-  echoTap(r, msg.channel, on, msg.data1, msg.data2);
+  echoTap(r, false, msg.channel, on, msg.data1, msg.data2);
+}
+
+// Stutter and Echo set to Before Route hear a route's notes here, on the way in. Returns true when
+// the live note shouldn't reach the route: Stutter looping before the route mutes live input, the
+// loop plays in its place.
+bool beforeRouteTap(uint16_t i, bool on, uint8_t note, uint8_t velocity) {
+  echoTap(routes[i], true, 0, on, note, velocity);
+  if (i != stutterRouteIdx || !stutterBefore() || stutterReplaying) return false;
+  stutterRemember(0, on, note, velocity);
+  return stutterActive();
 }
 
 // ============================================================================================
@@ -3616,6 +3692,58 @@ void serviceArps() {
   }
 }
 
+// A note going into route i, once it's matched and not taken by a mapping: Scale and Chord, the
+// arp (with Bypass and Bass), Mono Retrig, or straight out.
+void routeNoteIn(uint16_t i, bool isNoteOn, uint8_t note, uint8_t velocity) {
+  if (routes[i].features & (FEATURE_SCALE | FEATURE_AUTO_CHORD)) {
+    // A Note Off releases exactly what its Note On played, even if the settings changed between.
+    uint8_t outs[CHORD_MAX];
+    uint8_t count;
+    if (isNoteOn) {
+      if (findHeldKey(i, note)) return; // already held (a repeat Note On), keep what's sounding
+      count = notesForInput(routes[i], note, outs);
+      if (count == 0) return;
+    } else {
+      HeldKey *h = findHeldKey(i, note);
+      if (!h) return;
+      count = h->count;
+      memcpy(outs, h->out, count);
+      h->used = false;
+    }
+    if (arpTakesRoute(i)) {
+      if (isNoteOn) holdKey(i, note, outs, count);
+      for (uint8_t k = 0; k < count; ++k) arpInput(i, outs[k], velocity, isNoteOn);
+      return;
+    }
+    if (routes[i].flags2 & 0x01) {
+      if (isNoteOn) holdKey(i, note, outs, count);
+      handleMonoRetrigNote(i, routes[i], outs[0], velocity, isNoteOn);
+      return;
+    }
+    for (uint8_t k = 0; k < count; ++k) {
+      const uint8_t out = outs[k];
+      if (heldOutSounding(i, out)) return; // another held key on this route already plays it
+      sendRouteNote(i, routes[i], isNoteOn, out, isNoteOn ? velocity : 0);
+      if (!isNoteOn) routeNoteFreeSlot(routeNoteTracks[i], out);
+    }
+    if (isNoteOn) holdKey(i, note, outs, count);
+    return;
+  }
+  if (arpTakesRoute(i)) {
+    arpInput(i, note, velocity, isNoteOn);
+    return;
+  }
+  if (routes[i].flags2 & 0x01) {
+    handleMonoRetrigNote(i, routes[i], note, velocity, isNoteOn);
+  } else {
+    sendRouteNote(i, routes[i], isNoteOn, note, velocity);
+    // Without Mono Retrig there's no "silenced but still held" concept — every Note Off here
+    // is a genuine release, so it's always correct (and necessary, to avoid leaking a slot per
+    // distinct note ever played) to free the Round Robin channel-memory slot now.
+    if (!isNoteOn) routeNoteFreeSlot(routeNoteTracks[i], note);
+  }
+}
+
 void dispatchNoteEvent(uint8_t inputDevice, uint8_t channel, bool isNoteOn, uint8_t rawNote, uint8_t velocity) {
   bool matchedAny = false;
   bool matchedLooperRoute = false; // a route whose own notes these are, with its Looper switch on
@@ -3647,53 +3775,7 @@ void dispatchNoteEvent(uint8_t inputDevice, uint8_t channel, bool isNoteOn, uint
       // make loop playback fire that action again from inside the looper.
       if (handleNoteMap(i, isNoteOn, note, velocity)) continue;
       if (!routeLooperOff(routes[i])) matchedLooperRoute = true;
-      if (routes[i].features & (FEATURE_SCALE | FEATURE_AUTO_CHORD)) {
-        // A Note Off releases exactly what its Note On played, even if the settings changed between.
-        uint8_t outs[CHORD_MAX];
-        uint8_t count;
-        if (isNoteOn) {
-          if (findHeldKey(i, note)) continue; // already held (a repeat Note On), keep what's sounding
-          count = notesForInput(routes[i], note, outs);
-          if (count == 0) continue;
-        } else {
-          HeldKey *h = findHeldKey(i, note);
-          if (!h) continue;
-          count = h->count;
-          memcpy(outs, h->out, count);
-          h->used = false;
-        }
-        if (arpTakesRoute(i)) {
-          if (isNoteOn) holdKey(i, note, outs, count);
-          for (uint8_t k = 0; k < count; ++k) arpInput(i, outs[k], velocity, isNoteOn);
-          continue;
-        }
-        if (routes[i].flags2 & 0x01) {
-          if (isNoteOn) holdKey(i, note, outs, count);
-          handleMonoRetrigNote(i, routes[i], outs[0], velocity, isNoteOn);
-          continue;
-        }
-        for (uint8_t k = 0; k < count; ++k) {
-          const uint8_t out = outs[k];
-          if (heldOutSounding(i, out)) continue; // another held key on this route already plays it
-          sendRouteNote(i, routes[i], isNoteOn, out, isNoteOn ? velocity : 0);
-          if (!isNoteOn) routeNoteFreeSlot(routeNoteTracks[i], out);
-        }
-        if (isNoteOn) holdKey(i, note, outs, count);
-        continue;
-      }
-      if (arpTakesRoute(i)) {
-        arpInput(i, note, velocity, isNoteOn);
-        continue;
-      }
-      if (routes[i].flags2 & 0x01) {
-        handleMonoRetrigNote(i, routes[i], note, velocity, isNoteOn);
-      } else {
-        sendRouteNote(i, routes[i], isNoteOn, note, velocity);
-        // Without Mono Retrig there's no "silenced but still held" concept — every Note Off here
-        // is a genuine release, so it's always correct (and necessary, to avoid leaking a slot per
-        // distinct note ever played) to free the Round Robin channel-memory slot now.
-        if (!isNoteOn) routeNoteFreeSlot(routeNoteTracks[i], note);
-      }
+      if (!beforeRouteTap(i, isNoteOn, note, velocity)) routeNoteIn(i, isNoteOn, note, velocity);
     }
   }
   launchpadExcludePorts = 0;

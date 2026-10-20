@@ -129,11 +129,11 @@ function bytesToSquares(b, offset) {
 // Echo, firmware 1.23. 48 bytes: division + 1 (0 = 1/8), repeats (1-32, 0 = 4), level % (1-100, 0 = 70),
 // 13 spare, 7 division squares whose triggers latch, 4 spare.
 export function defaultEcho() {
-  return { division: 8, repeats: 4, level: 70, defaultTrigger: noTrigger(), squares: Array.from({ length: ARP_SQUARES }, () => null) };
+  return { division: 8, repeats: 4, level: 70, defaultTrigger: noTrigger(), afterRoute: true, squares: Array.from({ length: ARP_SQUARES }, () => null) };
 }
-// Default trigger (bytes 3-5) turns Echo off and on.
+// Default trigger (bytes 3-5) turns Echo off and on. Byte 6 (1.49): 1 = before the route.
 export function echoToBytes(e) {
-  return [e.division + 1, e.repeats, e.level, ...triggerToBytes(e.defaultTrigger), ...new Array(10).fill(0), ...squaresToBytes(e.squares), 0, 0, 0, 0];
+  return [e.division + 1, e.repeats, e.level, ...triggerToBytes(e.defaultTrigger), e.afterRoute === false ? 1 : 0, ...new Array(9).fill(0), ...squaresToBytes(e.squares), 0, 0, 0, 0];
 }
 export function bytesToEcho(b) {
   const d = defaultEcho();
@@ -142,6 +142,7 @@ export function bytesToEcho(b) {
     repeats: b[1] >= 1 && b[1] <= 32 ? b[1] : d.repeats,
     level: b[2] >= 1 && b[2] <= 100 ? b[2] : d.level,
     defaultTrigger: bytesToTrigger(b, 3),
+    afterRoute: b[6] !== 1,
     squares: bytesToSquares(b, 16)
   };
 }
@@ -171,10 +172,11 @@ export function bytesToLooper(b) {
 // Stutter, firmware 1.24. 48 bytes: default division + 1 (0 = 1/8), runout bars (1-16, 0 = 16), default
 // trigger (3), 11 spare, 7 division squares, 4 spare. Every square is momentary, the default too.
 export function defaultStutter() {
-  return { division: 8, maxBars: 16, defaultTrigger: noTrigger(), squares: Array.from({ length: ARP_SQUARES }, () => null) };
+  return { division: 8, maxBars: 16, defaultTrigger: noTrigger(), afterRoute: true, squares: Array.from({ length: ARP_SQUARES }, () => null) };
 }
+// Byte 5 (1.49): 1 = before the route.
 export function stutterToBytes(st) {
-  return [st.division + 1, st.maxBars, ...triggerToBytes(st.defaultTrigger), ...new Array(11).fill(0), ...squaresToBytes(st.squares), 0, 0, 0, 0];
+  return [st.division + 1, st.maxBars, ...triggerToBytes(st.defaultTrigger), st.afterRoute === false ? 1 : 0, ...new Array(10).fill(0), ...squaresToBytes(st.squares), 0, 0, 0, 0];
 }
 export function bytesToStutter(b) {
   const d = defaultStutter();
@@ -182,6 +184,7 @@ export function bytesToStutter(b) {
     division: b[0] >= 1 && b[0] <= DIVISIONS.length ? b[0] - 1 : d.division,
     maxBars: b[1] >= 1 && b[1] <= 16 ? b[1] : d.maxBars,
     defaultTrigger: bytesToTrigger(b, 2),
+    afterRoute: b[5] !== 1,
     squares: bytesToSquares(b, 16)
   };
 }

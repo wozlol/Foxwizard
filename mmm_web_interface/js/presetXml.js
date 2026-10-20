@@ -78,6 +78,7 @@ function echoFromXml(el) {
   e.level = Math.min(100, Math.max(1, parseInt(el.getAttribute('level') || '70', 10) || 70));
   e.squares = squaresFromXml(el);
   e.defaultTrigger = triggerFromXml(el);
+  e.afterRoute = el.getAttribute('afterRoute') !== 'false';
   return e;
 }
 
@@ -88,6 +89,7 @@ function stutterFromXml(el) {
   st.maxBars = Math.min(16, Math.max(1, parseInt(el.getAttribute('runoutBars') || '16', 10) || 16));
   st.squares = squaresFromXml(el);
   st.defaultTrigger = triggerFromXml(el);
+  st.afterRoute = el.getAttribute('afterRoute') !== 'false';
   return st;
 }
 
@@ -207,11 +209,11 @@ export function serializePreset(state) {
   });
   lines.push('  </arps>');
   const ec = state.echo || defaultEcho();
-  lines.push(`  <echo division="${DIVISIONS[ec.division]}" repeats="${ec.repeats}" level="${ec.level}"${triggerAttrs(ec.defaultTrigger)}>`);
+  lines.push(`  <echo division="${DIVISIONS[ec.division]}" repeats="${ec.repeats}" level="${ec.level}" afterRoute="${ec.afterRoute !== false}"${triggerAttrs(ec.defaultTrigger)}>`);
   squaresToXml(lines, ec.squares, '    ');
   lines.push('  </echo>');
   const stt = state.stutter || defaultStutter();
-  lines.push(`  <stutter division="${DIVISIONS[stt.division]}" runoutBars="${stt.maxBars}"${triggerAttrs(stt.defaultTrigger)}>`);
+  lines.push(`  <stutter division="${DIVISIONS[stt.division]}" runoutBars="${stt.maxBars}" afterRoute="${stt.afterRoute !== false}"${triggerAttrs(stt.defaultTrigger)}>`);
   squaresToXml(lines, stt.squares, '    ');
   lines.push('  </stutter>');
   const lp = state.looper || defaultLooper();
