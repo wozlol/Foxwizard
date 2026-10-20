@@ -41,7 +41,7 @@ export const ACTION_TYPES = [
 // Sent as MMC, and as MIDI Start, Stop or Continue where MIDI has one.
 export const TRANSPORTS = ['Play', 'Stop', 'Continue', 'Pause', 'Record', 'Record Exit', 'Rewind', 'Fast Forward', 'Return to Start'];
 
-export const LOOPER_ACTIONS = ['Button', 'Play/Arm/Rec', 'Stop/Clear/Undo', 'Play', 'Stop', 'Pause', 'Overdub', 'Clear', 'Undo', 'Rec/Arm'];
+export const LOOPER_ACTIONS = ['1-Button', 'Play/Arm/Rec', 'Stop/Clear/Undo', 'Play', 'Stop', 'Pause', 'Overdub', 'Clear', 'Undo', 'Rec/Arm'];
 
 // The mapper's Stutter Length action (1.48): bar fractions, measured against the actual time
 // signature, rather than the arp-style musical divisions the route's own Stutter squares use.

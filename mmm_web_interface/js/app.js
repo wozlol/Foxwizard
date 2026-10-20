@@ -827,7 +827,7 @@ function renderLooperRow() {
       ['Auto Overdub', sw('autoOverdub', l.autoOverdub)],
       ['Record After Routes', sw('recordAfter', !l.recordInputs)],
       ['Hold Clears', sw('holdClears', l.holdClears)],
-      ['Loop Unrouted Channels', sw('loopUnrouted', l.loopUnrouted)],
+      ['Global Looper', sw('loopUnrouted', l.loopUnrouted)],
       ['Record CCs', sw('recordCcs', !!l.recordCcs)]
     ].map(([title, control]) => `<div class="looper-cell"><p class="looper-cell-title">${title}</p><div class="looper-cell-control">${control}</div></div>`).join('')}</div>` : ''}`;
 }
