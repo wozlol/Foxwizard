@@ -25,6 +25,10 @@ struct EchoConfig {
   uint32_t velocityDecayQ16 = 0;
   // FoxWizard 1.64: each gap is the last one times this (Q16), used instead of drift. 0 off.
   uint32_t spacingFactorQ16 = 0;
+  // FoxWizard 1.65: plays exactly this many repeats, fading evenly by repeat rather than by time,
+  // and no gap grows past maxSpacingUs. 0 keeps the time-based length and fade.
+  uint8_t repeats = 0;
+  uint32_t maxSpacingUs = 0;
 };
 
 class EchoEngine {
@@ -42,8 +46,8 @@ class EchoEngine {
   uint8_t activeSequenceCount() const;
 
  private:
-  static constexpr uint8_t kSequenceCount = 64;
-  static constexpr uint8_t kActiveNoteCount = 96;
+  static constexpr uint8_t kSequenceCount = 128;   // FoxWizard 1.65: was 64, fast arps filled it
+  static constexpr uint8_t kActiveNoteCount = 160;
   static constexpr uint8_t kMaxRepeats = 64;
 
   struct Sequence {
@@ -56,7 +60,9 @@ class EchoEngine {
     uint32_t driftFactorQ16 = 65536;
     uint32_t velocityQ16 = 0;
     uint32_t velocityDecayQ16 = 0;
+    uint32_t maxSpacingUs = 0;
     uint16_t id = 0;
+    uint8_t repeatLimit = 0;
     uint8_t target = 0;
     uint8_t channel = 0;
     uint8_t note = 0;

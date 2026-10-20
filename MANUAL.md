@@ -137,9 +137,9 @@ Each note the route plays repeats at the echo division, fading out.
 | Global Echo | echoes everything the FoxWizard sends, not just this route |
 | Echo Latching | on (default): a trigger press turns Echo off and on, or latches a division. Off: Echo sounds only while a square is held. |
 | Echo After Route | on (default): echoes what the route sends. Off: echoes the notes coming in, so the repeats go through the route too (arped, scaled). |
-| Repeats | 1-32 |
+| Repeats | 1-32, each a step quieter than the last |
 | Level % | how loud the repeats start |
-| Bounce | each gap is a fraction of the last, heard from the first repeat. Bounce 1/2 halves it every time, like a ball settling fast, then 2/3, 3/4 out to 8/9. Slow 2/1 to 9/8 makes the gaps grow instead. Off keeps them even. |
+| Bounce | each gap is a fraction of the last, heard from the first repeat. Bounce 1/2 halves it every time, like a ball settling fast, then 2/3, 3/4 out to 8/9. Slow 2/1 to 9/8 makes the gaps grow instead, up to 4 times the division. Off keeps them even. |
 | Natural Fade | each repeat loses the same share of loudness, like a bouncing ball, instead of an even fade |
 | Division | division table |
 

@@ -43,7 +43,16 @@ EchoEngine::Sequence *EchoEngine::allocateSequence() {
     if (!sequence.used) return &sequence;
   }
   ++overflowCount_;
-  return nullptr;
+  // FoxWizard 1.65: full, the oldest echo gives way, so a new note always echoes.
+  Sequence *oldest = nullptr;
+  for (Sequence &sequence : sequences_) {
+    if (!oldest || sequence.sourceOnUs < oldest->sourceOnUs) oldest = &sequence;
+  }
+  for (ActiveNote &note : activeNotes_) {
+    if (note.used && note.sequenceId == oldest->id) note.offUs = 0; // let go on the next tick
+  }
+  oldest->scheduling = false;
+  return oldest;
 }
 
 EchoEngine::ActiveNote *EchoEngine::allocateActiveNote() {
@@ -63,8 +72,9 @@ bool EchoEngine::sequenceHasActiveNotes(uint16_t sequenceId) const {
 
 void EchoEngine::reclaimSequences() {
   for (Sequence &sequence : sequences_) {
-    if (sequence.used && !sequence.scheduling && sequence.sourceReleased &&
-        !sequenceHasActiveNotes(sequence.id)) {
+    // FoxWizard 1.65: a finished echo frees its slot even while its key is still held, so long-held
+    // notes and unmatched Note Offs can't fill the pool.
+    if (sequence.used && !sequence.scheduling && !sequenceHasActiveNotes(sequence.id)) {
       sequence = Sequence{};
     }
   }
@@ -91,6 +101,9 @@ void EchoEngine::noteOn(uint64_t nowUs, uint8_t target, uint8_t status,
   sequence->firstVelocity = static_cast<uint8_t>(
       (static_cast<uint16_t>(velocity) * config.wetPercent + 50U) / 100U);
   sequence->velocityDecayQ16 = config.velocityDecayQ16;
+  sequence->repeatLimit = config.repeats;
+  sequence->maxSpacingUs = config.maxSpacingUs;
+  if (config.repeats) sequence->endUs = UINT64_MAX; // the repeat count ends it
   sequence->velocityQ16 = static_cast<uint32_t>(sequence->firstVelocity) << 16;
   sequence->used = true;
   sequence->scheduling = sequence->firstVelocity > 0;
@@ -129,16 +142,22 @@ void EchoEngine::tick(uint64_t nowUs, EmitFn emit, void *context, uint16_t maxWo
     if (work >= maxWork) break;
     while (sequence.used && sequence.scheduling && nowUs >= sequence.nextOnUs &&
            work < maxWork) {
-      if (sequence.nextOnUs >= sequence.endUs || sequence.repeatCount >= kMaxRepeats) {
+      if (sequence.nextOnUs >= sequence.endUs || sequence.repeatCount >= kMaxRepeats ||
+          (sequence.repeatLimit && sequence.repeatCount >= sequence.repeatLimit)) {
         sequence.scheduling = false;
         break;
       }
       const uint64_t fadeSpan = sequence.endUs - sequence.firstRepeatUs;
       const uint64_t fadeElapsed = sequence.nextOnUs - sequence.firstRepeatUs;
-      const uint8_t velocity = sequence.velocityDecayQ16
+      uint8_t velocity = sequence.velocityDecayQ16
           ? static_cast<uint8_t>((sequence.velocityQ16 + 32768U) >> 16)
+          : sequence.repeatLimit
+          // Even fade by repeat: the first at full level, each after a step down, the last still heard.
+          ? static_cast<uint8_t>((static_cast<uint16_t>(sequence.firstVelocity) *
+                (sequence.repeatLimit - sequence.repeatCount) + sequence.repeatLimit / 2) / sequence.repeatLimit)
           : (fadeSpan == 0 ? 0 : static_cast<uint8_t>(
               (static_cast<uint64_t>(sequence.firstVelocity) * (fadeSpan - fadeElapsed)) / fadeSpan));
+      if (sequence.repeatLimit && velocity == 0) velocity = 1;
       if (velocity == 0) {
         sequence.scheduling = false;
         break;
@@ -171,6 +190,7 @@ void EchoEngine::tick(uint64_t nowUs, EmitFn emit, void *context, uint16_t maxWo
           (static_cast<uint64_t>(sequence.spacingUs) * sequence.driftFactorQ16 + 32768U) >> 16;
       sequence.spacingUs = static_cast<uint32_t>(nextSpacing < 2000U ? 2000U :
           (nextSpacing > UINT32_MAX ? UINT32_MAX : nextSpacing));
+      if (sequence.maxSpacingUs && sequence.spacingUs > sequence.maxSpacingUs) sequence.spacingUs = sequence.maxSpacingUs;
       sequence.nextOnUs += sequence.spacingUs;
     }
   }

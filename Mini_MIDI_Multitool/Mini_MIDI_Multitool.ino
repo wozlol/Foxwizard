@@ -97,7 +97,7 @@ constexpr uint8_t SYSEX_MFR_ID = 0x7D;   // reserved for non-commercial/educatio
 constexpr uint8_t SYSEX_DEVICE_ID = 0x4D; // 'M'
 constexpr uint8_t PROTOCOL_VERSION = 4; // 2: 45-byte routes with port masks, GET_STATUS. 3: clock settings, LEARN. 4: 53-byte routes with feature fields, feature blocks
 constexpr uint8_t FW_VERSION_MAJOR = 1;
-constexpr uint8_t FW_VERSION_MINOR = 64;
+constexpr uint8_t FW_VERSION_MINOR = 65;
 constexpr uint8_t FW_CHUNK_BYTES = 128;          // firmware bytes per FW_DATA message, 147 once packed
 constexpr uint32_t FW_REBOOT_DELAY_MS = 300;     // lets the FW_END ACK reach the host before rebooting
 const char DEVICE_NAME[] = "FoxWizard Mini MIDI Multitool"; // long name sent in the SysEx IDENTITY_REPLY
@@ -2340,11 +2340,11 @@ void echoEngineTap(uint8_t channel, bool on, uint8_t note, uint8_t velocity) {
     ratio = b > 0 ? n / (n + 1.0f) : (n + 1.0f) / n;
     config.spacingFactorQ16 = (uint32_t)(ratio * 65536.0f + 0.5f);
   }
-  // Long enough for all the repeats at their changing gaps, then the echo lets go. At most a minute.
-  float span = 0.0f, gap = 1.0f;
-  for (uint8_t k = 0; k <= repeats; ++k) { span += gap; gap *= ratio; }
-  const float lengthUs = config.delayUs * span;
-  config.lengthUs = lengthUs > 60e6f ? 60000000u : (uint32_t)lengthUs;
+  // 1.65: exactly Repeats repeats, fading evenly by repeat, and a Slow gap never grows past 4 times
+  // the division, so nothing lands long after the echo seemed done.
+  config.repeats = repeats;
+  config.maxSpacingUs = config.delayUs * 4;
+  config.lengthUs = 0xFFFFFFFFu; // the repeat count ends it
   if (echoSettings.naturalFade) {
     // Louder repeats lose the same share each time: with Bounce, the square root of the gap's share,
     // so the repeats stay audible as they speed up; without it, down to an eighth by the last.
