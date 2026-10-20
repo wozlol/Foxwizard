@@ -92,6 +92,7 @@ function stutterFromXml(el) {
   st.defaultTrigger = triggerFromXml(el);
   st.afterRoute = el.getAttribute('afterRoute') !== 'false';
   st.latching = el.getAttribute('latching') === 'true';
+  st.global = el.getAttribute('global') === 'true';
   return st;
 }
 
@@ -217,7 +218,7 @@ export function serializePreset(state) {
   squaresToXml(lines, ec.squares, '    ');
   lines.push('  </echo>');
   const stt = state.stutter || defaultStutter();
-  lines.push(`  <stutter division="${DIVISIONS[stt.division]}" runoutBars="${stt.maxBars === 0 ? 'off' : stt.maxBars}" afterRoute="${stt.afterRoute !== false}" latching="${!!stt.latching}"${triggerAttrs(stt.defaultTrigger)}>`);
+  lines.push(`  <stutter division="${DIVISIONS[stt.division]}" runoutBars="${stt.maxBars === 0 ? 'off' : stt.maxBars}" afterRoute="${stt.afterRoute !== false}" latching="${!!stt.latching}" global="${!!stt.global}"${triggerAttrs(stt.defaultTrigger)}>`);
   squaresToXml(lines, stt.squares, '    ');
   lines.push('  </stutter>');
   const lp = state.looper || defaultLooper();

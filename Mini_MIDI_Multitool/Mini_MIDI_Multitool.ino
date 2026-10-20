@@ -97,7 +97,7 @@ constexpr uint8_t SYSEX_MFR_ID = 0x7D;   // reserved for non-commercial/educatio
 constexpr uint8_t SYSEX_DEVICE_ID = 0x4D; // 'M'
 constexpr uint8_t PROTOCOL_VERSION = 4; // 2: 45-byte routes with port masks, GET_STATUS. 3: clock settings, LEARN. 4: 53-byte routes with feature fields, feature blocks
 constexpr uint8_t FW_VERSION_MAJOR = 1;
-constexpr uint8_t FW_VERSION_MINOR = 55;
+constexpr uint8_t FW_VERSION_MINOR = 56;
 constexpr uint8_t FW_CHUNK_BYTES = 128;          // firmware bytes per FW_DATA message, 147 once packed
 constexpr uint32_t FW_REBOOT_DELAY_MS = 300;     // lets the FW_END ACK reach the host before rebooting
 const char DEVICE_NAME[] = "FoxWizard Mini MIDI Multitool"; // long name sent in the SysEx IDENTITY_REPLY
@@ -510,7 +510,8 @@ struct StutterSettings {
   uint8_t defaultTriggerNumber;
   uint8_t beforeRoute;   // 1.49: 1 loops the route's incoming notes and plays the loop back in through it, 0 loops what it sends
   uint8_t latching;      // 1.50: 1 a press latches a square until it's pressed again (or the runout), 0 holds it only while held
-  uint8_t spare[9];
+  uint8_t global;        // 1.56: 1 loops everything the FoxWizard sends, every route and unrouted pass-through
+  uint8_t spare[8];
   DivisionSquare squares[ARP_SQUARES];
   uint8_t spare2[4];
 };
@@ -572,6 +573,8 @@ StutterCarry stutterCarry[STUTTER_CARRY_MAX];
 uint8_t stutterCarryCount = 0;
 uint32_t stutterCycleSeen = 0;
 bool stutterReplaying = false; // a Before Route loop note is going back into the route
+bool stutterEmitting = false;  // a Global Stutter loop note is going out, not heard again
+uint16_t stutterPortsFor[16][128]; // Global Stutter: the ports each note last went to, where its loop copy goes
 bool echoReplaying = false;    // a Before Route echo is going back into the route
 bool stutterCcHeld[ARP_SQUARES + 1];
 
@@ -1832,6 +1835,7 @@ void sendToOutputs(uint16_t mask, uint8_t statusHi, uint8_t channel, uint8_t dat
 }
 
 void upsertPendingMask(uint16_t mask, const PendingMsg &msg) {
+  if (msg.kind == MK_NOTE && globalStutterTap(mask, msg.channel, msg.statusHi == 0x90 && msg.data2, msg.data1, msg.data2)) return;
   if (msg.kind == MK_NOTE && (mask & launchpadPorts)) { // Launchpad ports get lights, not notes
     const bool on = msg.statusHi == 0x90 && msg.data2;
     for (uint8_t b = 0; b < PORT_COUNT; ++b) {
@@ -2055,6 +2059,8 @@ uint16_t modeDefaultPorts(uint8_t inputDevice) {
 }
 
 void applyModeDefault(uint8_t inputDevice, uint8_t statusHi, uint8_t channel, uint8_t data1, uint8_t data2, uint8_t len) {
+  if ((statusHi == 0x90 || statusHi == 0x80) &&
+      globalStutterTap(modeDefaultPorts(inputDevice), channel, statusHi == 0x90 && data2, data1, data2)) return;
   sendToOutputs(modeDefaultPorts(inputDevice), statusHi, channel, data1, data2, len);
 }
 
@@ -2218,7 +2224,8 @@ fw::MusicalDivision echoCurrentDivision() {
 }
 
 // Each note the Echo route sends, after its channels are picked.
-bool stutterBefore() { return stutterSettings.beforeRoute != 0; }
+bool stutterBefore() { return stutterSettings.beforeRoute != 0 && stutterSettings.global == 0; }
+bool stutterGlobal() { return stutterSettings.global != 0; }
 bool echoBefore() { return echoSettings.beforeRoute != 0; }
 
 void echoTap(const RouteData &r, bool incoming, uint8_t channel, bool on, uint8_t note, uint8_t velocity) {
@@ -2353,8 +2360,24 @@ void stutterEmitMsg(const fw::EchoEvent &e) {
   msg.data2 = e.data2;
   msg.len = 3;
   const RouteData &r = routes[stutterRouteIdx];
+  if (stutterGlobal()) {
+    const uint16_t ports = stutterPortsFor[msg.channel][msg.data1 & 0x7F];
+    stutterEmitting = true;
+    upsertPendingMask(ports ? ports : routeOutputsNow(r), msg);
+    stutterEmitting = false;
+    return;
+  }
   upsertPendingMask(routeOutputsNow(r), msg);
   echoTap(r, false, msg.channel, msg.statusHi == 0x90 && msg.data2, msg.data1, msg.data2); // the loop feeds Echo
+}
+
+// Global Stutter hears every note going out, routed or not. Returns true when it should be muted:
+// the loop is playing in its place.
+bool globalStutterTap(uint16_t mask, uint8_t channel, bool on, uint8_t note, uint8_t velocity) {
+  if (!stutterGlobal() || stutterRouteIdx >= routeCount || stutterEmitting || !mask) return false;
+  if (on) stutterPortsFor[channel & 0x0F][note & 0x7F] = mask;
+  stutterRemember(channel, on, note, velocity);
+  return stutterActive();
 }
 
 void stutterOut(const fw::EchoEvent &e) {
@@ -2533,7 +2556,7 @@ void launchpadReverseLight(const RouteData &r, bool on, uint8_t outNote, uint16_
 // Every note a route sends goes out here. The Stutter route remembers it and is muted while looping.
 void routeNoteOut(const RouteData &r, const PendingMsg &msg) {
   const bool on = msg.statusHi == 0x90 && msg.data2;
-  if (!stutterBefore() && stutterRouteIdx < routeCount && &routes[stutterRouteIdx] == &r) {
+  if (!stutterBefore() && !stutterGlobal() && stutterRouteIdx < routeCount && &routes[stutterRouteIdx] == &r) {
     stutterRemember(msg.channel, on, msg.data1, msg.data2);
     if (stutterActive()) return; // muted while the loop plays
   }

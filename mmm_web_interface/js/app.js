@@ -2000,8 +2000,9 @@ function stutterSectionHtml(route, index) {
   return `<div class="${featureRowClass(true)}">
       <div class="feature-head">
         ${switchHtml(index, 'stutterOn', true, 'Stutter', 'switch-red')}
-        ${switchHtml(index, 'stutterAfter', st.afterRoute !== false, 'Stutter After Route')}
+        ${switchHtml(index, 'stutterGlobal', !!st.global, 'Global Stutter')}
         ${switchHtml(index, 'stutterLatching', !!st.latching, 'Stutter Latching')}
+        ${st.global ? '' : switchHtml(index, 'stutterAfter', st.afterRoute !== false, 'Stutter After Route')}
       </div>
       <div class="arp-fields">
         <div class="arp-field"><label>Runout Bars</label><select data-stutter-field="maxBars" data-route-index="${index}">${STUTTER_RUNOUTS.map((v) => `<option value="${v}" ${st.maxBars === v ? 'selected' : ''}>${v === 0 ? 'Off' : v}</option>`).join('')}</select></div>
@@ -2191,7 +2192,7 @@ function refreshRouteCard(index, animateStaple) {
 }
 
 // Structural changes (need a re-render): checkboxes that reveal/hide fields, staple toggle, delete
-const STRUCTURAL_FIELDS = new Set(['note', 'cc', 'ccMapEnabled', 'aftertouch', 'aftertouchMap', 'pressure', 'pressureMap', 'allInputTypes', 'allInputChannels', 'allInPorts', 'allOutPorts', 'monoRetrig', 'roundRobin', 'roundRobinRandom', 'noteToCc', 'ccMapOn', 'launchpad', 'scaleOn', 'autoChord', 'arpOn', 'echoOn', 'stutterOn', 'lpQuadEnabled']);
+const STRUCTURAL_FIELDS = new Set(['note', 'cc', 'ccMapEnabled', 'aftertouch', 'aftertouchMap', 'pressure', 'pressureMap', 'allInputTypes', 'allInputChannels', 'allInPorts', 'allOutPorts', 'monoRetrig', 'roundRobin', 'roundRobinRandom', 'noteToCc', 'ccMapOn', 'launchpad', 'scaleOn', 'autoChord', 'arpOn', 'echoOn', 'stutterOn', 'lpQuadEnabled', 'stutterGlobal']);
 
 routesContainer.addEventListener('click', (e) => {
   const actionEl = e.target.closest('[data-action]');
@@ -2371,6 +2372,7 @@ function applyRouteFieldChange(route, field, el) {
   }
   if (field === 'stutterAfter') { state.stutter.afterRoute = el.checked; return; }
   if (field === 'stutterLatching') { state.stutter.latching = el.checked; return; }
+  if (field === 'stutterGlobal') { state.stutter.global = el.checked; return; }
   if (field === 'echoAfter') { state.echo.afterRoute = el.checked; return; }
   if (field === 'lpOctave') {
     route.lpOctave = parseInt(el.value, 10);
