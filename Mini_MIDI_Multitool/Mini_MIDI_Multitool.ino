@@ -97,7 +97,7 @@ constexpr uint8_t SYSEX_MFR_ID = 0x7D;   // reserved for non-commercial/educatio
 constexpr uint8_t SYSEX_DEVICE_ID = 0x4D; // 'M'
 constexpr uint8_t PROTOCOL_VERSION = 4; // 2: 45-byte routes with port masks, GET_STATUS. 3: clock settings, LEARN. 4: 53-byte routes with feature fields, feature blocks
 constexpr uint8_t FW_VERSION_MAJOR = 1;
-constexpr uint8_t FW_VERSION_MINOR = 56;
+constexpr uint8_t FW_VERSION_MINOR = 57;
 constexpr uint8_t FW_CHUNK_BYTES = 128;          // firmware bytes per FW_DATA message, 147 once packed
 constexpr uint32_t FW_REBOOT_DELAY_MS = 300;     // lets the FW_END ACK reach the host before rebooting
 const char DEVICE_NAME[] = "FoxWizard Mini MIDI Multitool"; // long name sent in the SysEx IDENTITY_REPLY
@@ -2371,13 +2371,12 @@ void stutterEmitMsg(const fw::EchoEvent &e) {
   echoTap(r, false, msg.channel, msg.statusHi == 0x90 && msg.data2, msg.data1, msg.data2); // the loop feeds Echo
 }
 
-// Global Stutter hears every note going out, routed or not. Returns true when it should be muted:
-// the loop is playing in its place.
+// Global Stutter hears every note going out, routed or not. Never mutes it: the loop plays alongside.
 bool globalStutterTap(uint16_t mask, uint8_t channel, bool on, uint8_t note, uint8_t velocity) {
   if (!stutterGlobal() || stutterRouteIdx >= routeCount || stutterEmitting || !mask) return false;
   if (on) stutterPortsFor[channel & 0x0F][note & 0x7F] = mask;
   stutterRemember(channel, on, note, velocity);
-  return stutterActive();
+  return false; // never muted: the loop plays alongside
 }
 
 void stutterOut(const fw::EchoEvent &e) {
@@ -2411,7 +2410,6 @@ void stutterStop() {
 // tracked while sounding so it can be released when the loop takes over, or carried into it.
 void stutterRemember(uint8_t channel, bool on, uint8_t note, uint8_t velocity) {
   stutterHistory.push(time_us_64(), 0, fw::EchoEvent{0, (uint8_t)((on ? 0x90 : 0x80) | channel), note, on ? velocity : (uint8_t)0});
-  if (stutterActive()) return;
   uint8_t &bits = stutterLiveOn[channel & 0x0F][note >> 3];
   if (on) { bits |= 1 << (note & 7); stutterLiveVel[channel & 0x0F][note & 0x7F] = velocity; }
   else bits &= ~(1 << (note & 7));
@@ -2432,20 +2430,19 @@ void stutterUpdate(uint64_t now) {
   fw::EchoEvent ev;
   while (stutterHistory.readNext(snap, ev)) touched[ev.status & 0x0F][ev.data1 >> 3] |= 1 << (ev.data1 & 7);
   stutterCarryCount = 0;
-  // Live notes still sounding stop, the loop takes over.
+  // Nothing live is cut or muted: the loop plays alongside, like playing over the looper. A note
+  // already sounding is carried, retriggered at the top of every repeat.
   for (uint8_t ch = 0; ch < 16; ++ch) {
     for (uint8_t n = 0; n < 128; ++n) {
       if (!(stutterLiveOn[ch][n >> 3] & (1 << (n & 7)))) continue;
-      stutterOut(fw::EchoEvent{0, (uint8_t)(0x80 | ch), n, 0});
       if (!(touched[ch][n >> 3] & (1 << (n & 7))) && stutterCarryCount < STUTTER_CARRY_MAX) {
         stutterCarry[stutterCarryCount++] = StutterCarry{ch, n, stutterLiveVel[ch][n]};
       }
     }
   }
-  memset(stutterLiveOn, 0, sizeof(stutterLiveOn));
+  stutterCarryPlay(false);
   stutterCarryPlay(true);
   stutterCycleSeen = stutterRepeater.completedCycles();
-  echoStop();
   stutterPlaying = want;
   if (stutterSettings.maxBars == 0 || stutterSettings.maxBars > 16) {
     stutterStopUs = UINT64_MAX; // no runout: it plays until let go
@@ -2553,25 +2550,23 @@ void launchpadReverseLight(const RouteData &r, bool on, uint8_t outNote, uint16_
   }
 }
 
-// Every note a route sends goes out here. The Stutter route remembers it and is muted while looping.
+// Every note a route sends goes out here. The Stutter route remembers it for looping.
 void routeNoteOut(const RouteData &r, const PendingMsg &msg) {
   const bool on = msg.statusHi == 0x90 && msg.data2;
   if (!stutterBefore() && !stutterGlobal() && stutterRouteIdx < routeCount && &routes[stutterRouteIdx] == &r) {
     stutterRemember(msg.channel, on, msg.data1, msg.data2);
-    if (stutterActive()) return; // muted while the loop plays
   }
   upsertPendingMask(routeOutputsNow(r), msg);
   echoTap(r, false, msg.channel, on, msg.data1, msg.data2);
 }
 
 // Stutter and Echo set to Before Route hear a route's notes here, on the way in. Returns true when
-// the live note shouldn't reach the route: Stutter looping before the route mutes live input, the
-// loop plays in its place.
+// the live note shouldn't reach the route; nothing uses that now, live input always gets through.
 bool beforeRouteTap(uint16_t i, bool on, uint8_t note, uint8_t velocity) {
   echoTap(routes[i], true, 0, on, note, velocity);
   if (i != stutterRouteIdx || !stutterBefore() || stutterReplaying) return false;
   stutterRemember(0, on, note, velocity);
-  return stutterActive();
+  return false; // live input still reaches the route, so it's arped along with the loop
 }
 
 // ============================================================================================
