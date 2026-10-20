@@ -97,7 +97,7 @@ constexpr uint8_t SYSEX_MFR_ID = 0x7D;   // reserved for non-commercial/educatio
 constexpr uint8_t SYSEX_DEVICE_ID = 0x4D; // 'M'
 constexpr uint8_t PROTOCOL_VERSION = 4; // 2: 45-byte routes with port masks, GET_STATUS. 3: clock settings, LEARN. 4: 53-byte routes with feature fields, feature blocks
 constexpr uint8_t FW_VERSION_MAJOR = 1;
-constexpr uint8_t FW_VERSION_MINOR = 58;
+constexpr uint8_t FW_VERSION_MINOR = 59;
 constexpr uint8_t FW_CHUNK_BYTES = 128;          // firmware bytes per FW_DATA message, 147 once packed
 constexpr uint32_t FW_REBOOT_DELAY_MS = 300;     // lets the FW_END ACK reach the host before rebooting
 const char DEVICE_NAME[] = "FoxWizard Mini MIDI Multitool"; // long name sent in the SysEx IDENTITY_REPLY
@@ -135,6 +135,7 @@ enum SysexCmd : uint8_t {
   CMD_CLEAR_ALL_ROUTES = 0x28,
   CMD_PREVIEW_BRIGHTNESS = 0x30,
   CMD_PLAY_NOTE = 0x33, // Patchling's piano: on, note, velocity to every port on every channel, no reply
+  CMD_CLEAR_PLOCKS = 0x34, // 1.59: forget every Per-Note Parameter Lock, no payload, no reply
   CMD_COMMIT = 0x31,
   CMD_FACTORY_RESET = 0x32,
   CMD_FW_BEGIN = 0x40,
@@ -368,6 +369,7 @@ constexpr uint16_t FEATURE_AUTO_CHORD = 1u << 3; // any number of routes, each w
 constexpr uint16_t FEATURE_ECHO = 1u << 4;       // only the first route with it on uses it
 constexpr uint16_t FEATURE_STUTTER = 1u << 5;    // same
 constexpr uint16_t FEATURE_CC_MAP = 1u << 6;     // CC to Feature, same
+constexpr uint16_t FEATURE_PLOCK = 1u << 7;      // Per-Note Parameter Lock (1.59), same
 
 constexpr uint8_t FEATURE_TYPE_SCALE = 3;
 constexpr uint8_t FEATURE_TYPE_ARP_1 = 4; // arp slots 1-4 are types 4-7
@@ -378,7 +380,8 @@ constexpr uint8_t FEATURE_TYPE_LOOPER = FEATURE_TYPE_STUTTER + 1; // 10
 constexpr uint8_t FEATURE_TYPE_NOTE_MAP = FEATURE_TYPE_LOOPER + 1; // 11, Note to Feature
 constexpr uint8_t FEATURE_TYPE_CC_MAP = FEATURE_TYPE_NOTE_MAP + 1;  // 12, CC to Feature
 constexpr uint8_t FEATURE_TYPE_LP_ACTIONS = FEATURE_TYPE_CC_MAP + 1; // 13, Launchpad buttons
-constexpr uint8_t FEATURE_TYPE_LAST = FEATURE_TYPE_LP_ACTIONS;
+constexpr uint8_t FEATURE_TYPE_PLOCK = FEATURE_TYPE_LP_ACTIONS + 1; // 14, Per-Note Parameter Lock
+constexpr uint8_t FEATURE_TYPE_LAST = FEATURE_TYPE_PLOCK;
 
 // Launchpad: the 16 round buttons, top row left to right (CC 104-111) then the side column top to
 // bottom (X-Y notes 8, 24 ... 120). Each runs a mapper action.
@@ -395,7 +398,8 @@ enum : uint8_t {
   ACT_PROGRAM, ACT_PROGRAM_STEP, ACT_LIVE_CHANNEL, ACT_LIVE_VELOCITY, ACT_LOOPER, ACT_TAP_TEMPO,
   ACT_LIVE_CHANNEL_STEP, ACT_ARP_DIV_STEP, ACT_STUTTER_LENGTH, ACT_QUAD_TOGGLE, ACT_ECHO_TOGGLE,
   ACT_NOTE_TOGGLE, ACT_PITCH_RAMP, ACT_MOD_RAMP, ACT_CC_RAMP, // 1.48
-  ACT_PANIC, ACT_OCTAVE, ACT_COUNT // 1.49
+  ACT_PANIC, ACT_OCTAVE, // 1.49
+  ACT_PLOCK_CLEAR, ACT_COUNT // 1.59
 };
 enum : uint8_t {
   TRANSPORT_PLAY = 0, TRANSPORT_STOP, TRANSPORT_CONTINUE, TRANSPORT_PAUSE, TRANSPORT_RECORD,
@@ -488,7 +492,9 @@ struct EchoSettings {
   uint8_t beforeRoute;   // 1.49: 1 echoes the route's incoming notes and plays the echoes back in through it, 0 echoes what it sends
   uint8_t momentary;     // 1.58: 0 (default) squares latch, 1 Echo only sounds while a square is held, at its division
   uint8_t global;        // 1.58: 1 echoes everything the FoxWizard sends, every route and unrouted pass-through
-  uint8_t spare[7];
+  int8_t bounce;         // 1.59: -8..8, positive repeats come closer each time (a dropping ball), negative spread out, 0 even
+  uint8_t naturalFade;   // 1.59: 1 each repeat loses the same share of loudness, like a ball's bounces, 0 an even fade
+  uint8_t spare[5];
   DivisionSquare squares[ARP_SQUARES];
   uint8_t spare2[4];
 };
@@ -519,6 +525,29 @@ struct StutterSettings {
 };
 #pragma pack(pop)
 StutterSettings stutterSettings;
+
+// Per-Note Parameter Lock (1.59), ARPnMIDI's: while a key is held on the lock route, the CCs that
+// route receives are kept for that key (the latest value of each), and played back when the key
+// plays again. Keyed to the key you press, before Scale, Chord and the arp.
+#pragma pack(push, 1)
+struct PlockSettings {
+  uint8_t delayPlus1; // 0 None: the locks go out just ahead of the note. Else fw::MusicalDivision + 1
+  uint8_t glide;      // 1 each CC moves from its last value to the locked one over the Delay
+  uint8_t spare[6];
+};
+#pragma pack(pop)
+PlockSettings plockSettings;
+constexpr uint16_t PLOCK_MAX = 256;
+struct PlockEntry { uint8_t note, cc, value; };
+PlockEntry plocks[PLOCK_MAX];       // kept in their own flash file, saved when it's quiet
+uint16_t plockCount = 0;
+uint16_t plockRouteIdx = 0xFFFF;    // the route with it on, 0xFFFF none
+bool plockHeld[128];                // the lock route's keys held now
+uint8_t plockLast[128];             // the last value sent or passed for each CC, 0xFF unknown: where a Glide starts
+uint32_t plockChanges = 0, plockSavedChanges = 0, plockChangedMs = 0, plockRetryAtMs = 0;
+struct PlockGlide { uint64_t startUs; uint32_t durUs; uint8_t cc, from, to, sent, device, channel; bool used; };
+constexpr uint8_t PLOCK_GLIDES = 16;
+PlockGlide plockGlides[PLOCK_GLIDES]; // locks waiting out the Delay, or gliding over it
 
 // Looper: the button's Looper mode, one loop. Ported from ARPnMIDI's looper engine.
 #pragma pack(push, 1)
@@ -871,6 +900,7 @@ void resetAllRouteNoteTracks() {
   arpForgetAll(); // the arps point at routes by index, which a route change can move
   echoRouteChanged();
   stutterRouteChanged();
+  plockRouteChanged();
   applyClockConfig();
 }
 
@@ -1130,7 +1160,7 @@ constexpr uint32_t EEPROM_MAGIC_V1 = 0x464F5831; // "FOX1"
 constexpr uint32_t EEPROM_MAGIC_V2 = 0x464F5832; // "FOX2"
 constexpr size_t EEPROM_SIZE = 4096;             // the core's EEPROM maximum
 // Feature blocks after the routes: marker (2), each block's type and size (2) and data, end byte (1).
-constexpr size_t FEATURE_BLOCKS_BYTES = 2 + (2 + sizeof(MapEntry) * MAP_ENTRIES) * 2 + (2 + sizeof(MapAction) * LAUNCHPAD_BUTTONS) + (2 + sizeof(ScaleSettings)) + ARP_SLOTS * (2 + sizeof(ArpSettings)) + (2 + sizeof(EchoSettings)) + (2 + sizeof(StutterSettings)) + (2 + sizeof(LooperSettings)) + 1;
+constexpr size_t FEATURE_BLOCKS_BYTES = 2 + (2 + sizeof(MapEntry) * MAP_ENTRIES) * 2 + (2 + sizeof(MapAction) * LAUNCHPAD_BUTTONS) + (2 + sizeof(ScaleSettings)) + ARP_SLOTS * (2 + sizeof(ArpSettings)) + (2 + sizeof(EchoSettings)) + (2 + sizeof(StutterSettings)) + (2 + sizeof(LooperSettings)) + (2 + sizeof(PlockSettings)) + 1;
 static_assert(4 + 2 + sizeof(GlobalSettings) + 2 + MAX_ROUTES * sizeof(RouteData) + FEATURE_BLOCKS_BYTES <= EEPROM_SIZE,
               "saved settings must fit the EEPROM area, lower MAX_ROUTES if routes or feature blocks grow");
 
@@ -1197,6 +1227,7 @@ uint8_t *featureBlockData(uint8_t type, uint8_t &size) {
   if (type == FEATURE_TYPE_NOTE_MAP) { size = sizeof(noteMap); return (uint8_t *)noteMap; }
   if (type == FEATURE_TYPE_CC_MAP) { size = sizeof(ccMap); return (uint8_t *)ccMap; }
   if (type == FEATURE_TYPE_LP_ACTIONS) { size = sizeof(lpActions); return (uint8_t *)lpActions; }
+  if (type == FEATURE_TYPE_PLOCK) { size = sizeof(plockSettings); return (uint8_t *)&plockSettings; }
   size = 0;
   return nullptr;
 }
@@ -1227,6 +1258,7 @@ void resetFeatureBlocks() {
   memset(&echoSettings, 0, sizeof(echoSettings));
   memset(&stutterSettings, 0, sizeof(stutterSettings));
   memset(&looperSettings, 0, sizeof(looperSettings));
+  memset(&plockSettings, 0, sizeof(plockSettings));
 }
 
 void loadFeatureBlocks(size_t addr) {
@@ -2262,8 +2294,27 @@ void echoEngineTap(uint8_t channel, bool on, uint8_t note, uint8_t velocity) {
   const uint8_t repeats = echoSettings.repeats >= 1 && echoSettings.repeats <= 32 ? echoSettings.repeats : 4;
   fw::EchoConfig config;
   config.delayUs = (uint32_t)fw::divisionDurationUs(echoCurrentDivision(), clockEngine.bpm());
-  config.lengthUs = config.delayUs * (repeats + 1); // fades to zero just after the last echo
   config.wetPercent = echoSettings.level >= 1 && echoSettings.level <= 100 ? echoSettings.level : 70;
+  // Bounce: each gap is the last one times the same ratio, the way a ball's bounces shorten (or,
+  // negative, lengthen). Level 1 is gentle, a marble on glass rattling down; 8 is a fast settle.
+  static const uint8_t BOUNCE_DRIFT[8] = {16, 12, 9, 7, 5, 4, 3, 2}; // the engine's drift: the gap halves (or doubles) over this many repeats
+  const int8_t b = echoSettings.bounce;
+  float ratio = 1.0f;
+  if (b >= -8 && b <= 8 && b != 0) {
+    const uint8_t m = BOUNCE_DRIFT[(b > 0 ? b : -b) - 1];
+    config.drift = b > 0 ? (int8_t)m : -(int8_t)m;
+    ratio = powf(2.0f, (b > 0 ? -1.0f : 1.0f) / m);
+  }
+  // Long enough for all the repeats at their changing gaps, then the echo lets go.
+  float span = 0.0f, gap = 1.0f;
+  for (uint8_t k = 0; k <= repeats; ++k) { span += gap; gap *= ratio; }
+  config.lengthUs = (uint32_t)(config.delayUs * span);
+  if (echoSettings.naturalFade) {
+    // Louder repeats lose the same share each time: with Bounce, the share the gap shrinks (or
+    // grows) by, so loudness and timing settle together; without it, down to an eighth by the last.
+    const float decay = b ? (ratio < 1.0f ? ratio : 1.0f / ratio) : powf(0.125f, 1.0f / repeats);
+    config.velocityDecayQ16 = (uint32_t)(decay * 65536.0f + 0.5f);
+  }
   echoEngine.noteOn(now, 0, 0x90 | channel, note, velocity, config);
 }
 
@@ -3196,6 +3247,7 @@ void looperStorageBegin() {
   if (LittleFS.exists("firmware.bin")) LittleFS.remove("firmware.bin");
   loadLoop();
   loopSavedSig = loopLastSig = loopSignature();
+  loadPlocks();
 }
 
 // Before a firmware update stages itself: if the flash area can't fit both, the saved loop goes.
@@ -3219,6 +3271,139 @@ void serviceLoopStorage() {
   if (now - lastMusicMs < LOOP_SAVE_QUIET_MS || now - loopSigChangedMs < 750) return;
   if (saveLoop()) loopSavedSig = sig;
   else loopRetryAtMs = now + 30000; // flash trouble: the loop stays in memory, tried again later
+}
+
+// ============================================================================================
+// Per-Note Parameter Lock (1.59). The locks live in their own file, saved like the loop: once it's
+// quiet, the host brain paused for the write.
+// ============================================================================================
+constexpr uint32_t PLOCK_FILE_MAGIC = 0x4B4C5046u; // "FPLK"
+const char *const PLOCK_FILE = "/plocks.fw";
+const char *const PLOCK_FILE_TMP = "/plocks.tmp";
+
+void plockRouteChanged() {
+  plockRouteIdx = 0xFFFF;
+  for (uint16_t i = 0; i < routeCount; ++i) {
+    if (routes[i].features & FEATURE_PLOCK) { plockRouteIdx = i; break; }
+  }
+  memset(plockHeld, 0, sizeof(plockHeld));
+  memset(plockGlides, 0, sizeof(plockGlides));
+  memset(plockLast, 0xFF, sizeof(plockLast));
+}
+
+void plockSend(uint8_t device, uint8_t channel, uint8_t cc, uint8_t value) {
+  if (plockRouteIdx >= routeCount) return;
+  applyRouteOutput(routes[plockRouteIdx], device, channel, MK_CC, cc, 0xB0, cc, value);
+  plockLast[cc & 0x7F] = value;
+}
+
+// A key into the lock route: held, so CCs can be locked to it, and its locks played back. With
+// Delay None they go out right away, ahead of the note.
+void plockNote(uint8_t device, uint8_t channel, bool on, uint8_t note) {
+  plockHeld[note & 0x7F] = on;
+  if (!on) return;
+  const uint8_t d = plockSettings.delayPlus1;
+  const uint32_t delayUs = d && d <= fw::kMusicalDivisionCount
+    ? (uint32_t)fw::divisionDurationUs(arpDivisionFrom(d), clockEngine.bpm()) : 0;
+  const bool glide = plockSettings.glide != 0;
+  const uint64_t now = time_us_64();
+  for (uint16_t i = 0; i < plockCount; ++i) {
+    const PlockEntry &e = plocks[i];
+    if (e.note != note) continue;
+    if (!delayUs || (glide && plockLast[e.cc] == 0xFF)) { plockSend(device, channel, e.cc, e.value); continue; }
+    PlockGlide *g = nullptr; // one per CC: a new key takes over that CC's glide
+    for (PlockGlide &x : plockGlides) if (x.used && x.cc == e.cc) { g = &x; break; }
+    if (!g) for (PlockGlide &x : plockGlides) if (!x.used) { g = &x; break; }
+    if (!g) { plockSend(device, channel, e.cc, e.value); continue; }
+    *g = PlockGlide{glide ? now : now + delayUs, glide ? delayUs : 0, e.cc,
+                    glide ? plockLast[e.cc] : e.value, e.value, 0xFF, device, channel, true};
+  }
+}
+
+// A CC the lock route receives: locked to every key held right now.
+void plockCapture(uint8_t cc, uint8_t value) {
+  plockLast[cc & 0x7F] = value;
+  bool changed = false;
+  for (uint8_t n = 0; n < 128; ++n) {
+    if (!plockHeld[n]) continue;
+    uint16_t i = 0;
+    while (i < plockCount && !(plocks[i].note == n && plocks[i].cc == cc)) ++i;
+    if (i < plockCount) {
+      if (plocks[i].value != value) { plocks[i].value = value; changed = true; }
+      continue;
+    }
+    if (plockCount >= PLOCK_MAX) continue; // full: the oldest stay
+    plocks[plockCount++] = PlockEntry{n, cc, value};
+    changed = true;
+  }
+  if (changed) { ++plockChanges; plockChangedMs = millis(); }
+}
+
+void plockClearAll() {
+  plockCount = 0;
+  memset(plockGlides, 0, sizeof(plockGlides));
+  ++plockChanges;
+  plockChangedMs = millis();
+}
+
+void loadPlocks() {
+  File file = LittleFS.open(PLOCK_FILE, "r");
+  if (!file) return;
+  uint32_t magic = 0;
+  uint16_t count = 0;
+  bool ok = file.read((uint8_t *)&magic, 4) == 4 && magic == PLOCK_FILE_MAGIC &&
+            file.read((uint8_t *)&count, 2) == 2 && count <= PLOCK_MAX &&
+            file.read((uint8_t *)plocks, count * sizeof(PlockEntry)) == (int)(count * sizeof(PlockEntry));
+  file.close();
+  plockCount = ok ? count : 0;
+}
+
+bool savePlocks() {
+  rp2040.wdt_reset();
+  pauseHostForFlash();
+  bool ok;
+  if (plockCount == 0) {
+    ok = !LittleFS.exists(PLOCK_FILE) || LittleFS.remove(PLOCK_FILE);
+  } else {
+    File file = LittleFS.open(PLOCK_FILE_TMP, "w");
+    ok = (bool)file;
+    const uint32_t magic = PLOCK_FILE_MAGIC;
+    if (ok) ok = file.write((const uint8_t *)&magic, 4) == 4 && file.write((const uint8_t *)&plockCount, 2) == 2 &&
+                 file.write((const uint8_t *)plocks, plockCount * sizeof(PlockEntry)) == plockCount * sizeof(PlockEntry);
+    if (file) file.close();
+    if (ok) {
+      LittleFS.remove(PLOCK_FILE);
+      ok = LittleFS.rename(PLOCK_FILE_TMP, PLOCK_FILE);
+    } else {
+      LittleFS.remove(PLOCK_FILE_TMP);
+    }
+  }
+  resumeHostAfterFlash();
+  return ok;
+}
+
+// Locks waiting out their Delay go out, gliding ones step along, and the file saves when quiet.
+void servicePlocks() {
+  const uint64_t now = time_us_64();
+  bool sent = false;
+  for (PlockGlide &g : plockGlides) {
+    if (!g.used || now < g.startUs) continue;
+    const uint64_t elapsed = now - g.startUs;
+    const bool done = g.durUs == 0 || elapsed >= g.durUs;
+    const uint8_t v = done ? g.to
+      : (uint8_t)((int32_t)g.from + (int32_t)(((int64_t)g.to - g.from) * (int64_t)elapsed / g.durUs));
+    if (v != g.sent) { plockSend(g.device, g.channel, g.cc, v); g.sent = v; sent = true; }
+    if (done) g.used = false;
+  }
+  if (sent) flushPending();
+
+  if (!loopFsReady || plockChanges == plockSavedChanges) return;
+  const uint32_t ms = millis();
+  if ((int32_t)(ms - plockRetryAtMs) < 0) return;
+  if (ms - lastMusicMs < LOOP_SAVE_QUIET_MS || ms - plockChangedMs < 750) return;
+  const uint32_t changes = plockChanges;
+  if (savePlocks()) plockSavedChanges = changes;
+  else plockRetryAtMs = ms + 30000;
 }
 
 
@@ -3442,6 +3627,9 @@ void runAction(uint16_t routeIndex, const MapAction &act, uint8_t phase, uint8_t
       break;
     case ACT_PANIC:
       if (press) sendPanic();
+      break;
+    case ACT_PLOCK_CLEAR:
+      if (press) plockClearAll();
       break;
     case ACT_OCTAVE: { // a: 0 down, 1 up. b: 0 momentary, 1 toggle, like the front button's
       const int8_t target = act.a ? 1 : -1;
@@ -3971,6 +4159,7 @@ void dispatchNoteEvent(uint8_t inputDevice, uint8_t channel, bool isNoteOn, uint
       // make loop playback fire that action again from inside the looper.
       if (handleNoteMap(i, isNoteOn, note, velocity)) continue;
       if (!routeLooperOff(routes[i])) matchedLooperRoute = true;
+      if (i == plockRouteIdx) plockNote(inputDevice, channel, isNoteOn, note);
       if (!beforeRouteTap(i, isNoteOn, note, velocity)) routeNoteIn(i, isNoteOn, note, velocity);
     }
   }
@@ -4177,6 +4366,10 @@ void processIncomingEvent(uint8_t inputDevice, uint8_t statusHi, uint8_t channel
     if (routeMatches(routes[i], inputDevice, channel, kind, number)) {
       matchedAny = true;
       if (kind == MK_CC && !routeLooperOff(routes[i])) matchedLooperRoute = true;
+      if (kind == MK_CC && i == plockRouteIdx) {
+        if (looperEmitting) plockLast[number & 0x7F] = data2; // loop playback isn't locked to the keys
+        else plockCapture(number, data2);
+      }
       applyRouteOutput(routes[i], inputDevice, channel, kind, number, statusHi, data1, data2);
     }
   }
@@ -4460,6 +4653,10 @@ void handleSysexCommand(uint8_t sourcePort, const uint8_t *cmdBuf, uint8_t cmdLe
       sendAck(sourcePort, cmd, ACK_OK, checksum7(data, size), payload[0]);
       break;
     }
+
+    case CMD_CLEAR_PLOCKS:
+      plockClearAll();
+      break;
 
     case CMD_PLAY_NOTE: {
       if (payloadLen < 3) break;
@@ -5356,6 +5553,7 @@ void loop() {
   serviceLooper();
   serviceStutter();
   serviceEcho();
+  servicePlocks();
   serviceLearnTimeout();
   pumpTrsOut();
   pumpUsbOut();

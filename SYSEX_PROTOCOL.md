@@ -161,12 +161,13 @@ cut to what this one knows, a shorter one is zero-filled. Zero means off or unus
 |------|-------|------|-------|
 | 3 | Scale | 8 | root (0-11), scaleType (0-11: Major, Minor, Harmonic Major, Harmonic Minor, Melodic Major, Melodic Minor, Major Blues, Minor Blues, Major Pentatonic, Minor Pentatonic, Dorian, Mixolydian), 6 spare (Layout and chord are per route). Firmware 1.11 |
 | 4-7 | Arp slots 1-4 | 48 each | mode (0 Up, 1 Down, 2 Up-Down 1, 3 Up-Down 2, 4 Drum Roll/Chord Pulse, 5 Random, 6 Up 4-Step, 7 Rhythm, 8 Ostinato, 9 Octave Walk, 10 Fifth, 11 Bass+Chord, 12 Chord+Run, 13 As Played, 14 Converge, 15 Diverge, 16 Thumb, 17 Pinky), default division + 1 (fw::MusicalDivision, 0 = 1/16), octaves (1-4, 0 = 1), gate % (5-100, 0 = 50), velocity (1-127 fixed, 0 = each note's own), holdType (0 none, 2 CC), holdChannel (0-15, 16 any), holdNumber, aftertouch velocity (1 = on), bypass channel (0 off, 1-16, 1.19), bass channel (0 off, 1-16, 1.19), default trigger type, channel, number (1.24), follows live channel (1.40), 1 spare, 7 division squares of (division + 1, 0 = unused, triggerType 0 none 1 note 2 CC, triggerChannel 0-15 16 any, triggerNumber), 4 spare. Firmware 1.13, 48 bytes and squares 1.16 |
-| 8 | Echo | 48 | division + 1 (0 = 1/8), repeats (1-32, 0 = 4), level % of the note's velocity for the first echo (1-100, 0 = 70), default trigger type, channel, number (1.24), 10 spare, 7 division squares as in the arp block whose triggers latch, 4 spare. Firmware 1.23 |
-| 9 | Stutter | 48 | default division + 1 (0 = 1/8), runout bars (1-16, 0 = 16), default trigger type, channel, number, 11 spare, 7 division squares as in the arp block, 4 spare. Firmware 1.24 |
-| 10 | Looper | 48 | bars (0 Free, 1-16), quantize (0 off, else fw::MusicalDivision + 1), auto overdub (1.29), record inputs (0 outputs, 1 inputs), double tap clears (1.29: 0 = holding the button clears and a double tap stops, 1 the other way), 43 spare. Firmware 1.27 |
+| 8 | Echo | 48 | division + 1 (0 = 1/8), repeats (1-32, 0 = 4), level % of the note's velocity for the first echo (1-100, 0 = 70), default trigger type, channel, number (1.24), before route (1.49: 1 = hears the route's input), momentary (1.58: 1 = sounds only while a square is held), global (1.58: 1 = echoes everything sent), bounce (1.59: signed -8..8, positive repeats come closer), natural fade (1.59: 1 = each repeat loses the same share of loudness), 5 spare, 7 division squares as in the arp block, 4 spare. Firmware 1.23 |
+| 9 | Stutter | 48 | default division + 1 (0 = 1/8, 20 = 2 bars, 21 = 4 bars, 1.58), runout bars (1-16, 0 or 127 = no runout, 1.53), default trigger type, channel, number, before route (1.49), latching (1.50), global (1.56: loops everything sent), 8 spare, 7 division squares as in the arp block (division codes as the default), 4 spare. Firmware 1.24 |
+| 10 | Looper | 48 | bars (0 Free, 1-16), quantize (0 off, else fw::MusicalDivision + 1), auto overdub (1.29), record inputs (0 outputs, 1 inputs), double tap clears (1.29: 0 = holding the button clears and a double tap stops, 1 the other way), loop unrouted off (1.48: 1 = skip notes no route matches), looper button trigger type, channel, number (1.49), record CCs (1.55), 38 spare. Firmware 1.27 |
 | 11 | Note to Feature | 80 | 16 entries of (source note + 1, 0 = unused, then a 4-byte action). Firmware 1.40 |
 | 12 | CC to Feature | 80 | 16 entries of (source CC + 1, 0 = unused, then a 4-byte action). Firmware 1.40 |
 | 13 | Launchpad buttons | 64 | 16 actions of 4 bytes, top row then side column. Firmware 1.40 |
+| 14 | Per-Note Parameter Lock | 8 | delay (0 None, else fw::MusicalDivision + 1), glide (1 = each CC moves from its last value to the locked one over the delay), 6 spare. The locks themselves live in the device's flash, not in this block. Firmware 1.59 |
 
 **Note to CC:** only the first route with the switch on uses the block. A mapped note from that
 route's inputs becomes a CC on each of its output channels and ports instead of a note. Unmapped
@@ -332,6 +333,8 @@ where it stopped. Rec/Arm arms, and pressed again while armed starts recording a
 
 **PLAY_NOTE (0x33, 1.34):** on (1/0), note, velocity. The note goes to every port on every channel,
 for Patchling's piano. No reply.
+
+**CLEAR_PLOCKS (0x34, 1.59):** no payload. Forgets every Per-Note Parameter Lock. No reply.
 
 ## Terminology: Poly Aftertouch vs. Channel Pressure
 

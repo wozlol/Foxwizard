@@ -28,6 +28,7 @@ export const CMD = {
   CLEAR_ALL_ROUTES: 0x28,
   PREVIEW_BRIGHTNESS: 0x30,
   PLAY_NOTE: 0x33,
+  CLEAR_PLOCKS: 0x34,
   COMMIT: 0x31,
   FACTORY_RESET: 0x32,
   FW_BEGIN: 0x40,
@@ -69,10 +70,10 @@ const ROUTE_BYTES_V2 = ROUTE_BYTES_V1 + 4;
 const ROUTE_BYTES_V4 = ROUTE_BYTES_V2 + 10; // +2 in 1.48 for Break Off a Quad
 
 // Route feature switches (route.features), same as FEATURE_* in the firmware.
-export const FEATURE = { NOTE_TO_CC: 1 << 0, LAUNCHPAD: 1 << 1, SCALE: 1 << 2, AUTO_CHORD: 1 << 3, ECHO: 1 << 4, STUTTER: 1 << 5, CC_MAP: 1 << 6 };
+export const FEATURE = { NOTE_TO_CC: 1 << 0, LAUNCHPAD: 1 << 1, SCALE: 1 << 2, AUTO_CHORD: 1 << 3, ECHO: 1 << 4, STUTTER: 1 << 5, CC_MAP: 1 << 6, PLOCK: 1 << 7 };
 
 // Feature blocks, shared by the routes that switch a feature on. Same as FEATURE_TYPE_* in the firmware.
-export const FEATURE_TYPE = { NOTE_TO_CC: 1, LAUNCHPAD: 2, SCALE: 3, ARP_1: 4, ECHO: 8, STUTTER: 9, LOOPER: 10, NOTE_MAP: 11, CC_MAP: 12, LP_ACTIONS: 13 }; // arp slots 1-4 are 4-7
+export const FEATURE_TYPE = { NOTE_TO_CC: 1, LAUNCHPAD: 2, SCALE: 3, ARP_1: 4, ECHO: 8, STUTTER: 9, LOOPER: 10, NOTE_MAP: 11, CC_MAP: 12, LP_ACTIONS: 13, PLOCK: 14 }; // arp slots 1-4 are 4-7
 
 // Arp, firmware 1.13. Same order as the firmware's ARP_* modes and fw::MusicalDivision.
 export const ARP_SLOTS = 4;
@@ -129,12 +130,12 @@ function bytesToSquares(b, offset, divisions = DIVISIONS) {
 // Echo, firmware 1.23. 48 bytes: division + 1 (0 = 1/8), repeats (1-32, 0 = 4), level % (1-100, 0 = 70),
 // 13 spare, 7 division squares whose triggers latch, 4 spare.
 export function defaultEcho() {
-  return { division: 8, repeats: 4, level: 70, defaultTrigger: noTrigger(), afterRoute: true, latching: true, global: false, squares: Array.from({ length: ARP_SQUARES }, () => null) };
+  return { division: 8, repeats: 4, level: 70, defaultTrigger: noTrigger(), afterRoute: true, latching: true, global: false, bounce: 0, naturalFade: false, squares: Array.from({ length: ARP_SQUARES }, () => null) };
 }
 // Default trigger (bytes 3-5) turns Echo off and on. Byte 6 (1.49): 1 = before the route. Byte 7 (1.58):
 // 1 = momentary (Latching off). Byte 8 (1.58): 1 = Global Echo.
 export function echoToBytes(e) {
-  return [e.division + 1, e.repeats, e.level, ...triggerToBytes(e.defaultTrigger), e.afterRoute === false ? 1 : 0, e.latching === false ? 1 : 0, e.global ? 1 : 0, ...new Array(7).fill(0), ...squaresToBytes(e.squares), 0, 0, 0, 0];
+  return [e.division + 1, e.repeats, e.level, ...triggerToBytes(e.defaultTrigger), e.afterRoute === false ? 1 : 0, e.latching === false ? 1 : 0, e.global ? 1 : 0, (e.bounce || 0) & 0xFF, e.naturalFade ? 1 : 0, ...new Array(5).fill(0), ...squaresToBytes(e.squares), 0, 0, 0, 0];
 }
 export function bytesToEcho(b) {
   const d = defaultEcho();
@@ -146,6 +147,8 @@ export function bytesToEcho(b) {
     afterRoute: b[6] !== 1,
     latching: b[7] !== 1,
     global: b[8] === 1,
+    bounce: (() => { const v = b[9] > 127 ? b[9] - 256 : (b[9] || 0); return v >= -8 && v <= 8 ? v : 0; })(), // 1.59, signed
+    naturalFade: b[10] === 1,
     squares: bytesToSquares(b, 16)
   };
 }
@@ -189,6 +192,13 @@ export function snapRunout(bars) {
 export function stutterToBytes(st) {
   return [st.division + 1, st.maxBars === 0 ? 127 : st.maxBars, ...triggerToBytes(st.defaultTrigger), st.afterRoute === false ? 1 : 0, st.latching ? 1 : 0, st.global ? 1 : 0, ...new Array(8).fill(0), ...squaresToBytes(st.squares), 0, 0, 0, 0];
 }
+// Per-Note Parameter Lock, 1.59. 8 bytes: Delay (0 None, else division + 1), Glide, 6 spare.
+export function defaultPlock() { return { delay: 0, glide: false }; }
+export function plockToBytes(p) { return [p.delay & 0x7F, p.glide ? 1 : 0, 0, 0, 0, 0, 0, 0]; }
+export function bytesToPlock(b) {
+  return { delay: b[0] >= 1 && b[0] <= DIVISIONS.length ? b[0] : 0, glide: b[1] === 1 };
+}
+
 // Stutter's divisions: the musical ones, then 2 and 4 bars (firmware codes 20 and 21), 1.58.
 export const STUTTER_DIVISIONS = [...DIVISIONS, '2 bars', '4 bars'];
 export function bytesToStutter(b) {
@@ -627,6 +637,12 @@ export class DeviceLink extends EventTarget {
     this._sendRaw(CMD.PLAY_NOTE, [on ? 1 : 0, note & 0x7F, velocity & 0x7F]);
   }
 
+  /** Firmware 1.59: forgets every Per-Note Parameter Lock. No reply. */
+  clearParameterLocks() {
+    if (!this.connected) return;
+    this._sendRaw(CMD.CLEAR_PLOCKS, []);
+  }
+
   /** Protocol 3: waits up to 10 s for the next note or CC the device hears. { type 1 note / 2 CC, channel, number, port bit }. */
   async learn() {
     const r = await this._sendAndWait([CMD.LEARN], CMD.LEARN_DATA, LEARN_TIMEOUT_MS);
@@ -757,6 +773,7 @@ export class DeviceLink extends EventTarget {
       features.echo = bytesToEcho(await this.getFeature(FEATURE_TYPE.ECHO));
       features.stutter = bytesToStutter(await this.getFeature(FEATURE_TYPE.STUTTER));
       features.looper = bytesToLooper(await this.getFeature(FEATURE_TYPE.LOOPER));
+      features.plock = bytesToPlock(await this.getFeature(FEATURE_TYPE.PLOCK));
     }
     return { global, routes, features };
   }
@@ -779,6 +796,7 @@ export class DeviceLink extends EventTarget {
       await this.setFeature(FEATURE_TYPE.ECHO, echoToBytes(features.echo || defaultEcho()));
       await this.setFeature(FEATURE_TYPE.STUTTER, stutterToBytes(features.stutter || defaultStutter()));
       await this.setFeature(FEATURE_TYPE.LOOPER, looperToBytes(features.looper || defaultLooper()));
+      await this.setFeature(FEATURE_TYPE.PLOCK, plockToBytes(features.plock || defaultPlock()));
     }
     await this.setGlobal(global);
     await this.commit();

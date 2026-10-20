@@ -90,6 +90,8 @@ void EchoEngine::noteOn(uint64_t nowUs, uint8_t target, uint8_t status,
   sequence->note = note;
   sequence->firstVelocity = static_cast<uint8_t>(
       (static_cast<uint16_t>(velocity) * config.wetPercent + 50U) / 100U);
+  sequence->velocityDecayQ16 = config.velocityDecayQ16;
+  sequence->velocityQ16 = static_cast<uint32_t>(sequence->firstVelocity) << 16;
   sequence->used = true;
   sequence->scheduling = sequence->firstVelocity > 0;
 }
@@ -133,8 +135,10 @@ void EchoEngine::tick(uint64_t nowUs, EmitFn emit, void *context, uint16_t maxWo
       }
       const uint64_t fadeSpan = sequence.endUs - sequence.firstRepeatUs;
       const uint64_t fadeElapsed = sequence.nextOnUs - sequence.firstRepeatUs;
-      const uint8_t velocity = fadeSpan == 0 ? 0 : static_cast<uint8_t>(
-          (static_cast<uint64_t>(sequence.firstVelocity) * (fadeSpan - fadeElapsed)) / fadeSpan);
+      const uint8_t velocity = sequence.velocityDecayQ16
+          ? static_cast<uint8_t>((sequence.velocityQ16 + 32768U) >> 16)
+          : (fadeSpan == 0 ? 0 : static_cast<uint8_t>(
+              (static_cast<uint64_t>(sequence.firstVelocity) * (fadeSpan - fadeElapsed)) / fadeSpan));
       if (velocity == 0) {
         sequence.scheduling = false;
         break;
@@ -159,6 +163,10 @@ void EchoEngine::tick(uint64_t nowUs, EmitFn emit, void *context, uint16_t maxWo
       }
       ++sequence.repeatCount;
       ++work;
+      if (sequence.velocityDecayQ16) {
+        sequence.velocityQ16 = static_cast<uint32_t>(
+            (static_cast<uint64_t>(sequence.velocityQ16) * sequence.velocityDecayQ16) >> 16);
+      }
       const uint64_t nextSpacing =
           (static_cast<uint64_t>(sequence.spacingUs) * sequence.driftFactorQ16 + 32768U) >> 16;
       sequence.spacingUs = static_cast<uint32_t>(nextSpacing < 2000U ? 2000U :

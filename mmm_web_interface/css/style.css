@@ -1058,6 +1058,8 @@ body.dragging-active { overflow: hidden; }
 .arp-field { display: flex; flex-wrap: wrap; align-items: center; gap: 6px; }
 .arp-field label { width: 100%; font-size: 0.74rem; color: var(--text-dim); }
 .arp-field select, .arp-field input { flex: 1; min-width: 60px; }
+/* A switch or button sharing a row of labeled fields sits level with their controls, not their labels. */
+.arp-field-switch { align-self: end; min-height: 34px; }
 
 /* Phones draw a dropdown's option list at its own font size, and zoom in on fields under 16px. */
 @media (max-width: 640px) {

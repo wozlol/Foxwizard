@@ -4,7 +4,7 @@ import { ACTION_TYPES, MAP_ENTRIES, defaultAction, defaultLpActions } from './ma
 // the device's SysEx protocol can set. Numbers are kept human (channel lists as "1,2,4-6", device
 // names as words) rather than raw bitmasks/enums, so the file is meant to be hand-editable.
 
-import { DATA_TYPE_BITS, PORTS, PORT_TRS, PORT_USB, FEATURE, SCALES, LAYOUTS, defaultScale, ARP_SLOTS, ARP_MODES, ARP_SQUARES, DIVISIONS, defaultArp, defaultEcho, defaultStutter, defaultLooper, defaultLpQuad, noTrigger, STUTTER_RUNOUTS, snapRunout, STUTTER_DIVISIONS } from './midi.js';
+import { DATA_TYPE_BITS, PORTS, PORT_TRS, PORT_USB, FEATURE, SCALES, LAYOUTS, defaultScale, ARP_SLOTS, ARP_MODES, ARP_SQUARES, DIVISIONS, defaultArp, defaultEcho, defaultStutter, defaultLooper, defaultLpQuad, noTrigger, STUTTER_RUNOUTS, snapRunout, STUTTER_DIVISIONS, defaultPlock } from './midi.js';
 
 
 const MODE_NAMES = ['usbAdaptor', 'router'];
@@ -81,6 +81,9 @@ function echoFromXml(el) {
   e.afterRoute = el.getAttribute('afterRoute') !== 'false';
   e.latching = el.getAttribute('latching') !== 'false';
   e.global = el.getAttribute('global') === 'true';
+  const bounce = parseInt(el.getAttribute('bounce') || '0', 10);
+  e.bounce = bounce >= -8 && bounce <= 8 ? bounce : 0;
+  e.naturalFade = el.getAttribute('naturalFade') === 'true';
   return e;
 }
 
@@ -96,6 +99,15 @@ function stutterFromXml(el) {
   st.latching = el.getAttribute('latching') === 'true';
   st.global = el.getAttribute('global') === 'true';
   return st;
+}
+
+function plockFromXml(el) {
+  const p = defaultPlock();
+  if (!el) return p;
+  const d = el.getAttribute('delay') || 'none';
+  p.delay = DIVISIONS.includes(d) ? DIVISIONS.indexOf(d) + 1 : 0;
+  p.glide = el.getAttribute('glide') === 'true';
+  return p;
 }
 
 function looperFromXml(el) {
@@ -196,7 +208,7 @@ export function serializePreset(state) {
     lines.push(`      <passthrough programChange="${!!(r.typeFlags & DATA_TYPE_BITS.programChange)}" pitchBend="${!!(r.typeFlags & DATA_TYPE_BITS.pitchBend)}" aftertouch="${!!(r.typeFlags & DATA_TYPE_BITS.aftertouch)}" aftertouchMapEnabled="${!!(r.typeFlags & DATA_TYPE_BITS.aftertouchMap)}" aftertouchMapCC="${r.atMapCC}" pressure="${!!(r.typeFlags & DATA_TYPE_BITS.pressure)}" pressureMapEnabled="${!!r.cpMapEnabled}" pressureMapCC="${r.cpMapCC}" sysex="${!!(r.typeFlags & DATA_TYPE_BITS.sysex)}" common="${!!r.commonEnabled}" realtime="${!!r.realtimeEnabled}" clock="${!!r.clockEnabled}"/>`);
     lines.push(`      <noteRange enabled="${!!(r.typeFlags & DATA_TYPE_BITS.note)}" start="${r.noteStart}" end="${r.noteEnd}"/>`);
     lines.push(`      <ccRange enabled="${!!(r.typeFlags & DATA_TYPE_BITS.cc)}" start="${r.ccStart}" end="${r.ccEnd}"/>`);
-    lines.push(`      <output ports="${portsToString(r.outPorts)}" device="${legacyDeviceName(r.outPorts, OUT_DEVICE_NAMES)}" channels="${channelsToRangeString(r.outputChannels)}" transpose="${r.transpose}" velocityScale="${r.velocityScale}" ccMapStart="${r.ccMapStart}" monoRetrig="${!!r.monoRetrig}" roundRobin="${!!r.roundRobin}" roundRobinRandom="${!!r.roundRobinRandom}" noteToCc="${!!(r.features & FEATURE.NOTE_TO_CC)}" launchpad="${!!(r.features & FEATURE.LAUNCHPAD)}" launchpadOctave="${r.lpOctave || 0}" quadEnabled="${!!(r.lpQuad || defaultLpQuad()).enabled}" quadBlock="${(r.lpQuad || defaultLpQuad()).block}" quadChannel="${(r.lpQuad || defaultLpQuad()).channel}" quadStartNote="${(r.lpQuad || defaultLpQuad()).startNote}" scale="${!!(r.features & FEATURE.SCALE)}" layout="${esc(LAYOUTS[r.scaleLayout || 0])}" autoChord="${!!(r.features & FEATURE.AUTO_CHORD)}" chord="${Array.from({ length: 12 }, (_, k) => k).filter((k) => (r.chordMask || 0) & (1 << k)).map((k) => k + 1).join(',')}" arp="${r.arpSlot || 0}" echo="${!!(r.features & FEATURE.ECHO)}" stutter="${!!(r.features & FEATURE.STUTTER)}" ccToFeature="${!!(r.features & FEATURE.CC_MAP)}" looperEnabled="${r.looperEnabled !== false}"/>`);
+    lines.push(`      <output ports="${portsToString(r.outPorts)}" device="${legacyDeviceName(r.outPorts, OUT_DEVICE_NAMES)}" channels="${channelsToRangeString(r.outputChannels)}" transpose="${r.transpose}" velocityScale="${r.velocityScale}" ccMapStart="${r.ccMapStart}" monoRetrig="${!!r.monoRetrig}" roundRobin="${!!r.roundRobin}" roundRobinRandom="${!!r.roundRobinRandom}" noteToCc="${!!(r.features & FEATURE.NOTE_TO_CC)}" launchpad="${!!(r.features & FEATURE.LAUNCHPAD)}" launchpadOctave="${r.lpOctave || 0}" quadEnabled="${!!(r.lpQuad || defaultLpQuad()).enabled}" quadBlock="${(r.lpQuad || defaultLpQuad()).block}" quadChannel="${(r.lpQuad || defaultLpQuad()).channel}" quadStartNote="${(r.lpQuad || defaultLpQuad()).startNote}" scale="${!!(r.features & FEATURE.SCALE)}" layout="${esc(LAYOUTS[r.scaleLayout || 0])}" autoChord="${!!(r.features & FEATURE.AUTO_CHORD)}" chord="${Array.from({ length: 12 }, (_, k) => k).filter((k) => (r.chordMask || 0) & (1 << k)).map((k) => k + 1).join(',')}" arp="${r.arpSlot || 0}" echo="${!!(r.features & FEATURE.ECHO)}" stutter="${!!(r.features & FEATURE.STUTTER)}" ccToFeature="${!!(r.features & FEATURE.CC_MAP)}" parameterLock="${!!(r.features & FEATURE.PLOCK)}" looperEnabled="${r.looperEnabled !== false}"/>`);
     lines.push('    </route>');
   }
   lines.push('  </routes>');
@@ -216,7 +228,7 @@ export function serializePreset(state) {
   });
   lines.push('  </arps>');
   const ec = state.echo || defaultEcho();
-  lines.push(`  <echo division="${DIVISIONS[ec.division]}" repeats="${ec.repeats}" level="${ec.level}" afterRoute="${ec.afterRoute !== false}" latching="${ec.latching !== false}" global="${!!ec.global}"${triggerAttrs(ec.defaultTrigger)}>`);
+  lines.push(`  <echo division="${DIVISIONS[ec.division]}" repeats="${ec.repeats}" level="${ec.level}" afterRoute="${ec.afterRoute !== false}" latching="${ec.latching !== false}" global="${!!ec.global}" bounce="${ec.bounce || 0}" naturalFade="${!!ec.naturalFade}"${triggerAttrs(ec.defaultTrigger)}>`);
   squaresToXml(lines, ec.squares, '    ');
   lines.push('  </echo>');
   const stt = state.stutter || defaultStutter();
@@ -226,6 +238,8 @@ export function serializePreset(state) {
   const lp = state.looper || defaultLooper();
   lines.push(`  <looper length="${lp.bars ? lp.bars : 'free'}" quantize="${lp.quantize >= 0 ? DIVISIONS[lp.quantize] : 'off'}" autoOverdub="${lp.autoOverdub}" records="${lp.recordInputs ? 'inputs' : 'outputs'}" holdClears="${lp.holdClears}" loopUnrouted="${lp.loopUnrouted !== false}" recordCcs="${!!lp.recordCcs}"${triggerAttrs(lp.trigger)}>`);
   lines.push('  </looper>');
+  const pl = state.plock || defaultPlock();
+  lines.push(`  <parameterLock delay="${pl.delay ? DIVISIONS[pl.delay - 1] : 'none'}" glide="${!!pl.glide}"/>`);
   lines.push('  <launchpad>');
   (state.lpActions || []).forEach((act, i) => {
     if (act.type) lines.push(`    <button index="${i}"${actionAttrs(act)}/>`);
@@ -359,7 +373,8 @@ export function parsePreset(xmlText) {
         (boolAttr(outputEl || document.createElement('x'), 'autoChord') ? FEATURE.AUTO_CHORD : 0) |
         (boolAttr(outputEl || document.createElement('x'), 'echo') ? FEATURE.ECHO : 0) |
         (boolAttr(outputEl || document.createElement('x'), 'stutter') ? FEATURE.STUTTER : 0) |
-        (boolAttr(outputEl || document.createElement('x'), 'ccToFeature') ? FEATURE.CC_MAP : 0)
+        (boolAttr(outputEl || document.createElement('x'), 'ccToFeature') ? FEATURE.CC_MAP : 0) |
+        (boolAttr(outputEl || document.createElement('x'), 'parameterLock') ? FEATURE.PLOCK : 0)
     });
   }
 
@@ -415,7 +430,8 @@ export function parsePreset(xmlText) {
     arps,
     echo: echoFromXml(root.querySelector('echo')),
     stutter: stutterFromXml(root.querySelector('stutter')),
-    looper: looperFromXml(root.querySelector('looper'))
+    looper: looperFromXml(root.querySelector('looper')),
+    plock: plockFromXml(root.querySelector('parameterLock'))
   };
 }
 

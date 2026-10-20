@@ -1,5 +1,5 @@
 import { ACT, MAP_ENTRIES, defaultAction, defaultLpActions, actionEditorHtml, applyActionField, usesLooper, usesLiveChannel } from './mapper.js';
-import { DeviceLink, DATA_TYPE_BITS, ROUTE_NAME_MAX_LEN, PORTS, PORT_TRS, PORT_USB, SIDECAR_INPUT_PORTS, SIDECAR_OUTPUT_PORTS, SIDECAR_TRS_PORTS, FEATURE, SCALES, LAYOUTS, defaultScale, ARP_SLOTS, ARP_MODES, ARP_MODE_ORDER, ARP_SQUARES, DIVISIONS, defaultArp, defaultEcho, defaultStutter, defaultLooper, defaultLpQuad, noTrigger, STUTTER_RUNOUTS, snapRunout } from './midi.js';
+import { DeviceLink, DATA_TYPE_BITS, ROUTE_NAME_MAX_LEN, PORTS, PORT_TRS, PORT_USB, SIDECAR_INPUT_PORTS, SIDECAR_OUTPUT_PORTS, SIDECAR_TRS_PORTS, FEATURE, SCALES, LAYOUTS, defaultScale, ARP_SLOTS, ARP_MODES, ARP_MODE_ORDER, ARP_SQUARES, DIVISIONS, defaultArp, defaultEcho, defaultStutter, defaultLooper, defaultLpQuad, noTrigger, STUTTER_RUNOUTS, snapRunout, defaultPlock } from './midi.js';
 import { serializePreset, parsePreset, downloadPreset, readPresetFile, channelsToRangeString } from './presetXml.js';
 import { attachDragReorder } from './dragReorder.js';
 
@@ -137,7 +137,8 @@ const state = {
   arps: Array.from({ length: ARP_SLOTS }, defaultArp), // slot settings, route.arpSlot 1-4 points at one
   echo: defaultEcho(),
   stutter: defaultStutter(),
-  looper: defaultLooper()
+  looper: defaultLooper(),
+  plock: defaultPlock() // Per-Note Parameter Lock's Delay and Glide, the locks themselves live on the device
 };
 
 const device = new DeviceLink();
@@ -281,7 +282,7 @@ async function autosave() {
   autosaveAgain = false;
   dirty = false; // a change made during the save marks it dirty again
   try {
-    await device.saveAll(state.global, state.routes, { noteMap: state.noteMap, ccMap: state.ccMap, lpActions: state.lpActions, scale: state.scale, arps: state.arps, echo: state.echo, stutter: state.stutter, looper: state.looper });
+    await device.saveAll(state.global, state.routes, { noteMap: state.noteMap, ccMap: state.ccMap, lpActions: state.lpActions, scale: state.scale, arps: state.arps, echo: state.echo, stutter: state.stutter, looper: state.looper, plock: state.plock });
     if (!dirty) clearDirty();
   } catch (err) {
     dirty = true;
@@ -1617,7 +1618,7 @@ function renderRouteCard(route, index, animateStaple) {
               </div>
               ${route.roundRobin ? `<p class="note-hint">Mono to Poly. ${route.roundRobinRandom ? 'Picks a random selected channel for each new note.' : 'Cycles each new note to a different selected channel.'}</p>` : ''}
             </div>
-            ${featuresSupported() ? mapSectionHtml(route, index, 'note') + mapSectionHtml(route, index, 'cc') + launchpadSectionHtml(route, index) + scaleSectionHtml(route, index) + autoChordSectionHtml(route, index) + arpSectionHtml(route, index) + echoSectionHtml(route, index) + stutterSectionHtml(route, index) : ''}
+            ${featuresSupported() ? mapSectionHtml(route, index, 'note') + mapSectionHtml(route, index, 'cc') + launchpadSectionHtml(route, index) + scaleSectionHtml(route, index) + autoChordSectionHtml(route, index) + arpSectionHtml(route, index) + echoSectionHtml(route, index) + stutterSectionHtml(route, index) + plockSectionHtml(route, index) : ''}
           </div>
         </div>
       </div>
@@ -1926,6 +1927,53 @@ function arpSectionHtml(route, index) {
 
 // Echo: each note the route sends repeats at the echo division, fading out over its repeats. A
 // division square's trigger latches its division, pressed again it goes back to the default.
+// Bounce (1.59): Bounce 1-8 brings each repeat closer than the last, a dropping ball, 1 a marble
+// rattling on glass, 8 a quick settle. Slow 1-8 spreads them out instead.
+const ECHO_BOUNCES = [
+  ...Array.from({ length: 8 }, (_, k) => [-(8 - k), `Slow ${8 - k}`]),
+  [0, 'Off'],
+  ...Array.from({ length: 8 }, (_, k) => [k + 1, `Bounce ${k + 1}`])
+];
+
+routesContainer.addEventListener('change', (e) => {
+  if (!('echoBounce' in e.target.dataset)) return;
+  state.echo.bounce = parseInt(e.target.value, 10) || 0;
+  markDirty();
+});
+
+// Per-Note Parameter Lock (1.59): hold a key on this route and move a CC, and that value is locked
+// to the key, played back the next time it plays. One route at a time.
+function plockSectionHtml(route, index) {
+  const on = !!(route.features & FEATURE.PLOCK);
+  if (!on) return `<div class="${featureRowClass(false)}">${switchHtml(index, 'plockOn', false, 'Per-Note Parameter Lock')}</div>`;
+  const p = state.plock || defaultPlock();
+  const opt = (v, l) => `<option value="${v}" ${p.delay === v ? 'selected' : ''}>${l}</option>`;
+  return `<div class="${featureRowClass(true)}">
+      <div class="feature-head">
+        ${switchHtml(index, 'plockOn', true, 'Per-Note Parameter Lock')}
+        ${switchHtml(index, 'plockGlide', !!p.glide, 'Glide')}
+      </div>
+      <div class="arp-fields">
+        <div class="arp-field"><label>Delay</label><select data-plock-delay data-route-index="${index}">${DIVISIONS.map((d, i) => opt(i + 1, d)).join('')}${opt(0, 'None')}</select></div>
+        <div class="arp-field arp-field-switch"><button type="button" class="btn btn-ghost btn-tiny" data-action="clearPlocks">Clear Locks</button></div>
+      </div>
+    </div>`;
+}
+
+routesContainer.addEventListener('change', (e) => {
+  if (!('plockDelay' in e.target.dataset)) return;
+  state.plock = state.plock || defaultPlock();
+  state.plock.delay = parseInt(e.target.value, 10) || 0;
+  markDirty();
+});
+
+routesContainer.addEventListener('click', (e) => {
+  if (!e.target.closest('[data-action="clearPlocks"]')) return;
+  if (!device.connected) { toast('Not connected to a device', 'error'); return; }
+  device.clearParameterLocks();
+  toast('Parameter locks cleared', 'success');
+});
+
 function echoSectionHtml(route, index) {
   const on = !!(route.features & FEATURE.ECHO);
   if (!on) return `<div class="${featureRowClass(false)}">${switchHtml(index, 'echoOn', false, 'Echo', 'switch-red')}</div>`;
@@ -1941,6 +1989,8 @@ function echoSectionHtml(route, index) {
       <div class="arp-fields">
         <div class="arp-field"><label>Repeats</label><input type="number" min="1" max="32" value="${e.repeats}" ${attrs('repeats')}></div>
         <div class="arp-field"><label>Level %</label><input type="number" min="1" max="100" value="${e.level}" ${attrs('level')}></div>
+        <div class="arp-field"><label>Bounce</label><select data-echo-bounce data-route-index="${index}">${ECHO_BOUNCES.map(([v, l]) => `<option value="${v}" ${(e.bounce || 0) === v ? 'selected' : ''}>${l}</option>`).join('')}</select></div>
+        <div class="arp-field arp-field-switch">${switchHtml(index, 'echoNatural', !!e.naturalFade, 'Natural Fade')}</div>
       </div>
       <label class="arp-table-label">Division</label>
       ${divisionTableHtml(e, 'echo', index, e.latching !== false ? 'Default, on/off' : 'Default')}
@@ -2150,7 +2200,7 @@ function refreshRouteCard(index, animateStaple) {
 }
 
 // Structural changes (need a re-render): checkboxes that reveal/hide fields, staple toggle, delete
-const STRUCTURAL_FIELDS = new Set(['note', 'cc', 'ccMapEnabled', 'aftertouch', 'aftertouchMap', 'pressure', 'pressureMap', 'allInputTypes', 'allInputChannels', 'allInPorts', 'allOutPorts', 'monoRetrig', 'roundRobin', 'roundRobinRandom', 'noteToCc', 'ccMapOn', 'launchpad', 'scaleOn', 'autoChord', 'arpOn', 'echoOn', 'stutterOn', 'lpQuadEnabled', 'stutterGlobal', 'echoGlobal', 'echoLatching']);
+const STRUCTURAL_FIELDS = new Set(['note', 'cc', 'ccMapEnabled', 'aftertouch', 'aftertouchMap', 'pressure', 'pressureMap', 'allInputTypes', 'allInputChannels', 'allInPorts', 'allOutPorts', 'monoRetrig', 'roundRobin', 'roundRobinRandom', 'noteToCc', 'ccMapOn', 'launchpad', 'scaleOn', 'autoChord', 'arpOn', 'echoOn', 'stutterOn', 'lpQuadEnabled', 'stutterGlobal', 'echoGlobal', 'echoLatching', 'plockOn']);
 
 routesContainer.addEventListener('click', (e) => {
   const actionEl = e.target.closest('[data-action]');
@@ -2333,6 +2383,13 @@ function applyRouteFieldChange(route, field, el) {
   if (field === 'stutterGlobal') { state.stutter.global = el.checked; return; }
   if (field === 'echoAfter') { state.echo.afterRoute = el.checked; return; }
   if (field === 'echoLatching') { state.echo.latching = el.checked; return; }
+  if (field === 'echoNatural') { state.echo.naturalFade = el.checked; return; }
+  if (field === 'plockGlide') { state.plock = state.plock || defaultPlock(); state.plock.glide = el.checked; return; }
+  if (field === 'plockOn') {
+    if (el.checked) claimFeature(state.routes.indexOf(route), FEATURE.PLOCK, 'Per-Note Parameter Lock');
+    route.features = el.checked ? (route.features | FEATURE.PLOCK) : (route.features & ~FEATURE.PLOCK);
+    return;
+  }
   if (field === 'echoGlobal') { state.echo.global = el.checked; return; }
   if (field === 'lpOctave') {
     route.lpOctave = parseInt(el.value, 10);
@@ -2438,7 +2495,7 @@ document.getElementById('addRouteBtnTop').addEventListener('click', addRoute);
 document.getElementById('emptyHintAddRoute').addEventListener('click', (e) => { e.preventDefault(); addRoute(); });
 
 document.getElementById('downloadPresetBtn').addEventListener('click', () => {
-  downloadPreset({ name: state.presetName, global: state.global, routes: state.routes, noteMap: state.noteMap, ccMap: state.ccMap, lpActions: state.lpActions, scale: state.scale, arps: state.arps, echo: state.echo, stutter: state.stutter, looper: state.looper });
+  downloadPreset({ name: state.presetName, global: state.global, routes: state.routes, noteMap: state.noteMap, ccMap: state.ccMap, lpActions: state.lpActions, scale: state.scale, arps: state.arps, echo: state.echo, stutter: state.stutter, looper: state.looper, plock: state.plock });
   toast('Preset downloaded', 'success');
 });
 
@@ -2458,6 +2515,7 @@ document.getElementById('uploadPresetInput').addEventListener('change', async (e
     state.echo = preset.echo || defaultEcho();
     state.stutter = preset.stutter || defaultStutter();
     state.looper = preset.looper || defaultLooper();
+    state.plock = preset.plock || defaultPlock();
     state.routes = preset.routes.map((r) => ({
       _uid: nextUid++, _collapsed: false, _ccMapEnabled: r.ccMapStart !== r.ccStart, ...r
     }));
@@ -2489,6 +2547,7 @@ async function loadFromDevice(silent) {
     state.echo = features.echo || defaultEcho();
     state.stutter = features.stutter || defaultStutter();
     state.looper = features.looper || defaultLooper();
+    state.plock = features.plock || defaultPlock();
     state.global = { ...defaultGlobal(), ...global }; // older firmware sends no clock settings
     state.routes = routes.map((r) => ({
       _uid: nextUid++, _collapsed: false, _ccMapEnabled: r.ccMapStart !== r.ccStart, name: '', ...r
@@ -2512,7 +2571,7 @@ saveToDeviceBtn.addEventListener('click', async () => {
   }
   showOverlay('Sending settings to device…');
   try {
-    await device.saveAll(state.global, state.routes, { noteMap: state.noteMap, ccMap: state.ccMap, lpActions: state.lpActions, scale: state.scale, arps: state.arps, echo: state.echo, stutter: state.stutter, looper: state.looper }, (done, total) => setOverlayProgress(done, total));
+    await device.saveAll(state.global, state.routes, { noteMap: state.noteMap, ccMap: state.ccMap, lpActions: state.lpActions, scale: state.scale, arps: state.arps, echo: state.echo, stutter: state.stutter, looper: state.looper, plock: state.plock }, (done, total) => setOverlayProgress(done, total));
     clearDirty();
     toast('Saved to device', 'success');
   } catch (err) {
