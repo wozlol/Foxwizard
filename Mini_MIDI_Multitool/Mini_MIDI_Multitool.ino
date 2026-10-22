@@ -97,7 +97,7 @@ constexpr uint8_t SYSEX_MFR_ID = 0x7D;   // reserved for non-commercial/educatio
 constexpr uint8_t SYSEX_DEVICE_ID = 0x4D; // 'M'
 constexpr uint8_t PROTOCOL_VERSION = 4; // 2: 45-byte routes with port masks, GET_STATUS. 3: clock settings, LEARN. 4: 53-byte routes with feature fields, feature blocks
 constexpr uint8_t FW_VERSION_MAJOR = 1;
-constexpr uint8_t FW_VERSION_MINOR = 75;
+constexpr uint8_t FW_VERSION_MINOR = 76;
 constexpr uint8_t FW_CHUNK_BYTES = 128;          // firmware bytes per FW_DATA message, 147 once packed
 constexpr uint32_t FW_REBOOT_DELAY_MS = 300;     // lets the FW_END ACK reach the host before rebooting
 const char DEVICE_NAME[] = "FoxWizard Mini MIDI Multitool"; // long name sent in the SysEx IDENTITY_REPLY
@@ -5091,7 +5091,7 @@ void handleSysexCommand(uint8_t sourcePort, const uint8_t *cmdBuf, uint8_t cmdLe
       appendReply(bpmNow & 0x7F);
       appendReply((bpmNow >> 7) & 0x7F);
       appendReply(clockStatus());
-      appendReply(hostHasTrs ? 1 : 0); // 1.44: whether the host brain has TRS 2-6 wired (Patchling only cares while sidecar is present)
+      appendReply(hostPresent() && hostHasTrs ? 1 : 0); // 1.44: whether the host brain has TRS 2-6 wired. 1.76: not before it's said
       // 1.71: what hubs the host brain has, for Patchling to show only the USB Host ports there is room for
       appendReply(hostPresent() && hostHubSeen ? 1 : 0);
       appendReply(hostHubJacks & 0x7F);

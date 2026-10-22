@@ -112,7 +112,7 @@ DIN IN/TRS OUT 1 plus four more TRS OUTs). GP14 tells the firmware which:
 - **Floating** (its internal pull-up, nothing wired to it): a bare module. USB Host only.
 - **Grounded:** a TRS board is present. USB Host plus TRS 2-6.
 
-The sidecar reads GP14 once at power on and sends it to the main brain as bit 4 of the port map
+The sidecar reads GP14 once at power on, eight times over 8 ms after the pull-up settles, all of which must say grounded, and sends it to the main brain as bit 4 of the port map
 frame (`CONTROL_PORT_MAP`, alongside the hub's mounted-device bits). The main brain reports it to
 Patchling over `GET_STATUS`, which shows the TRS 2-6 switches only when the sidecar has them wired.
 A board adding TRS 2-6 grounds GP14; nothing else changes in the firmware.

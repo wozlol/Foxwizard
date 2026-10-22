@@ -27,7 +27,7 @@ through the same routes.
 | USB Device (USB-C) | 1 | 1 | to a computer |
 | TRS/DIN | 1 | 1 | the FoxWizard's own |
 | USB Host 1-7 | 7 | 7 | one device each. The board's hub has four jacks, a 7-port hub or two chained 4-port hubs gives all seven |
-| TRS 2 | 1 | 1 | needs the TRS board |
+| TRS 2 | 1 | 1 | needs the TRS board. Patchling shows TRS 2-6 only while a Host Edition with the TRS board is connected |
 | TRS 3-6 | | 4 | needs the TRS board |
 
 That is **13 MIDI connections** on the board, 7 inputs and 11 outputs to route between, and a hub

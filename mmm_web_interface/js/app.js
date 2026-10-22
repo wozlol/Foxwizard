@@ -969,7 +969,7 @@ function clockRowActive() {
 }
 
 function clockSourceOptions(g) {
-  const ports = PORTS.filter((p) => p.input && (!p.sidecar || sidecarPortShown(p, false) || (g.clockSource === p.bit + 1 && !trsUnavailable(p))));
+  const ports = PORTS.filter((p) => p.input && (!p.sidecar || sidecarPortShown(p, false) || g.clockSource === p.bit + 1));
   return [`<option value="0" ${g.clockSource === 0 ? 'selected' : ''}>FoxWizard is master</option>`]
     .concat(ports.map((p) => `<option value="${p.bit + 1}" ${g.clockSource === p.bit + 1 ? 'selected' : ''}>Follow ${p.label}</option>`))
     .join('');
@@ -1450,10 +1450,12 @@ const routesContainer = document.getElementById('routesContainer');
 const emptyHint = document.getElementById('emptyRoutesHint');
 
 // A TRS port is a hardware fact about the attached sidecar, not a transient "unplugged" state: it
-// never shows while this exact sidecar is connected without one, even for a route already using it
-// (every route defaults to every port on, so that fallback would otherwise defeat this entirely).
+// shows only while a sidecar that says it has a TRS board is connected (1.76). Not for one without,
+// and not while none is there at all, even for a route already using it (every route defaults to
+// every port on, so that fallback would otherwise defeat this entirely, and a hub being unplugged
+// would bring all of them back).
 function trsUnavailable(p) {
-  return p.trs && sidecarPresent && !sidecarHasTrs;
+  return p.trs && !(sidecarPresent && sidecarHasTrs);
 }
 
 // How many USB Host ports there is room for: one with no hub (a device plugged straight in), else the

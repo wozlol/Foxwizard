@@ -68,7 +68,7 @@ constexpr uint8_t PIN_TRS_BOARD = 14; // floating (its internal pull-up): a bare
                                        // Tells the main brain whether TRS 2-6 physically exist.
 
 constexpr uint32_t DIN_BAUD = 31250;
-constexpr uint8_t HOST_FW_VERSION = 6; // 3: the host report. 4: chained hubs, hub and spare device reporting. 5: 64 endpoint slots, stack trace events. 6: 7 USB Host slots
+constexpr uint8_t HOST_FW_VERSION = 7; // 3: the host report. 4: chained hubs, hub and spare device reporting. 5: 64 endpoint slots, stack trace events. 6: 7 USB Host slots. 7: steadier TRS board pin read
 
 constexpr uint8_t HUB_PORTS = HOST_SLOTS; // USB Host slots, 7 from host firmware 6
 constexpr uint8_t LED_PORTS = 4;           // only the first four have a light on the board
@@ -1009,8 +1009,15 @@ void serviceLeds() {
 // Setup / loop
 // ============================================================================================
 void setup() {
+  // The pull-up needs a moment to bring a floating pin up, so a read straight after pinMode can see low
+  // and mistake a bare module for one with a TRS board. Eight reads over 8 ms must all say low.
   pinMode(PIN_TRS_BOARD, INPUT_PULLUP);
-  trsBoard = digitalRead(PIN_TRS_BOARD) == LOW;
+  delay(5);
+  trsBoard = true;
+  for (uint8_t i = 0; i < 8; ++i) {
+    if (digitalRead(PIN_TRS_BOARD) != LOW) trsBoard = false;
+    delay(1);
+  }
 
   for (uint8_t p = 0; p < LED_PORTS; ++p) {
     pinMode(PIN_PORT_LED[p], OUTPUT);
