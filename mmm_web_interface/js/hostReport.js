@@ -51,9 +51,13 @@ function eventText(type, port, a, b) {
 
 /** Parses the report. Returns null when it isn't a report this Patchling understands. */
 export function parseHostReport(b) {
-  if (!b || b.length < 240 || b[0] !== 1) return null;
+  // Layout 1 (host firmware 3 to 5): 4 slots and 16 events from byte 112. Layout 2: 7 slots and 22 events from byte 184.
+  const layout = b?.[0];
+  if (!b || (layout !== 1 && layout !== 2)) return null;
+  const slots = layout === 1 ? 4 : 7, eventsAt = 16 + slots * 24, eventCount = layout === 1 ? 16 : 22;
+  if (b.length < eventsAt + eventCount * 8) return null;
   const ports = [];
-  for (let p = 0; p < 4; p++) {
+  for (let p = 0; p < slots; p++) {
     const o = 16 + p * 24;
     ports.push({
       port: p + 1, mounted: !!(b[o] & 1), writable: !!(b[o] & 2), hubPort: (b[o] >> 2) & 7, tier: (b[o] >> 5) & 3,
@@ -63,8 +67,8 @@ export function parseHostReport(b) {
     });
   }
   const events = [];
-  for (let i = 0; i < 16; i++) {
-    const o = 112 + i * 8;
+  for (let i = 0; i < eventCount; i++) {
+    const o = eventsAt + i * 8;
     if (!b[o + 4]) continue;
     events.push({ ms: u32(b, o), type: b[o + 4], port: b[o + 5], a: b[o + 6], b: b[o + 7] });
   }

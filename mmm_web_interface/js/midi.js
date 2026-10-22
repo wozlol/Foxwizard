@@ -43,15 +43,19 @@ const MFR_ID = 0x7D;
 const DEVICE_ID = 0x4D;
 export const ROUTE_NAME_MAX_LEN = 24; // must match ROUTE_NAME_MAX_LEN in the firmware
 
-// Ports, one bit each, same as PORT_* in the firmware. Inputs are bits 0-6, TRS 3-6 are outputs only.
+// Ports, one bit each, same as PORT_* in the firmware. Inputs are bits 0-6 and 11-13, TRS 3-6 are outputs
+// only. USB Host 5-7 (1.74) took the spare bits 11-13, and slot is the host's 1-7 number.
 // Routes carry them as inPorts/outPorts. Protocol 1 firmware (1.0-1.3) only has TRS/DIN and USB Device.
 export const PORTS = [
   { bit: 0, key: 'trs', label: 'TRS/DIN', short: 'TRS', input: true, sidecar: false },
   { bit: 1, key: 'usb', label: 'USB Device', short: 'USB', input: true, sidecar: false },
-  { bit: 2, key: 'host1', label: 'USB Host 1', short: 'Host1', input: true, sidecar: true },
-  { bit: 3, key: 'host2', label: 'USB Host 2', short: 'Host2', input: true, sidecar: true },
-  { bit: 4, key: 'host3', label: 'USB Host 3', short: 'Host3', input: true, sidecar: true },
-  { bit: 5, key: 'host4', label: 'USB Host 4', short: 'Host4', input: true, sidecar: true },
+  { bit: 2, key: 'host1', label: 'USB Host 1', short: 'Host1', input: true, sidecar: true, slot: 1 },
+  { bit: 3, key: 'host2', label: 'USB Host 2', short: 'Host2', input: true, sidecar: true, slot: 2 },
+  { bit: 4, key: 'host3', label: 'USB Host 3', short: 'Host3', input: true, sidecar: true, slot: 3 },
+  { bit: 5, key: 'host4', label: 'USB Host 4', short: 'Host4', input: true, sidecar: true, slot: 4 },
+  { bit: 11, key: 'host5', label: 'USB Host 5', short: 'Host5', input: true, sidecar: true, slot: 5 },
+  { bit: 12, key: 'host6', label: 'USB Host 6', short: 'Host6', input: true, sidecar: true, slot: 6 },
+  { bit: 13, key: 'host7', label: 'USB Host 7', short: 'Host7', input: true, sidecar: true, slot: 7 },
   { bit: 6, key: 'trs2', label: 'TRS 2', short: 'TRS2', input: true, sidecar: true, trs: true },
   { bit: 7, key: 'trs3', label: 'TRS 3', short: 'TRS3', input: false, sidecar: true, trs: true },
   { bit: 8, key: 'trs4', label: 'TRS 4', short: 'TRS4', input: false, sidecar: true, trs: true },
@@ -60,8 +64,8 @@ export const PORTS = [
 ];
 export const PORT_TRS = 1 << 0;
 export const PORT_USB = 1 << 1;
-export const SIDECAR_INPUT_PORTS = 0x007C;
-export const SIDECAR_OUTPUT_PORTS = 0x07FC;
+export const SIDECAR_INPUT_PORTS = 0x387C;
+export const SIDECAR_OUTPUT_PORTS = 0x3FFC;
 export const SIDECAR_TRS_PORTS = 0x07C0; // TRS 2-6, wired only when a TRS board is added on top of the bare sidecar module
 
 // Protocol 1 routes are 41 raw bytes. Protocol 2 adds inPorts and outPorts (2 bytes each, little
@@ -659,7 +663,7 @@ export class DeviceLink extends EventTarget {
   get protocolVersion() { return this.deviceInfo?.protocolVersion ?? 1; }
 
   /**
-   * Sidecar state, protocol 2 only: { sidecar, hostPortMask (bit 0 = USB Host 1), drops,
+   * Sidecar state, protocol 2 only: { sidecar, hostPortMask (bit 0 = USB Host 1, up to bit 6 = USB Host 7), drops,
    * restartReason (0 none, 1 hang, 2 USB Host port stalled, 3-5 USB driver faults), restartPort,
    * restartCount, hasTrs (true when a TRS board is added on top of the bare sidecar module) }.
    */
@@ -675,7 +679,9 @@ export class DeviceLink extends EventTarget {
       // Firmware before 1.44 never sends byte 9: assume TRS 2-6 exist (every deployed sidecar so far).
       hasTrs: reply[9] === undefined ? true : reply[9] === 1,
       // 1.71, host firmware 4: the hubs attached. hubKnown is false from older firmware, which shows all 4 ports.
-      hubKnown: reply[10] === 1, hubJacks: reply[11] ?? 0, hubCount: reply[12] ?? 0, hostWaiting: reply[13] ?? 0
+      hubKnown: reply[10] === 1, hubJacks: reply[11] ?? 0, hubCount: reply[12] ?? 0, hostWaiting: reply[13] ?? 0,
+      // 1.74: the host brain's firmware version, 6 and later have 7 USB Host slots, before that 4
+      hostFwVersion: reply[14] ?? 0
     };
   }
 
@@ -757,7 +763,7 @@ export class DeviceLink extends EventTarget {
   async getHostReport() {
     const bytes = [];
     let complete = true;
-    for (const page of [0, 1]) {
+    for (const page of [0, 1, 2]) {
       const reply = await this._sendAndWait([CMD.GET_HOST_REPORT, page], CMD.HOST_REPORT_DATA, DEFAULT_TIMEOUT_MS);
       complete = complete && reply[1] === 1;
       bytes.push(...unpack7(reply.slice(2)).slice(0, 120));

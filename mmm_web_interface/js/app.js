@@ -526,7 +526,8 @@ let connectionState = 'disconnected';
 const SIDECAR_POLL_MS = 2000;
 let sidecarPresent = false;
 let sidecarHasTrs = true; // true once a TRS board is added on top of the bare sidecar module
-let hostPortMask = 0; // bit 0 = a device on USB Host 1
+let hostPortMask = 0; // bit 0 = a device on USB Host 1, up to bit 6 for USB Host 7
+let hostSlots = 4;    // the USB Host slots the host brain has: 7 from host firmware 6, 4 before
 // What the host brain says about its hubs (1.71, host firmware 4): jacks is how many downstream ports
 // the attached hubs add up to, 0 with no hub. Until it says, all 4 USB Host ports show.
 let hostHub = { known: false, jacks: 0, hubs: 0, waiting: 0 };
@@ -582,6 +583,7 @@ async function refreshSidecarStatus() {
   sidecarPresent = status.sidecar;
   sidecarHasTrs = status.hasTrs;
   hostPortMask = status.hostPortMask;
+  hostSlots = status.hostFwVersion >= 6 ? 7 : 4;
   hostHub = { known: status.sidecar && status.hubKnown, jacks: status.hubJacks, hubs: status.hubCount, waiting: status.hostWaiting };
   const hostShownChanged = updateHostPortsShown();
   if (hostHub.known && hostHub.waiting > waitingBefore) {
@@ -1456,7 +1458,7 @@ function trsUnavailable(p) {
 
 // How many USB Host ports there is room for: one with no hub (a device plugged straight in), else the
 // hubs' jacks, up to the 4 the FoxWizard has.
-function hostCapacity() { return hostHub.jacks ? Math.min(4, hostHub.jacks) : (hostHub.hubs ? 4 : 1); }
+function hostCapacity() { return hostHub.jacks ? Math.min(hostSlots, hostHub.jacks) : (hostHub.hubs ? hostSlots : 1); }
 
 // Works out how many USB Host chips show: the highest port with a device plus one to plug into next, at
 // least one, at most the room the hubs have. Only grows while connected. True if it changed.
@@ -1467,7 +1469,7 @@ function updateHostPortsShown() {
     hostPortsShown = 4;
   } else {
     let highest = 0;
-    for (let i = 0; i < 4; i++) if (hostPortMask & (1 << i)) highest = i + 1;
+    for (let i = 0; i < hostSlots; i++) if (hostPortMask & (1 << i)) highest = i + 1;
     hostPortsSeen = Math.max(hostPortsSeen, highest + 1, 1);
     // A device on a port means there's room for it, whatever the hub report says.
     hostPortsShown = Math.min(Math.max(hostCapacity(), highest), hostPortsSeen);
@@ -1479,7 +1481,8 @@ function updateHostPortsShown() {
 // brain says. The rest show while a sidecar is detected, or when something already uses them.
 function sidecarPortShown(p, used) {
   if (trsUnavailable(p)) return false;
-  if (p.key.startsWith('host') && sidecarPresent && hostHub.known) return p.bit - 2 < hostPortsShown;
+  if (p.slot && sidecarPresent && p.slot > hostSlots) return false; // a host brain with fewer slots than this port
+  if (p.slot && sidecarPresent && hostHub.known) return p.slot <= hostPortsShown;
   return sidecarPresent || used;
 }
 
@@ -1514,7 +1517,7 @@ function portSwitchesHtml(route, index, field, title) {
       <span class="switch-label">${allLabel}</span>
     </label>`;
   const chips = visiblePorts(route, field).map((p) => {
-    const live = p.key.startsWith('host') && sidecarPresent && (hostPortMask & (1 << (p.bit - 2)));
+    const live = p.slot && sidecarPresent && (hostPortMask & (1 << (p.slot - 1)));
     return `<label class="switch switch-port port-chip${live ? ' port-chip-live' : ''}" data-port-bit="${p.bit}" title="${p.label}${live ? ', device connected' : ''}">
       <input type="checkbox" data-route-index="${index}" data-field="${field}" data-bit="${p.bit}" ${route[field] & (1 << p.bit) ? 'checked' : ''}>
       <span class="switch-track"><span class="switch-thumb"></span></span>
@@ -1526,9 +1529,10 @@ function portSwitchesHtml(route, index, field, title) {
 
 // Marks which USB Host chips have a device plugged in, without re-rendering the route list.
 function updatePortChipsLive() {
-  for (let i = 0; i < 4; i++) {
+  for (const p of PORTS.filter((x) => x.slot)) {
+    const i = p.slot - 1;
     const live = sidecarPresent && !!(hostPortMask & (1 << i));
-    routesContainer.querySelectorAll(`.port-chip[data-port-bit="${i + 2}"]`).forEach((el) => {
+    routesContainer.querySelectorAll(`.port-chip[data-port-bit="${p.bit}"]`).forEach((el) => {
       el.classList.toggle('port-chip-live', live);
       el.title = `USB Host ${i + 1}${live ? ', device connected' : ''}`;
     });

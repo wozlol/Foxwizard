@@ -53,7 +53,7 @@ The route struct is 41 bytes → five groups of 7 + one group of 6 → packed to
 | 0x02   | IDENTITY_REPLY        | dev→host  | protocolVersion, fwMajor, fwMinor, maxRoutes(2), name (ASCII, remainder of message) |
 | 0x10   | GET_GLOBAL            | host→dev  | (none)                                                         |
 | 0x13   | GET_STATUS            | host→dev  | (none). Protocol 2 |
-| 0x14   | STATUS_DATA           | dev→host  | sidecarPresent (0/1), hostPortMask (bit0 = USB Host 1 has a USB MIDI device), sidecarDrops (saturates at 127), restartReason (0 none, 1 hang, 2 USB Host port stalled, 3 USB data sequence error, 4 USB buffer armed twice, 5 USB device stalled), restartPort (1-4, for reason 2), restartCount (recovery restarts since the sidecar powered up, saturates at 127). Protocol 2. Protocol 3 adds bpm(2) and clockStatus (0 clock unused, 1 master, 2 following, 3 following with no clock arriving). Firmware 1.44 adds hasTrs (1 = a TRS board is added on top of the bare sidecar module, so TRS 2-6 exist) |
+| 0x14   | STATUS_DATA           | dev→host  | sidecarPresent (0/1), hostPortMask (bit n = USB Host n+1 has a USB MIDI device, 7 bits from 1.74), sidecarDrops (saturates at 127), restartReason (0 none, 1 hang, 2 USB Host port stalled, 3 USB data sequence error, 4 USB buffer armed twice, 5 USB device stalled), restartPort (1-4, for reason 2), restartCount (recovery restarts since the sidecar powered up, saturates at 127). Protocol 2. Protocol 3 adds bpm(2) and clockStatus (0 clock unused, 1 master, 2 following, 3 following with no clock arriving). Firmware 1.44 adds hasTrs (1 = a TRS board is added on top of the bare sidecar module, so TRS 2-6 exist) |
 | 0x15   | LEARN                 | host→dev  | (none). Protocol 3. The next Note On or CC from any input is consumed and answered with LEARN_DATA. Gives up after 10 s |
 | 0x16   | LEARN_DATA            | dev→host  | type (1 note, 2 CC), channel (0-15), number, port bit (0 TRS/DIN … 6 TRS 2) |
 | 0x17   | GET_FEATURE           | host→dev  | type. Protocol 4 |
@@ -124,7 +124,7 @@ leaves the clock settings alone.
 
 | byte | field | notes |
 |------|-------|-------|
-| 6 | clockSource | 0 the FoxWizard is master, 1-7 follow port bit 0-6 (TRS/DIN, USB Device, USB Host 1-4, TRS 2) |
+| 6 | clockSource | 0 the FoxWizard is master, 1-14 follow port bit 0-13 (TRS/DIN, USB Device, USB Host 1-4, TRS 2, then from 12 USB Host 5-7). 8-11 are outputs only and do nothing |
 | 7-8 | bpm | two 7-bit bytes, low first, 20-300 |
 | 9 | beatsPerBar | time signature top, 1-16 |
 | 10 | beatUnit | time signature bottom: 2, 4, 8, 16 |
@@ -407,7 +407,7 @@ from being confused with each other.
 
 **Port masks** (protocol 2): bit0 TRS/DIN, bit1 USB Device, bits 2-5 USB Host 1-4 (sidecar hub
 ports), bit6 TRS 2 (sidecar DIN IN and DIN OUT 1), bits 7-10 TRS 3-6 (sidecar DIN OUT 2-5, outputs
-only). Bits 0-1 match the old inputDevice/outputDevice meaning, so a route with byte0 bit6 clear
+only), bits 11-13 USB Host 5-7 (firmware 1.74, host firmware 6). Bits 14-15 are spare, kept for BLE MIDI. Bits 0-1 match the old inputDevice/outputDevice meaning, so a route with byte0 bit6 clear
 (saved or sent by protocol 1) keeps working unchanged. A protocol 1 host sends 41 bytes, and the
 firmware fills the missing port masks with zero.
 

@@ -13,6 +13,14 @@ constexpr uint8_t LINK_PORT_DIN = 5;      // host -> main: DIN IN. main -> host:
 constexpr uint8_t LINK_PORT_CONTROL = 15; // both ways: link control frames, never MIDI
 constexpr uint8_t LINK_PORT_COUNT = 16;
 
+// USB Host slots (host firmware 6, main 1.74): 1-7. Slots 1-4 are link ports 1-4, slots 5-7 are link
+// ports 10-12, which leaves 13 and 14 for BLE MIDI. In the port map frame's mounted-slots byte,
+// slots 1-4 are bits 0-3 and slots 5-7 are bits 5-7, with bit 4 left to say a TRS board is fitted.
+constexpr uint8_t HOST_SLOTS = 7;
+inline uint8_t hostLinkPort(uint8_t slot) { return slot <= 4 ? slot : slot + 5; }
+inline uint8_t hostSlotFromLink(uint8_t port) { return (port >= 1 && port <= 4) ? port : ((port >= 10 && port <= 12) ? port - 5 : 0); }
+inline uint8_t hostMaskBit(uint8_t slot) { return slot <= 4 ? slot - 1 : slot; }
+
 // Control frame types, carried in the CIN field of a port 15 frame.
 constexpr uint8_t CONTROL_PORT_MAP = 1; // host -> main. byte 1 = port mask, 2 = fw version, 3 = drops
 constexpr uint8_t CONTROL_FLOW = 2;     // both ways. byte 1 = 1 pause, 0 resume
@@ -23,10 +31,10 @@ constexpr uint8_t CONTROL_HOST_REPORT = 5; // host -> main. byte 1 = index, 2-3 
 
 // The host report (host fw 3): what the host brain knew when it last restarted, sent a few times
 // after a recovery restart. Multi-byte values are little-endian.
-constexpr uint8_t HOST_REPORT_LAYOUT = 1;
-constexpr uint16_t HOST_REPORT_BYTES = 240;
-constexpr uint8_t HOST_REPORT_PORT_BYTES = 24; // per slot, 4 of them from byte 16. Byte 0: bit 0 mounted, 1 writable, 2-4 its hub port, 5-6 tier
-constexpr uint8_t HOST_REPORT_EVENTS = 16;     // 8 bytes each, from byte 112, oldest first
+constexpr uint8_t HOST_REPORT_LAYOUT = 2;      // 1: 4 slots, 16 events from byte 112, 240 bytes
+constexpr uint16_t HOST_REPORT_BYTES = 360;
+constexpr uint8_t HOST_REPORT_PORT_BYTES = 24; // per slot, 7 of them from byte 16. Byte 0: bit 0 mounted, 1 writable, 2-4 its hub port, 5-6 tier
+constexpr uint8_t HOST_REPORT_EVENTS = 22;     // 8 bytes each, from byte 184, oldest first
 // Host report event types
 constexpr uint8_t HOST_EVENT_BOOT = 1;     // a = restart reason
 constexpr uint8_t HOST_EVENT_MOUNT = 2;    // VID and PID are in the port block

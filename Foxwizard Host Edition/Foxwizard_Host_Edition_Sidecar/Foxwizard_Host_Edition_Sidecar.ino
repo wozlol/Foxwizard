@@ -68,9 +68,10 @@ constexpr uint8_t PIN_TRS_BOARD = 14; // floating (its internal pull-up): a bare
                                        // Tells the main brain whether TRS 2-6 physically exist.
 
 constexpr uint32_t DIN_BAUD = 31250;
-constexpr uint8_t HOST_FW_VERSION = 5; // 3: the host report. 4: chained hubs, hub and spare device reporting. 5: 64 endpoint slots, stack trace events
+constexpr uint8_t HOST_FW_VERSION = 6; // 3: the host report. 4: chained hubs, hub and spare device reporting. 5: 64 endpoint slots, stack trace events. 6: 7 USB Host slots
 
-constexpr uint8_t HUB_PORTS = 4;
+constexpr uint8_t HUB_PORTS = HOST_SLOTS; // USB Host slots, 7 from host firmware 6
+constexpr uint8_t LED_PORTS = 4;           // only the first four have a light on the board
 constexpr uint8_t DIN_OUTS = 5;
 
 constexpr uint32_t PORT_MAP_HEARTBEAT_MS = 500;
@@ -382,7 +383,7 @@ void serviceControlOut() {
 
   if (portMapDirty || now - lastPortMapMs >= PORT_MAP_HEARTBEAT_MS) {
     uint8_t mask = 0;
-    for (uint8_t p = 0; p < HUB_PORTS; ++p) if (hubPorts[p].mounted) mask |= 1 << p;
+    for (uint8_t p = 0; p < HUB_PORTS; ++p) if (hubPorts[p].mounted) mask |= 1 << hostMaskBit(p + 1);
     uint32_t drops = totalDrops();
     if (trsBoard) mask |= 0x10; // bit 4: this board has TRS 2-6 wired, bits 0-3 stay hub ports only
     uint8_t pkt[4] = {CONTROL_PORT_MAP, mask, HOST_FW_VERSION, (uint8_t)(drops > 127 ? 127 : drops)};
@@ -431,7 +432,7 @@ void dispatchRealtime(uint8_t port, const uint8_t pkt[4]) {
   MidiPacket p;
   memcpy(p.b, pkt, 4);
   for (uint8_t i = 1; i <= HUB_PORTS; ++i) {
-    if ((port == LINK_PORT_ALL || port == i) && usbTarget(i)) {
+    if ((port == LINK_PORT_ALL || port == hostLinkPort(i)) && usbTarget(i)) {
       hubPorts[i - 1].rt.push(p, true);
       hubPorts[i - 1].blinkUntilMs = millis() + LED_BLINK_MS;
     }
@@ -450,10 +451,10 @@ void dispatchFromMain() {
     uint8_t pkt[4];
     uint8_t port = decodeLinkFrame(*f, pkt);
     bool critical = isCriticalPacket(pkt);
-    bool toUsb[HUB_PORTS] = {false, false, false, false};
+    bool toUsb[HUB_PORTS] = {};
     bool toDin[DIN_OUTS] = {false, false, false, false, false};
 
-    for (uint8_t i = 1; i <= HUB_PORTS; ++i) toUsb[i - 1] = (port == LINK_PORT_ALL || port == i) && usbTarget(i);
+    for (uint8_t i = 1; i <= HUB_PORTS; ++i) toUsb[i - 1] = (port == LINK_PORT_ALL || port == hostLinkPort(i)) && usbTarget(i);
     for (uint8_t i = 0; i < DIN_OUTS; ++i) toDin[i] = (port == LINK_PORT_ALL || port == LINK_PORT_DIN + i);
 
     bool ready = true;
@@ -838,7 +839,7 @@ void pumpUsbIn() {
       for (uint32_t i = 0; i + 3 < n; i += 4) {
         if ((buf[i] & 0x0F) < 2) continue; // CIN 0/1 reserved, also skips zero padding
         ++blackBox.port[p].received;
-        sendToMain(p + 1, &buf[i]);
+        sendToMain(hostLinkPort(p + 1), &buf[i]);
       }
       hp.blinkUntilMs = millis() + LED_BLINK_MS;
       noteStatusActivity(STATUS_BLUE);
@@ -997,7 +998,7 @@ void showBootStatus() {
 
 void serviceLeds() {
   const uint32_t now = millis();
-  for (uint8_t p = 0; p < HUB_PORTS; ++p) {
+  for (uint8_t p = 0; p < LED_PORTS; ++p) {
     const HubPort &hp = hubPorts[p];
     bool blinking = (int32_t)(hp.blinkUntilMs - now) > 0;
     digitalWrite(PIN_PORT_LED[p], (hp.mounted && !blinking) ? HIGH : LOW);
@@ -1011,7 +1012,7 @@ void setup() {
   pinMode(PIN_TRS_BOARD, INPUT_PULLUP);
   trsBoard = digitalRead(PIN_TRS_BOARD) == LOW;
 
-  for (uint8_t p = 0; p < HUB_PORTS; ++p) {
+  for (uint8_t p = 0; p < LED_PORTS; ++p) {
     pinMode(PIN_PORT_LED[p], OUTPUT);
     digitalWrite(PIN_PORT_LED[p], LOW);
   }

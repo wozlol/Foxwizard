@@ -97,7 +97,7 @@ constexpr uint8_t SYSEX_MFR_ID = 0x7D;   // reserved for non-commercial/educatio
 constexpr uint8_t SYSEX_DEVICE_ID = 0x4D; // 'M'
 constexpr uint8_t PROTOCOL_VERSION = 4; // 2: 45-byte routes with port masks, GET_STATUS. 3: clock settings, LEARN. 4: 53-byte routes with feature fields, feature blocks
 constexpr uint8_t FW_VERSION_MAJOR = 1;
-constexpr uint8_t FW_VERSION_MINOR = 73;
+constexpr uint8_t FW_VERSION_MINOR = 74;
 constexpr uint8_t FW_CHUNK_BYTES = 128;          // firmware bytes per FW_DATA message, 147 once packed
 constexpr uint32_t FW_REBOOT_DELAY_MS = 300;     // lets the FW_END ACK reach the host before rebooting
 const char DEVICE_NAME[] = "FoxWizard Mini MIDI Multitool"; // long name sent in the SysEx IDENTITY_REPLY
@@ -136,7 +136,7 @@ enum SysexCmd : uint8_t {
   CMD_PREVIEW_BRIGHTNESS = 0x30,
   CMD_PLAY_NOTE = 0x33, // Patchling's piano: on, note, velocity to every port on every channel, no reply
   CMD_CLEAR_PLOCKS = 0x34, // 1.59: forget every Per-Note Parameter Lock, no payload, no reply
-  CMD_GET_HOST_REPORT = 0x35, // 1.63: payload page 0 or 1
+  CMD_GET_HOST_REPORT = 0x35, // 1.63: payload page 0 to 2 (0 or 1 before 1.74)
   CMD_HOST_REPORT_DATA = 0x36, // page, 1 when the whole report has arrived, then pack7 of that page's 120 bytes
   CMD_COMMIT = 0x31,
   CMD_FACTORY_RESET = 0x32,
@@ -161,11 +161,12 @@ constexpr uint8_t SOURCE_COUNT = 5;
 // Bits 0-1 match the legacy outDevice values (1 TRS/DIN, 2 USB Device, 3 both).
 constexpr uint16_t PORT_TRS = 1u << 0;
 constexpr uint16_t PORT_USB = 1u << 1;
-constexpr uint16_t PORT_HOST1 = 1u << 2;     // USB Host 1-4 are bits 2-5
+constexpr uint16_t PORT_HOST1 = 1u << 2;     // USB Host 1-4 are bits 2-5, USB Host 5-7 are bits 11-13 (1.74)
 constexpr uint16_t PORT_TRS2 = 1u << 6;      // TRS 2-6 are bits 6-10
-constexpr uint16_t PORT_HOST_ALL = 0x003C;
+constexpr uint16_t PORT_HOST_ALL = 0x383C;
 constexpr uint16_t PORT_TRS2_6 = 0x07C0;
-constexpr uint8_t PORT_COUNT = 11;
+constexpr uint8_t PORT_COUNT = 14;
+constexpr uint8_t LINK_PORTS_MAX = HOST_SLOTS + 5; // the link ports an output mask can name: the USB Host slots and TRS 2-6
 enum : uint8_t { MODE_USB_ADAPTOR = 0, MODE_ROUTER = 1 };
 enum : uint8_t {
   BTN_PANIC = 0,
@@ -240,7 +241,7 @@ struct GlobalSettings {
   uint8_t ledBrightnessStep;
   // Global clock (protocol 3). Zero means the default in every field, see effectiveBpm() and friends,
   // so saves from before these fields existed load as defaults.
-  uint8_t clockSource;  // 0 = the FoxWizard is master, 1-7 = follow port bit 0-6 (TRS/DIN ... TRS 2)
+  uint8_t clockSource;  // 0 = the FoxWizard is master, 1-14 = follow port bit 0-13 (TRS/DIN ... USB Host 7)
   uint16_t bpm;         // 20-300, 0 = 120
   uint8_t beatsPerBar;  // time signature top, 0 = 4
   uint8_t beatUnit;     // time signature bottom (2, 4, 8, 16), 0 = 4
@@ -336,8 +337,8 @@ uint32_t hostFlowMs = 0;
 bool pausingHost = false;
 uint32_t lastFlowSentMs = 0;
 SysexState hostSysex[LINK_PORT_COUNT]; // per host port, so two devices' SysEx never mix on input
-uint8_t currentHostPort = 1;             // hub port (1-4) of the USB Host message being handled
-uint8_t hostPortMask = 0;                // bit n = USB MIDI device mounted on hub port n+1
+uint8_t currentHostPort = 1;             // USB Host slot (1-7) of the USB Host message being handled
+uint8_t hostPortMask = 0;                // the host brain's mounted-slots byte: slot s is bit hostMaskBit(s), see foxwizard_link.h
 bool hostHasTrs = true;                  // bit 4 of the port map byte: the sidecar has TRS 2-6 wired
                                           // (a board added on top of it), not just a bare module
 uint8_t hostFwVersion = 0;
@@ -352,7 +353,8 @@ uint8_t hostHubJacks = 0;                // downstream jacks of the hubs attache
 uint8_t hostHubCount = 0;                // hubs attached
 uint8_t hostWaiting = 0;                 // devices plugged in with no free USB Host slot
 uint8_t hostReport[HOST_REPORT_BYTES];   // 1.63: the host brain's report from its last restart
-uint8_t hostReportGot[HOST_REPORT_BYTES / 16]; // which 2-byte pieces have arrived
+uint8_t hostReportGot[(HOST_REPORT_BYTES / 2 + 7) / 8]; // which 2-byte pieces have arrived
+constexpr uint8_t HOST_REPORT_PAGE = 120; // bytes of the report in each reply
 
 // Stuck-note guard. Notes held from USB Host and TRS 2 inputs, by original channel and note: 0 = not
 // held, 1-4 = the USB Host port, 0x80 = TRS 2. If the host brain restarts or disappears, their Note
@@ -818,11 +820,15 @@ NoteHoldStack &noteStackFor(uint8_t inputDevice, uint8_t channel) {
   return noteStacks[inputDevice == DEV_USB ? 1 : inputDevice == DEV_HOST ? 2 : inputDevice == DEV_TRS2 ? 3 : 0][channel];
 }
 
+// The port bit of a USB Host slot, 1-7 (below the types: a function up with the constants would put
+// the auto prototypes of everything after it above the types they use).
+uint16_t hostPortBit(uint8_t slot) { return slot <= 4 ? (uint16_t)(PORT_HOST1 << (slot - 1)) : (uint16_t)(1u << (slot + 6)); }
+
 // The port a message being handled came in on. USB Host uses currentHostPort.
 uint16_t sourcePort(uint8_t inputDevice) {
   switch (inputDevice) {
     case DEV_USB: return PORT_USB;
-    case DEV_HOST: return PORT_HOST1 << (currentHostPort - 1);
+    case DEV_HOST: return hostPortBit(currentHostPort);
     case DEV_TRS2: return PORT_TRS2;
     default: return PORT_TRS;
   }
@@ -1768,7 +1774,7 @@ uint16_t effectiveBpm() {
 
 uint16_t clockFollowPort() {
   const uint8_t src = globalSettings.clockSource;
-  return (src >= 1 && src <= 7) ? (uint16_t)(1u << (src - 1)) : 0;
+  return (src >= 1 && src <= 14) ? (uint16_t)(1u << (src - 1)) : 0; // 1.74: up to USB Host 7, bit 13
 }
 
 fw::ClockConfig clockConfig() {
@@ -1914,11 +1920,11 @@ uint16_t availablePorts() {
 
 // Link ports for an output mask: USB Host 1-4 are link ports 1-4 (only hub ports with a device
 // mounted), TRS 2-6 are link ports 5-9.
-uint8_t linkPortsFor(uint16_t mask, uint8_t ports[9]) {
+uint8_t linkPortsFor(uint16_t mask, uint8_t ports[LINK_PORTS_MAX]) {
   uint8_t n = 0;
   if (!hostPresent()) return 0;
-  for (uint8_t p = 1; p <= 4; ++p) {
-    if ((mask & (PORT_HOST1 << (p - 1))) && (hostPortMask & (1 << (p - 1)))) ports[n++] = p;
+  for (uint8_t p = 1; p <= HOST_SLOTS; ++p) {
+    if ((mask & hostPortBit(p)) && (hostPortMask & (1 << hostMaskBit(p)))) ports[n++] = hostLinkPort(p);
   }
   for (uint8_t i = 0; i < 5; ++i) {
     if (mask & (PORT_TRS2 << i)) ports[n++] = LINK_PORT_DIN + i;
@@ -1940,7 +1946,7 @@ void sendToOutputs(uint16_t mask, uint8_t statusHi, uint8_t channel, uint8_t dat
     usbSend(packet);
     noteActivity(ledUsb);
   }
-  uint8_t ports[9];
+  uint8_t ports[LINK_PORTS_MAX];
   uint8_t n = linkPortsFor(mask, ports);
   for (uint8_t i = 0; i < n; ++i) linkSend(ports[i], packet);
   if (n) noteActivity(ledOut);
@@ -3721,7 +3727,7 @@ void sendSysexToPorts(uint16_t mask, const uint8_t *bytes, uint8_t len) {
     UsbOutSysexAccum acc;
     for (uint8_t i = 0; i < len; ++i) usbSysexByte(acc, bytes[i]);
   }
-  uint8_t ports[9];
+  uint8_t ports[LINK_PORTS_MAX];
   const uint8_t n = linkPortsFor(mask, ports);
   if (n) {
     UsbOutSysexAccum acc;
@@ -4847,7 +4853,7 @@ void forwardSysexByte(uint8_t fromInputDevice, uint16_t destPorts, uint8_t b) {
     noteActivity(ledOut);
   }
   if (destPorts & PORT_USB) usbSysexByte(usbOutFrom[fromInputDevice], b);
-  uint8_t ports[9];
+  uint8_t ports[LINK_PORTS_MAX];
   uint8_t n = linkPortsFor(destPorts, ports);
   if (n) {
     linkSysexByte(linkOutFrom[fromInputDevice], ports, n, b);
@@ -4941,7 +4947,7 @@ void sendReply(uint8_t sourcePort) {
     trsSend(replyBuf, replyLen); // a protocol reply, not activity, see usbSysexByte above
   } else if (sourcePort == DEV_HOST || sourcePort == DEV_TRS2) {
     UsbOutSysexAccum accum; // reply goes back out the sidecar port the command came in on
-    const uint8_t port = (sourcePort == DEV_HOST) ? currentHostPort : LINK_PORT_DIN;
+    const uint8_t port = (sourcePort == DEV_HOST) ? hostLinkPort(currentHostPort) : LINK_PORT_DIN;
     for (uint8_t i = 0; i < replyLen; ++i) linkSysexByte(accum, &port, 1, replyBuf[i]);
   } else {
     UsbOutSysexAccum accum; // fresh accumulator: our own replies are always short + self-contained
@@ -5056,7 +5062,7 @@ void handleSysexCommand(uint8_t sourcePort, const uint8_t *cmdBuf, uint8_t cmdLe
     case CMD_GET_STATUS: {
       beginReply(CMD_STATUS_DATA);
       appendReply(hostPresent() ? 1 : 0);
-      appendReply(hostPresent() ? (hostPortMask & 0x0F) : 0);
+      appendReply(hostPresent() ? ((hostPortMask & 0x0F) | ((hostPortMask >> 1) & 0x70)) : 0); // bit n = slot n+1, 7 bits
       appendReply(hostDropCount & 0x7F);
       appendReply(hostRestartReason & 0x7F);
       appendReply(hostRestartPort & 0x7F);
@@ -5071,19 +5077,21 @@ void handleSysexCommand(uint8_t sourcePort, const uint8_t *cmdBuf, uint8_t cmdLe
       appendReply(hostHubJacks & 0x7F);
       appendReply(hostHubCount & 0x7F);
       appendReply(hostWaiting & 0x7F);
+      appendReply(hostPresent() ? (hostFwVersion & 0x7F) : 0); // 1.74: 6 and later have 7 USB Host slots, before that 4
       sendReply(sourcePort);
       break;
     }
 
     case CMD_GET_HOST_REPORT: {
-      const uint8_t page = payloadLen ? (payload[0] & 1) : 0;
+      uint8_t page = payloadLen ? payload[0] : 0;
+      if (page > 2) page = 2;
       bool complete = true;
-      for (uint8_t i = 0; i < sizeof(hostReportGot); ++i) complete = complete && hostReportGot[i] == 0xFF;
+      for (uint16_t k = 0; k < HOST_REPORT_BYTES / 2; ++k) complete = complete && (hostReportGot[k >> 3] & (1 << (k & 7)));
       beginReply(CMD_HOST_REPORT_DATA);
       appendReply(page);
       appendReply(complete ? 1 : 0);
       uint8_t packed[sizeof(replyBuf)];
-      const uint8_t packedLen = pack7(hostReport + page * (HOST_REPORT_BYTES / 2), HOST_REPORT_BYTES / 2, packed);
+      const uint8_t packedLen = pack7(hostReport + page * HOST_REPORT_PAGE, HOST_REPORT_PAGE, packed);
       for (uint8_t i = 0; i < packedLen; ++i) appendReply(packed[i]);
       sendReply(sourcePort);
       break;
@@ -5468,7 +5476,7 @@ void pumpUsbIn() {
 // Host brain frames: ports 1-4 are hub ports, 5 is its DIN IN, 15 is control. All parsing is
 // bounded per loop and reads only what the PIO receive interrupt has already buffered.
 // Releases every note still held from the host brain's inputs, as if its Note Off had arrived. With
-// onlyPort (1-4), just the notes from that hub port.
+// onlyPort (1-7), just the notes from that USB Host slot.
 void releaseSidecarNotes(uint8_t onlyPort = 0) {
   for (uint8_t ch = 0; ch < 16; ++ch) {
     for (uint8_t note = 0; note < 128; ++note) {
@@ -5523,11 +5531,12 @@ void pumpHostIn() {
         // A device unplugged mid-note never sends its Note Offs, so its held notes (and any arp they
         // feed) are released here. Bit 4 says whether TRS 2-6 are wired, not a hub port, masked off
         // before comparing mounted ports.
-        const uint8_t gone = hostPortMask & ~packet[1] & 0x0F;
-        if (packet[1] & ~hostPortMask & 0x0F) lpRepaint = true; // a device plugged in might be a Launchpad that's lost its lights
-        hostPortMask = packet[1] & 0x0F;
+        const uint8_t mounted = packet[1] & ~0x10;
+        const uint8_t gone = hostPortMask & ~mounted;
+        if (mounted & ~hostPortMask) lpRepaint = true; // a device plugged in might be a Launchpad that's lost its lights
+        hostPortMask = mounted;
         hostHasTrs = (packet[1] & 0x10) != 0;
-        for (uint8_t p = 1; p <= 4; ++p) if (gone & (1 << (p - 1))) releaseSidecarNotes(p);
+        for (uint8_t p = 1; p <= HOST_SLOTS; ++p) if (gone & (1 << hostMaskBit(p))) releaseSidecarNotes(p);
         hostFwVersion = packet[2];
         hostDropCount = packet[3];
         hostLastStatusMs = millis();
@@ -5557,13 +5566,13 @@ void pumpHostIn() {
       continue;
     }
     if (!hostPresent()) continue; // MIDI only counts once the sidecar has identified itself
-    if (port >= 1 && port <= 4) {
-      currentHostPort = port;
+    if (hostSlotFromLink(port)) {
+      currentHostPort = hostSlotFromLink(port);
       handleUsbMidiPacket(DEV_HOST, hostSysex[port], packet);
     } else if (port == LINK_PORT_DIN) {
       handleUsbMidiPacket(DEV_TRS2, hostSysex[port], packet);
     }
-    // Other ports are reserved (10-14: C3 BLE MIDI, planned).
+    // Other ports are reserved (13-14: C3 BLE MIDI, planned).
   }
 }
 

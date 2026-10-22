@@ -109,8 +109,8 @@ The sidecar is a bare module with 4 USB host ports and nothing else, or that mod
 added on top of it that wires up TRS 2-6 (shares the main brain's DIN/TRS pin layout: one shared
 DIN IN/TRS OUT 1 plus four more TRS OUTs). GP14 tells the firmware which:
 
-- **Floating** (its internal pull-up, nothing wired to it): a bare module. USB Host 1-4 only.
-- **Grounded:** a TRS board is present. USB Host 1-4 plus TRS 2-6.
+- **Floating** (its internal pull-up, nothing wired to it): a bare module. USB Host only.
+- **Grounded:** a TRS board is present. USB Host plus TRS 2-6.
 
 The sidecar reads GP14 once at power on and sends it to the main brain as bit 4 of the port map
 frame (`CONTROL_PORT_MAP`, alongside the hub's mounted-device bits). The main brain reports it to
@@ -123,7 +123,7 @@ A board adding TRS 2-6 grounds GP14; nothing else changes in the firmware.
 2. Check continuity between the 5V pin and USB-C VBUS.
 3. Power the Zero from 5 V on the 5V pin. Never connect the computer while that supply is on.
 4. Plug a USB-C male to USB-A female OTG adapter into the Zero, then a USB-A hub or MIDI device into that.
-5. Use a hub, or plug one device straight in. A device on the first hub keeps its jack number, and a device plugged straight in counts as 1. Hubs made of chained chips, or a hub plugged into a hub, number their jacks twice over, so those devices take a free slot, the highest first. The host brain handles up to 4 hubs and 13 devices, with 64 USB endpoint slots between them (a device takes one for itself, and two for each MIDI interface), but has 4 USB Host slots, so up to four devices work at once whichever jacks they're in. A fifth waits, and takes the next slot to free up. A device's other MIDI interfaces aren't separate ports.
+5. Use a hub, or plug one device straight in. A device on the first hub keeps its jack number, and a device plugged straight in counts as 1. Hubs made of chained chips, or a hub plugged into a hub, number their jacks twice over, so those devices take a free slot, the highest first. The host brain handles up to 4 hubs and 13 devices, with 64 USB endpoint slots between them (a device takes one for itself, and two for each MIDI interface), and has 7 USB Host slots, so up to seven devices work at once whichever jacks they're in. An eighth waits, and takes the next slot to free up. A device's other MIDI interfaces aren't separate ports.
 
 Patchling shows only the USB Host ports there's room for: one with no hub, otherwise the hubs' jacks up to 4. A port shows once a device is plugged into the one before it, and stays until Patchling reconnects.
 
@@ -154,17 +154,18 @@ Only byte 0 has bit 7 set, so after any glitch the receiver resyncs on the next 
 | Port | Host to main | Main to host |
 |---|---|---|
 | 0 | | Every USB device and every DIN OUT (the main brain doesn't use it) |
-| 1-4 | From hub port 1-4 | Hub port 1-4 only |
+| 1-4 | From USB Host slot 1-4 | USB Host slot 1-4 only |
 | 5 | From host DIN IN | DIN OUT 1 only |
 | 6-9 | | DIN OUT 2-5 only |
-| 10-14 | From C3 BLE MIDI devices (planned) | C3 BLE MIDI devices (planned) |
+| 10-12 | From USB Host slot 5-7 (host firmware 6) | USB Host slot 5-7 only |
+| 13-14 | From C3 BLE MIDI devices (planned) | C3 BLE MIDI devices (planned) |
 | 15 | Control | Control |
 
 Port 15 carries control frames, with the frame type in the CIN field:
 
 | Type | Direction | Contents |
 |---|---|---|
-| 1, port map | Host to main | Byte 1 = connected port mask (bit 0 = hub port 1, bit 4 = TRS 2-6 present, 1.44), byte 2 = host firmware version, byte 3 = drop count (max 127). Sent on any plug or unplug and every 500 ms. |
+| 1, port map | Host to main | Byte 1 = mounted slots (bits 0-3 = USB Host slot 1-4, bit 4 = TRS 2-6 present, 1.44, bits 5-7 = USB Host slot 5-7, host firmware 6), byte 2 = host firmware version, byte 3 = drop count (max 127). Sent on any plug or unplug and every 500 ms. |
 | 2, flow | Both ways | Byte 1 = 1 pause, 0 resume. Sent on change and every 100 ms. |
 | 3, host restart | Host to main | Byte 1 = last restart reason, byte 2 = hub port (for a wedge), byte 3 = restart count. Sent with the port map. |
 | 6, host hub | Host to main | Byte 1 = downstream jacks of the hubs attached (0 no hub), byte 2 = hubs attached, byte 3 = devices waiting for a free slot. Sent with the port map. Host firmware 4. |
@@ -221,7 +222,7 @@ The host brain reports its total drop count in its port map frame. The main brai
 |---|---|---|---|
 | TRS/DIN | yes | yes | Main brain |
 | USB Device | yes | yes | Main brain, to a computer |
-| USB Host 1-4 | yes | yes | Sidecar, one per hub port |
+| USB Host 1-7 | yes | yes | Sidecar, one per slot (7 from host firmware 6, 4 before) |
 | TRS 2 | yes | yes | Sidecar DIN IN and DIN OUT 1 |
 | TRS 3-6 | | yes | Sidecar DIN OUT 2-5 |
 
@@ -272,6 +273,10 @@ For old octave-per-row Launchpads (Mini mk1 and mk2). A route with the Launchpad
 - **Buffer armed twice:** the only fault seen so far, and only right after plugging USB devices in or out, never while playing. Likely a race in TinyUSB's RP2040 hot-plug cleanup. It recovers in about a second, so Patchling shows it as a brief yellow "reset its USB ports after a device change" instead.
 - **Stuck notes:** when the sidecar restarts or disappears, the main brain sends Note Offs for every note still held from USB Host and TRS 2, through the same routes as a real Note Off. When the sidecar restarts or comes back, the main brain also sends All Notes Off (CC 123) on all channels to the sidecar's ports only, for notes those outputs missed while it was gone. The main brain's own ports are left alone.
 - **Main brain:** handles at most 64 USB Device packets and 64 TRS/DIN bytes per loop, so a flood such as a DAW feedback loop can't starve the link, the lights, or the button.
+
+## Planned
+
+- **Shared port slots:** a route's ports are 16 switches, 14 in use (USB, TRS/DIN, USB Host 1-7, TRS 2-6). Bits 14-15 and link ports 13-14 are kept for BLE MIDI. Later, a USB Host slot with no device in it, and the TRS and BLE ports, are meant to share the spare slots first come, first served, so a very full setup uses everything the format has. That needs ports numbered by what's plugged in rather than fixed bits, which is a route format change.
 
 ## Limits
 
