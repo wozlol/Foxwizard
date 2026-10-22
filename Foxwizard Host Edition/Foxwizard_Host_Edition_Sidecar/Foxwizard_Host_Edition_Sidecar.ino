@@ -68,7 +68,7 @@ constexpr uint8_t PIN_TRS_BOARD = 14; // floating (its internal pull-up): a bare
                                        // Tells the main brain whether TRS 2-6 physically exist.
 
 constexpr uint32_t DIN_BAUD = 31250;
-constexpr uint8_t HOST_FW_VERSION = 3; // 3: the host report
+constexpr uint8_t HOST_FW_VERSION = 4; // 3: the host report. 4: hubs made of two chips
 
 constexpr uint8_t HUB_PORTS = 4;
 constexpr uint8_t DIN_OUTS = 5;
@@ -101,6 +101,7 @@ const uint8_t CIN_LENGTH[16] = {0, 0, 2, 3, 3, 1, 2, 3, 3, 3, 3, 3, 2, 2, 3, 1};
 // ============================================================================================
 struct HubPort {
   bool mounted = false;
+  uint8_t daddr = 0; // the USB device in this slot, so another MIDI interface of it isn't a second port
   bool writable = false; // device has a MIDI OUT endpoint
   uint8_t midiIdx = 0xFF;
   MidiQueue<MidiPacket, 32, 0> rt;
@@ -176,6 +177,7 @@ struct BlackBoxPort {
   uint16_t queued;          // at a recovery restart: packets waiting
   uint16_t idleMs;          // at a recovery restart: time since it last took anything
   bool mounted, writable, skipLogged;
+  uint8_t hubPort, tier; // where it's really plugged in: its hub's port number, and 0 straight in, 1 first hub, 2 behind another hub
 };
 struct BlackBoxEvent { uint32_t ms; uint8_t type, port, a, b; };
 struct BlackBox {
@@ -219,7 +221,7 @@ void buildHostReport(uint8_t reason, uint8_t port, uint32_t count) {
   for (uint8_t p = 0; p < HUB_PORTS; ++p) {
     const BlackBoxPort &b = blackBox.port[p];
     uint8_t *q = r + 16 + p * HOST_REPORT_PORT_BYTES;
-    q[0] = (b.mounted ? 1 : 0) | (b.writable ? 2 : 0);
+    q[0] = (b.mounted ? 1 : 0) | (b.writable ? 2 : 0) | ((b.hubPort & 7) << 2) | ((b.tier & 3) << 5);
     put16(q + 1, b.vid);
     put16(q + 3, b.pid);
     put32(q + 5, b.sent);
@@ -666,6 +668,7 @@ void pumpDinIn() {
 // ============================================================================================
 void resetHubPort(HubPort &hp) {
   hp.mounted = false;
+  hp.daddr = 0;
   hp.writable = false;
   hp.midiIdx = 0xFF;
   hp.rt.clear();
@@ -678,12 +681,28 @@ void tuh_midi_mount_cb(uint8_t idx, const tuh_midi_mount_cb_t *mount_cb_data) {
   if (idx >= CFG_TUH_MIDI) return;
   tuh_bus_info_t info;
   if (!tuh_bus_info_get(mount_cb_data->daddr, &info)) return;
-  uint8_t port = info.hub_port ? info.hub_port : 1; // no hub: device plugged straight in counts as port 1
-  if (port > HUB_PORTS || hubPorts[port - 1].mounted) return;
+  for (const HubPort &other : hubPorts) if (other.mounted && other.daddr == mount_cb_data->daddr) return; // its other MIDI interface
+
+  // The slot (USB Host 1-4). A device on the first hub keeps its jack number, a device plugged straight
+  // in counts as 1. Behind a second hub (a hub made of two chips, or one plugged into a hub) jack
+  // numbers repeat, so those prefer the highest free slot and don't take the number a jack on the
+  // first hub will want. Any of them falls back to a free slot, so four devices always work.
+  uint8_t tier = 0;
+  if (info.hub_addr) {
+    tuh_bus_info_t hubInfo;
+    tier = (tuh_bus_info_get(info.hub_addr, &hubInfo) && !hubInfo.hub_addr) ? 1 : 2;
+  }
+  const uint8_t jack = info.hub_port ? info.hub_port : 1;
+  uint8_t port = 0;
+  if (tier <= 1 && jack <= HUB_PORTS && !hubPorts[jack - 1].mounted) port = jack;
+  if (!port && tier == 2) for (uint8_t p = HUB_PORTS; p >= 1 && !port; --p) if (!hubPorts[p - 1].mounted) port = p;
+  if (!port) for (uint8_t p = 1; p <= HUB_PORTS && !port; ++p) if (!hubPorts[p - 1].mounted) port = p;
+  if (!port) return; // all four slots are taken
 
   HubPort &hp = hubPorts[port - 1];
   resetHubPort(hp);
   hp.mounted = true;
+  hp.daddr = mount_cb_data->daddr;
   hp.writable = mount_cb_data->tx_cable_count > 0;
   hp.midiIdx = idx;
   midiIdxToPort[idx] = port;
@@ -693,6 +712,8 @@ void tuh_midi_mount_cb(uint8_t idx, const tuh_midi_mount_cb_t *mount_cb_data) {
   tuh_vid_pid_get(mount_cb_data->daddr, &bb.vid, &bb.pid);
   bb.mounted = true;
   bb.writable = hp.writable;
+  bb.hubPort = info.hub_port;
+  bb.tier = tier;
   logEvent(HOST_EVENT_MOUNT, port);
 }
 

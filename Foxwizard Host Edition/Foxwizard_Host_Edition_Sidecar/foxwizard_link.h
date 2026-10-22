@@ -24,7 +24,7 @@ constexpr uint8_t CONTROL_HOST_REPORT = 5; // host -> main. byte 1 = index, 2-3 
 // after a recovery restart. Multi-byte values are little-endian.
 constexpr uint8_t HOST_REPORT_LAYOUT = 1;
 constexpr uint16_t HOST_REPORT_BYTES = 240;
-constexpr uint8_t HOST_REPORT_PORT_BYTES = 24; // per hub port, 4 of them from byte 16
+constexpr uint8_t HOST_REPORT_PORT_BYTES = 24; // per slot, 4 of them from byte 16. Byte 0: bit 0 mounted, 1 writable, 2-4 its hub port, 5-6 tier
 constexpr uint8_t HOST_REPORT_EVENTS = 16;     // 8 bytes each, from byte 112, oldest first
 // Host report event types
 constexpr uint8_t HOST_EVENT_BOOT = 1;     // a = restart reason

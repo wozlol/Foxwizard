@@ -49,7 +49,8 @@ export function parseHostReport(b) {
   for (let p = 0; p < 4; p++) {
     const o = 16 + p * 24;
     ports.push({
-      port: p + 1, mounted: !!(b[o] & 1), writable: !!(b[o] & 2), vid: u16(b, o + 1), pid: u16(b, o + 3),
+      port: p + 1, mounted: !!(b[o] & 1), writable: !!(b[o] & 2), hubPort: (b[o] >> 2) & 7, tier: (b[o] >> 5) & 3,
+      vid: u16(b, o + 1), pid: u16(b, o + 3),
       sent: u32(b, o + 5), received: u32(b, o + 9), last: b.slice(o + 13, o + 17), stuck: b.slice(o + 17, o + 21),
       queued: u16(b, o + 21), idleMs: b[o + 23] * 100
     });
@@ -83,7 +84,8 @@ export function hostReportText(r, headline) {
   lines.push('');
   for (const p of r.ports) {
     if (!p.vid && !p.pid && !p.sent && !p.received) { lines.push(`USB Host ${p.port}: empty`); continue; }
-    lines.push(`USB Host ${p.port}: ${deviceName(p.vid, p.pid)}${p.mounted ? '' : ' (disconnected)'}${p.writable ? '' : ', no MIDI out'}`);
+    const where = p.tier === 0 ? 'plugged straight in' : (p.tier === 2 ? `behind a second hub, its port ${p.hubPort}` : (p.hubPort === p.port ? '' : `hub port ${p.hubPort}`));
+    lines.push(`USB Host ${p.port}: ${deviceName(p.vid, p.pid)}${where ? ` (${where})` : ''}${p.mounted ? '' : ' (disconnected)'}${p.writable ? '' : ', no MIDI out'}`);
     lines.push(`  Took ${p.sent} packets, sent ${p.received}. Last taken: ${packetText(p.last)}.`);
     if (p.queued || p.idleMs) lines.push(`  At restart: ${p.queued} waiting, front one ${packetText(p.stuck)}, nothing taken for ${secs(p.idleMs)}.`);
   }

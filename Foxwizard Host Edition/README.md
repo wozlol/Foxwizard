@@ -123,7 +123,7 @@ A board adding TRS 2-6 grounds GP14; nothing else changes in the firmware.
 2. Check continuity between the 5V pin and USB-C VBUS.
 3. Power the Zero from 5 V on the 5V pin. Never connect the computer while that supply is on.
 4. Plug a USB-C male to USB-A female OTG adapter into the Zero, then a USB-A hub or MIDI device into that.
-5. Use a 4-port hub. Devices on hub ports above 4 are ignored. With no hub, a device plugged straight in counts as port 1.
+5. Use a hub with 4 or more ports. A device on the first hub keeps its jack number, and a device plugged straight in counts as 1. Hubs made of two chips, or a hub plugged into a hub, number their jacks twice over, so those devices take a free slot, the highest first. Up to four devices work whichever jacks they're in. A device's other MIDI interfaces aren't separate ports.
 
 The Zero's onboard RGB LED (GP16) is a diagnostic light, off by default, the same no-blink ethic as
 the main brain's own activity lights, with one deliberate exception for a dead link:
