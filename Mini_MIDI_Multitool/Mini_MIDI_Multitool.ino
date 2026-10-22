@@ -97,7 +97,7 @@ constexpr uint8_t SYSEX_MFR_ID = 0x7D;   // reserved for non-commercial/educatio
 constexpr uint8_t SYSEX_DEVICE_ID = 0x4D; // 'M'
 constexpr uint8_t PROTOCOL_VERSION = 4; // 2: 45-byte routes with port masks, GET_STATUS. 3: clock settings, LEARN. 4: 53-byte routes with feature fields, feature blocks
 constexpr uint8_t FW_VERSION_MAJOR = 1;
-constexpr uint8_t FW_VERSION_MINOR = 82;
+constexpr uint8_t FW_VERSION_MINOR = 83;
 constexpr uint8_t FW_CHUNK_BYTES = 128;          // firmware bytes per FW_DATA message, 147 once packed
 constexpr uint32_t FW_REBOOT_DELAY_MS = 300;     // lets the FW_END ACK reach the host before rebooting
 const char DEVICE_NAME[] = "FoxWizard Mini MIDI Multitool"; // long name sent in the SysEx IDENTITY_REPLY
@@ -364,6 +364,16 @@ uint8_t sidecarHeld[16][128];
 // still holding doesn't drop it. The loop's own holds are what loopSounding says it's playing (1.78),
 // so a flag can't be left set with nothing to clear it.
 uint8_t noteOwners[16][128];
+
+// 1.83, how hard the main loop is working since Patchling last asked, for its clock row: the longest
+// pass round the loop, passes the link input limit stopped reading with more waiting, passes input was
+// held back because an output queue was filling, and how full the output queues and the link got.
+uint16_t perfLoopMaxUs = 0;
+uint16_t perfLinkLimitHits = 0;
+uint16_t perfInputHeldBack = 0;
+uint16_t perfLinkHigh = 0;   // bytes waiting from the host brain
+uint16_t perfTrsHigh = 0;    // bytes queued for TRS/DIN
+uint16_t perfUsbHigh = 0;    // packets queued for USB
 bool noteOffSwallowed = false; // this Note Off is for a note the other still holds
 bool hostWasPresent = false;
 bool hostEverPresent = false; // the first time the host brain appears isn't a return
@@ -5155,6 +5165,17 @@ void handleSysexCommand(uint8_t sourcePort, const uint8_t *cmdBuf, uint8_t cmdLe
       appendReply(hostHubCount & 0x7F);
       appendReply(hostWaiting & 0x7F);
       appendReply(hostPresent() ? (hostFwVersion & 0x7F) : 0); // 1.74: 6 and later have 7 USB Host slots, before that 4
+      // 1.83: how hard the main loop has worked since the last status, then reset. Longest pass in
+      // microseconds (14 bits), loops stopped at the link input limit and loops input was held back (each
+      // 0-127), and the link, TRS and USB queues' fullest as 0-127 of their size.
+      appendReply(perfLoopMaxUs & 0x7F);
+      appendReply((perfLoopMaxUs >> 7) & 0x7F);
+      appendReply(perfLinkLimitHits > 127 ? 127 : perfLinkLimitHits);
+      appendReply(perfInputHeldBack > 127 ? 127 : perfInputHeldBack);
+      appendReply((uint8_t)((uint32_t)perfLinkHigh * 127 / LINK_RX_BUFFER));
+      appendReply((uint8_t)((uint32_t)perfTrsHigh * 127 / TRS_QUEUE_BYTES));
+      appendReply((uint8_t)((uint32_t)perfUsbHigh * 127 / USB_QUEUE_PACKETS));
+      perfLoopMaxUs = perfLinkLimitHits = perfInputHeldBack = perfLinkHigh = perfTrsHigh = perfUsbHigh = 0;
       sendReply(sourcePort);
       break;
     }
@@ -5596,7 +5617,7 @@ void serviceStuckNoteGuard() {
 
 void pumpHostIn() {
   uint16_t budget = LINK_RX_BUDGET;
-  if (!outputsHaveRoom()) return; // backlog builds, so the host brain is asked to pause
+  if (!outputsHaveRoom()) { ++perfInputHeldBack; return; } // backlog builds, so the host brain is asked to pause
   while (budget-- && linkSerial.available() > 0) {
     if (!linkReader.feed((uint8_t)linkSerial.read())) continue;
     uint8_t packet[4];
@@ -5651,6 +5672,7 @@ void pumpHostIn() {
     }
     // Other ports are reserved (13-14: C3 BLE MIDI, planned).
   }
+  if (budget == 0xFFFF && linkSerial.available() > 0) ++perfLinkLimitHits; // stopped at the limit, more waiting
 }
 
 // ============================================================================================
@@ -6029,6 +6051,7 @@ void setup() {
 }
 
 void loop() {
+  const uint32_t loopStartUs = micros();
   rp2040.wdt_reset();
 
   // The OTA bootloader installs the staged firmware during this reboot, then starts it.
@@ -6059,4 +6082,13 @@ void loop() {
   pumpUsbOut();
   serviceLinkFlow();
   pumpLinkOut();
+
+  const uint32_t passUs = micros() - loopStartUs;
+  if (passUs > perfLoopMaxUs) perfLoopMaxUs = passUs > 65535 ? 65535 : (uint16_t)passUs;
+  const uint16_t waiting = (uint16_t)linkSerial.available();
+  if (waiting > perfLinkHigh) perfLinkHigh = waiting;
+  const uint16_t trsUsed = TRS_QUEUE_BYTES - 1 - trsFree();
+  if (trsUsed > perfTrsHigh) perfTrsHigh = trsUsed;
+  const uint16_t usbUsed = USB_QUEUE_PACKETS - 1 - usbQueueFree();
+  if (usbUsed > perfUsbHigh) perfUsbHigh = usbUsed;
 }

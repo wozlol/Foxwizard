@@ -681,7 +681,13 @@ export class DeviceLink extends EventTarget {
       // 1.71, host firmware 4: the hubs attached. hubKnown is false from older firmware, which shows all 4 ports.
       hubKnown: reply[10] === 1, hubJacks: reply[11] ?? 0, hubCount: reply[12] ?? 0, hostWaiting: reply[13] ?? 0,
       // 1.74: the host brain's firmware version, 6 and later have 7 USB Host slots, before that 4
-      hostFwVersion: reply[14] ?? 0
+      hostFwVersion: reply[14] ?? 0,
+      // 1.83: how hard the main loop worked since the last status. loopUs is the longest pass round the
+      // loop, the rest are counts of loops or 0-127 of a queue's size. Absent from older firmware.
+      perf: reply.length >= 22 ? {
+        loopUs: reply[15] | (reply[16] << 7), linkLimit: reply[17], heldBack: reply[18],
+        linkPct: Math.round(reply[19] * 100 / 127), trsPct: Math.round(reply[20] * 100 / 127), usbPct: Math.round(reply[21] * 100 / 127)
+      } : null
     };
   }
 

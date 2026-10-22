@@ -954,7 +954,7 @@ looperRow.addEventListener('change', (e) => {
 // later the looper and timed route features.
 // ============================================================================================
 const clockRow = document.getElementById('clockRow');
-let clockReadout = { bpm: null, status: 0 };
+let clockReadout = { bpm: null, status: 0, perf: null };
 
 function clockRowActive() {
   const featureOn = (bit) => state.routes.some((r) => r.features & bit);
@@ -975,13 +975,27 @@ function clockSourceOptions(g) {
     .join('');
 }
 
+// How hard the main loop worked in the last couple of seconds (1.83): the longest pass round it, then
+// anything worth knowing, like input held back because an output queue was filling.
+function perfText() {
+  const p = clockReadout.perf;
+  if (!p) return '';
+  const parts = [`Loop ${(p.loopUs / 1000).toFixed(1)} ms`];
+  if (p.linkLimit) parts.push(`input limit hit ${p.linkLimit}`);
+  if (p.heldBack) parts.push(`input held back ${p.heldBack}`);
+  if (p.trsPct >= 25) parts.push(`TRS queue ${p.trsPct}%`);
+  if (p.usbPct >= 25) parts.push(`USB queue ${p.usbPct}%`);
+  if (p.linkPct >= 25) parts.push(`link ${p.linkPct}%`);
+  return ` · ${parts.join(', ')}`;
+}
+
 function clockReadoutText() {
   if (!device.connected) return '';
   const { bpm, status } = clockReadout;
   const port = PORTS.find((p) => p.bit + 1 === state.global.clockSource);
-  if (status === 1) return `${bpm} BPM · Master`;
-  if (status === 2) return `${bpm} BPM · Following ${port ? port.label : ''}`;
-  if (status === 3) return `No clock from ${port ? port.label : 'that port'}`;
+  if (status === 1) return `${bpm} BPM · Master${perfText()}`;
+  if (status === 2) return `${bpm} BPM · Following ${port ? port.label : ''}${perfText()}`;
+  if (status === 3) return `No clock from ${port ? port.label : 'that port'}${perfText()}`;
   return 'Save to Device to start the clock';
 }
 
@@ -1045,7 +1059,7 @@ function updateClockReadout(status) {
     }
     lastDeviceBpm = status.bpm;
   }
-  clockReadout = { bpm: status.bpm, status: status.clockStatus };
+  clockReadout = { bpm: status.bpm, status: status.clockStatus, perf: status.perf };
   const el = document.getElementById('clockReadout');
   if (el) el.textContent = clockReadoutText();
 }
