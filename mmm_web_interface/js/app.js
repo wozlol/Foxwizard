@@ -2290,6 +2290,22 @@ routesContainer.addEventListener('change', (e) => {
   syncRouteLive(parseInt(index, 10));
 });
 
+// Double-clicking a channel box (1.68) leaves only that channel selected on that side of the route.
+// The two clicks of the double-click have already flipped it twice, so this sets it outright.
+routesContainer.addEventListener('dblclick', (e) => {
+  const label = e.target.closest('.channel-chip label');
+  const box = label && document.getElementById(label.htmlFor);
+  const field = box?.dataset.field;
+  if (field !== 'inputChannels' && field !== 'outputChannels') return;
+  e.preventDefault();
+  const index = parseInt(box.dataset.routeIndex, 10);
+  state.routes[index][field] = 1 << parseInt(box.dataset.bit, 10);
+  box.closest('.channel-grid').querySelectorAll('input').forEach((el) => { el.checked = el === box; });
+  if (field === 'outputChannels') updateChannelWarning(index);
+  syncMasterSwitches(index);
+  syncRouteLive(index);
+});
+
 routesContainer.addEventListener('input', (e) => {
   const index = e.target.dataset.routeIndex;
   const field = e.target.dataset.field;
