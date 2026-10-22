@@ -527,6 +527,11 @@ const SIDECAR_POLL_MS = 2000;
 let sidecarPresent = false;
 let sidecarHasTrs = true; // true once a TRS board is added on top of the bare sidecar module
 let hostPortMask = 0; // bit 0 = a device on USB Host 1
+// What the host brain says about its hubs (1.71, host firmware 4): jacks is how many downstream ports
+// the attached hubs add up to, 0 with no hub. Until it says, all 4 USB Host ports show.
+let hostHub = { known: false, jacks: 0, hubs: 0, waiting: 0 };
+let hostPortsSeen = 0; // the most USB Host ports needed since connecting, so a chip doesn't vanish when a device is unplugged
+let hostPortsShown = 4;
 let hostRestartCount = null; // null until the first status after connecting, so only new restarts are announced
 let lastHostStatus = null;   // newest GET_STATUS reply, for the badge click
 
@@ -567,9 +572,15 @@ async function refreshSidecarStatus() {
   const sidecarChanged = status.sidecar !== sidecarPresent;
   const trsChanged = status.hasTrs !== sidecarHasTrs;
   const portsChanged = status.hostPortMask !== hostPortMask;
+  const waitingBefore = hostHub.waiting;
   sidecarPresent = status.sidecar;
   sidecarHasTrs = status.hasTrs;
   hostPortMask = status.hostPortMask;
+  hostHub = { known: status.sidecar && status.hubKnown, jacks: status.hubJacks, hubs: status.hubCount, waiting: status.hostWaiting };
+  const hostShownChanged = updateHostPortsShown();
+  if (hostHub.known && hostHub.waiting > waitingBefore) {
+    toast(`${hostHub.waiting} USB device${hostHub.waiting > 1 ? 's' : ''} plugged in with no free USB Host port. ${hostHub.waiting > 1 ? 'They start' : 'It starts'} working when a port frees up.`, 'warn');
+  }
   lastHostStatus = status;
   if (status.sidecar) {
     if (hostRestartCount !== null && status.restartCount > hostRestartCount) {
@@ -593,7 +604,7 @@ async function refreshSidecarStatus() {
     hostRestartCount = status.restartCount;
   }
   updateClockReadout(status);
-  if (sidecarChanged || trsChanged) {
+  if (sidecarChanged || trsChanged || hostShownChanged) {
     renderRoutes();
     renderClockRow();
     renderConnectionPill();
@@ -643,6 +654,8 @@ device.addEventListener('status', async (e) => {
   if (connectionState !== 'connected') {
     hostRestartCount = null;
     lastHostStatus = null;
+    hostHub = { known: false, jacks: 0, hubs: 0, waiting: 0 };
+    updateHostPortsShown();
   }
   if (connectionState !== 'connected' && sidecarPresent) {
     sidecarPresent = false;
@@ -947,7 +960,7 @@ function clockRowActive() {
 }
 
 function clockSourceOptions(g) {
-  const ports = PORTS.filter((p) => p.input && (!p.sidecar || (!trsUnavailable(p) && (sidecarPresent || g.clockSource === p.bit + 1))));
+  const ports = PORTS.filter((p) => p.input && (!p.sidecar || sidecarPortShown(p, false) || (g.clockSource === p.bit + 1 && !trsUnavailable(p))));
   return [`<option value="0" ${g.clockSource === 0 ? 'selected' : ''}>FoxWizard is master</option>`]
     .concat(ports.map((p) => `<option value="${p.bit + 1}" ${g.clockSource === p.bit + 1 ? 'selected' : ''}>Follow ${p.label}</option>`))
     .join('');
@@ -1434,11 +1447,39 @@ function trsUnavailable(p) {
   return p.trs && sidecarPresent && !sidecarHasTrs;
 }
 
+// How many USB Host ports there is room for: one with no hub (a device plugged straight in), else the
+// hubs' jacks, up to the 4 the FoxWizard has.
+function hostCapacity() { return hostHub.jacks ? Math.min(4, hostHub.jacks) : 1; }
+
+// Works out how many USB Host chips show: the highest port with a device plus one to plug into next, at
+// least one, at most the room the hubs have. Only grows while connected. True if it changed.
+function updateHostPortsShown() {
+  const before = hostPortsShown;
+  if (!sidecarPresent || !hostHub.known) {
+    hostPortsSeen = 0;
+    hostPortsShown = 4;
+  } else {
+    let highest = 0;
+    for (let i = 0; i < 4; i++) if (hostPortMask & (1 << i)) highest = i + 1;
+    hostPortsSeen = Math.max(hostPortsSeen, highest + 1, 1);
+    hostPortsShown = Math.min(hostCapacity(), hostPortsSeen);
+  }
+  return hostPortsShown !== before;
+}
+
+// Whether a sidecar port's chip shows. USB Host chips follow the room the hubs have once the host
+// brain says. The rest show while a sidecar is detected, or when something already uses them.
+function sidecarPortShown(p, used) {
+  if (trsUnavailable(p)) return false;
+  if (p.key.startsWith('host') && sidecarPresent && hostHub.known) return p.bit - 2 < hostPortsShown;
+  return sidecarPresent || used;
+}
+
 // Port switches. Each switch and its label sit inside one chip, so it's always clear which label
 // goes with which switch. Sidecar ports (USB Host 1-4, TRS 2-6) only show while a sidecar is
 // detected, or when the route already uses them (TRS 2-6 excepted, see trsUnavailable above).
 function visiblePorts(route, field) {
-  return PORTS.filter((p) => (field === 'outPorts' || p.input) && (!p.sidecar || (!trsUnavailable(p) && (sidecarPresent || (route[field] & (1 << p.bit))))));
+  return PORTS.filter((p) => (field === 'outPorts' || p.input) && (!p.sidecar || sidecarPortShown(p, !!(route[field] & (1 << p.bit)))));
 }
 
 // Sidecar port masks this board actually has: Host 1-4 always, TRS 2-6 only when a TRS board is

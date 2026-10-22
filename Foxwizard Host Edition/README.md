@@ -123,7 +123,9 @@ A board adding TRS 2-6 grounds GP14; nothing else changes in the firmware.
 2. Check continuity between the 5V pin and USB-C VBUS.
 3. Power the Zero from 5 V on the 5V pin. Never connect the computer while that supply is on.
 4. Plug a USB-C male to USB-A female OTG adapter into the Zero, then a USB-A hub or MIDI device into that.
-5. Use a hub with 4 or more ports. A device on the first hub keeps its jack number, and a device plugged straight in counts as 1. Hubs made of two chips, or a hub plugged into a hub, number their jacks twice over, so those devices take a free slot, the highest first. Up to four devices work whichever jacks they're in. A device's other MIDI interfaces aren't separate ports.
+5. Use a hub, or plug one device straight in. A device on the first hub keeps its jack number, and a device plugged straight in counts as 1. Hubs made of chained chips, or a hub plugged into a hub, number their jacks twice over, so those devices take a free slot, the highest first. The host brain handles up to 4 hubs and 13 devices, but has 4 USB Host slots, so up to four devices work at once whichever jacks they're in. A fifth waits, and takes the next slot to free up. A device's other MIDI interfaces aren't separate ports.
+
+Patchling shows only the USB Host ports there's room for: one with no hub, otherwise the hubs' jacks up to 4. A port shows once a device is plugged into the one before it, and stays until Patchling reconnects.
 
 The Zero's onboard RGB LED (GP16) is a diagnostic light, off by default, the same no-blink ethic as
 the main brain's own activity lights, with one deliberate exception for a dead link:
@@ -165,6 +167,7 @@ Port 15 carries control frames, with the frame type in the CIN field:
 | 1, port map | Host to main | Byte 1 = connected port mask (bit 0 = hub port 1, bit 4 = TRS 2-6 present, 1.44), byte 2 = host firmware version, byte 3 = drop count (max 127). Sent on any plug or unplug and every 500 ms. |
 | 2, flow | Both ways | Byte 1 = 1 pause, 0 resume. Sent on change and every 100 ms. |
 | 3, host restart | Host to main | Byte 1 = last restart reason, byte 2 = hub port (for a wedge), byte 3 = restart count. Sent with the port map. |
+| 6, host hub | Host to main | Byte 1 = downstream jacks of the hubs attached (0 no hub), byte 2 = hubs attached, byte 3 = devices waiting for a free slot. Sent with the port map. Host firmware 4. |
 | 5, host report | Host to main | Byte 1 = index, bytes 2-3 = report bytes 2 x index and 2 x index + 1. The 240-byte host report, sent six times with the heartbeat after a recovery restart. Host firmware 3. |
 | 4, brightness | Main to host | Byte 1 = the LED brightness knob, 0-10. Sent whenever it changes, and once a sidecar (re)appears. |
 

@@ -18,6 +18,7 @@ constexpr uint8_t CONTROL_PORT_MAP = 1; // host -> main. byte 1 = port mask, 2 =
 constexpr uint8_t CONTROL_FLOW = 2;     // both ways. byte 1 = 1 pause, 0 resume
 constexpr uint8_t CONTROL_HOST_RESTART = 3; // host -> main. byte 1 = last restart reason, 2 = hub port, 3 = restart count
 constexpr uint8_t CONTROL_BRIGHTNESS = 4; // main -> host. byte 1 = ledBrightnessStep (0-10), for the sidecar's status LED
+constexpr uint8_t CONTROL_HOST_HUB = 6;    // host -> main. byte 1 = downstream jacks of the hubs attached (0 no hub), 2 = hubs attached, 3 = devices waiting for a free slot
 constexpr uint8_t CONTROL_HOST_REPORT = 5; // host -> main. byte 1 = index, 2-3 = report bytes 2*index and 2*index+1
 
 // The host report (host fw 3): what the host brain knew when it last restarted, sent a few times
@@ -33,6 +34,7 @@ constexpr uint8_t HOST_EVENT_UNMOUNT = 3;
 constexpr uint8_t HOST_EVENT_SKIP = 4;     // the port accepted nothing for 1 s, its output is being dropped
 constexpr uint8_t HOST_EVENT_RESTART = 5;  // a = reason
 constexpr uint8_t HOST_EVENT_FAULT = 6;    // a = USB driver fault code
+constexpr uint8_t HOST_EVENT_FULL = 7;     // a = device address. It came while all four USB Host slots were taken, and waits
 // Where the host brain's loop was, for a restart the watchdog caused
 constexpr uint8_t HOST_STAGE_USB_TASK = 1, HOST_STAGE_LINK_IN = 2, HOST_STAGE_DIN_IN = 3, HOST_STAGE_USB_IN = 4,
                   HOST_STAGE_DISPATCH = 5, HOST_STAGE_USB_OUT = 6, HOST_STAGE_DIN_OUT = 7, HOST_STAGE_CONTROL = 8,

@@ -13,10 +13,11 @@ Upstream's RP2040 driver files alone, over 3.7.7's stack, broke a Launchpad's no
 |---|---|---|
 | Every file | Includes rewritten to file-relative paths | A sketch's `src/` isn't on the include path, and three angle includes in `class/bth` made Arduino pull in an installed TinyUSB |
 | `arduino/Adafruit_USBH_Host.h` | `<SPI.h>` only with `CFG_TUH_MAX3421` | The core's `SPI.cpp` includes `<Adafruit_TinyUSB.h>`, which dragged in an installed TinyUSB |
-| `arduino/ports/rp2040/tusb_config_rp2040.h` | `CFG_TUH_MIDI` 4 (stock 1), `CFG_TUH_ENUMERATION_BUFSIZE` 512 (stock 256), `CFG_TUH_TASK_EVENTS_PER_RUN` 0, MSC/HID/CDC host drivers off | Four MIDI devices on the hub, devices with big descriptors enumerate, hub traffic doesn't lag |
+| `arduino/ports/rp2040/tusb_config_rp2040.h` | `CFG_TUH_HUB` 4 (stock 1), `CFG_TUH_DEVICE_MAX` 13, `CFG_TUH_MIDI` 13 (stock 1), `CFG_TUH_ENUMERATION_BUFSIZE` 512 (stock 256), `CFG_TUH_TASK_EVENTS_PER_RUN` 0, MSC/HID/CDC host drivers off | Hubs chained inside a hub or plugged into one enumerate, more devices than the four slots wait their turn, devices with big descriptors enumerate, hub traffic doesn't lag |
 | `portable/raspberrypi/rp2040/hcd_rp2040.c` | Data sequence error and `hcd_edpt_clear_stall()` call `foxwizard_usb_fault()`. Stock: `panic()` | The sketch restarts at once with a named reason instead of halting until the watchdog fires |
 | `portable/raspberrypi/rp2040/rp2040_usb.c` | Buffer armed twice calls `foxwizard_usb_fault()`. Stock: `panic()` | Same |
-| `foxwizard_usb_fault.h` | New | The fault hook, defined in `Foxwizard_Host_Edition_Sidecar.ino` |
+| `foxwizard_usb_fault.h` | New | The fault hook, defined in `Foxwizard_Host_Edition_Sidecar.ino`, and the hub port count accessor |
+| `host/hub.c` | `foxwizard_hub_port_count()` added | The sketch counts how many jacks the attached hubs have |
 
 Recovering in place (rolling back the data sequence, clearing stalls to DATA0) was tried and caused more faults, mostly buffers armed twice, so every fault restarts instead.
 

@@ -135,10 +135,12 @@ extern "C" {
 // completed bulk transfers waiting behind the default 16-event cap.
 #define CFG_TUH_TASK_EVENTS_PER_RUN 0
 
-// Number of hub devices
-#define CFG_TUH_HUB 1
+// Number of hub devices. FoxWizard: 4 (stock 1), so a hub made of chained chips, or a hub plugged
+// into a hub, enumerates whole. A 7-port hub is two hub devices.
+#define CFG_TUH_HUB 4
 
-// max device support (excluding hub device): 1 hub typically has 4 ports
+// max device support (excluding hub devices): 13, the host brain has 4 USB Host slots and the
+// rest wait for one to free up
 #define CFG_TUH_DEVICE_MAX (3 * CFG_TUH_HUB + 1)
 
 // enable MIDI Host

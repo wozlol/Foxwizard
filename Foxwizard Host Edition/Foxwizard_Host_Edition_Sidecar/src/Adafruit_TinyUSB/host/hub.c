@@ -51,6 +51,12 @@ TU_ATTR_ALWAYS_INLINE static inline hub_interface_t* get_hub_itf(uint8_t daddr) 
   return &hub_itfs[daddr-1-CFG_TUH_DEVICE_MAX];
 }
 
+// FoxWizard: how many downstream ports a hub's descriptor said it has, 0 for anything that isn't one.
+uint8_t foxwizard_hub_port_count(uint8_t daddr) {
+  if (daddr <= CFG_TUH_DEVICE_MAX || daddr > CFG_TUH_DEVICE_MAX + CFG_TUH_HUB) return 0;
+  return get_hub_itf(daddr)->bNbrPorts;
+}
+
 TU_ATTR_ALWAYS_INLINE static inline hub_epbuf_t* get_hub_epbuf(uint8_t daddr) {
   return &hub_epbufs[daddr-1-CFG_TUH_DEVICE_MAX];
 }

@@ -68,7 +68,7 @@ constexpr uint8_t PIN_TRS_BOARD = 14; // floating (its internal pull-up): a bare
                                        // Tells the main brain whether TRS 2-6 physically exist.
 
 constexpr uint32_t DIN_BAUD = 31250;
-constexpr uint8_t HOST_FW_VERSION = 4; // 3: the host report. 4: hubs made of two chips
+constexpr uint8_t HOST_FW_VERSION = 4; // 3: the host report. 4: chained hubs, hub and spare device reporting
 
 constexpr uint8_t HUB_PORTS = 4;
 constexpr uint8_t DIN_OUTS = 5;
@@ -168,7 +168,7 @@ uint32_t rgbColor(uint8_t r, uint8_t g, uint8_t b) { return ((uint32_t)r << 16) 
 // leaves it telling what each port was doing and where the loop was. At the next start it becomes
 // the host report (layout in foxwizard_link.h), sent to the main brain for Patchling to show.
 // ============================================================================================
-constexpr uint32_t BLACK_BOX_MAGIC = 0xB1AC0B03;
+constexpr uint32_t BLACK_BOX_MAGIC = 0xB1AC0B04;
 struct BlackBoxPort {
   uint16_t vid, pid;
   uint32_t sent, received;  // packets the device accepted, and packets read from it
@@ -186,6 +186,7 @@ struct BlackBox {
   uint32_t maxLoopUs;
   uint32_t stallDrops;
   uint8_t stage, devices, eventHead, eventCount;
+  uint8_t jacks; // downstream jacks of the hubs attached, 0 with no hub
   BlackBoxPort port[HUB_PORTS];
   BlackBoxEvent events[HOST_REPORT_EVENTS];
 };
@@ -218,6 +219,7 @@ void buildHostReport(uint8_t reason, uint8_t port, uint32_t count) {
   r[12] = blackBox.devices;
   r[13] = count > 255 ? 255 : count;
   r[14] = HOST_FW_VERSION;
+  r[15] = blackBox.jacks;
   for (uint8_t p = 0; p < HUB_PORTS; ++p) {
     const BlackBoxPort &b = blackBox.port[p];
     uint8_t *q = r + 16 + p * HOST_REPORT_PORT_BYTES;
@@ -382,6 +384,9 @@ void serviceControlOut() {
     sendToMain(LINK_PORT_CONTROL, pkt);
     uint8_t restart[4] = {CONTROL_HOST_RESTART, restartReason, restartPort, (uint8_t)(restartCount > 127 ? 127 : restartCount)};
     sendToMain(LINK_PORT_CONTROL, restart);
+    blackBox.jacks = hubJacks();
+    uint8_t hub[4] = {CONTROL_HOST_HUB, blackBox.jacks, hubCount(), waitingDeviceCount()};
+    sendToMain(LINK_PORT_CONTROL, hub);
     portMapDirty = false;
     lastPortMapMs = now;
     if (haveHostReport && reportPassesLeft && reportNext == 0xFFFF) { --reportPassesLeft; reportNext = 0; }
@@ -677,11 +682,26 @@ void resetHubPort(HubPort &hp) {
   hp.blinkUntilMs = 0;
 }
 
-void tuh_midi_mount_cb(uint8_t idx, const tuh_midi_mount_cb_t *mount_cb_data) {
-  if (idx >= CFG_TUH_MIDI) return;
+// MIDI interfaces that came while all four slots were taken. They wait, and take the next one to free.
+struct WaitingMidi { bool used; uint8_t daddr; bool writable; };
+WaitingMidi waitingMidi[CFG_TUH_MIDI];
+
+uint8_t waitingDeviceCount() {
+  uint16_t seen = 0;
+  uint8_t n = 0;
+  for (const WaitingMidi &w : waitingMidi) {
+    if (!w.used || (seen & (1u << (w.daddr & 15)))) continue;
+    seen |= 1u << (w.daddr & 15);
+    ++n;
+  }
+  return n;
+}
+
+// Puts a MIDI interface in a slot. False if all four are taken.
+bool placeMidi(uint8_t idx, uint8_t daddr, bool writable) {
   tuh_bus_info_t info;
-  if (!tuh_bus_info_get(mount_cb_data->daddr, &info)) return;
-  for (const HubPort &other : hubPorts) if (other.mounted && other.daddr == mount_cb_data->daddr) return; // its other MIDI interface
+  if (!tuh_bus_info_get(daddr, &info)) return true; // already gone, nothing to wait for
+  for (const HubPort &other : hubPorts) if (other.mounted && other.daddr == daddr) return true; // its other MIDI interface
 
   // The slot (USB Host 1-4). A device on the first hub keeps its jack number, a device plugged straight
   // in counts as 1. Behind a second hub (a hub made of two chips, or one plugged into a hub) jack
@@ -697,50 +717,103 @@ void tuh_midi_mount_cb(uint8_t idx, const tuh_midi_mount_cb_t *mount_cb_data) {
   if (tier <= 1 && jack <= HUB_PORTS && !hubPorts[jack - 1].mounted) port = jack;
   if (!port && tier == 2) for (uint8_t p = HUB_PORTS; p >= 1 && !port; --p) if (!hubPorts[p - 1].mounted) port = p;
   if (!port) for (uint8_t p = 1; p <= HUB_PORTS && !port; ++p) if (!hubPorts[p - 1].mounted) port = p;
-  if (!port) return; // all four slots are taken
+  if (!port) return false;
 
   HubPort &hp = hubPorts[port - 1];
   resetHubPort(hp);
   hp.mounted = true;
-  hp.daddr = mount_cb_data->daddr;
-  hp.writable = mount_cb_data->tx_cable_count > 0;
+  hp.daddr = daddr;
+  hp.writable = writable;
   hp.midiIdx = idx;
   midiIdxToPort[idx] = port;
   portMapDirty = true;
   BlackBoxPort &bb = blackBox.port[port - 1];
   bb = BlackBoxPort{};
-  tuh_vid_pid_get(mount_cb_data->daddr, &bb.vid, &bb.pid);
+  tuh_vid_pid_get(daddr, &bb.vid, &bb.pid);
   bb.mounted = true;
   bb.writable = hp.writable;
   bb.hubPort = info.hub_port;
   bb.tier = tier;
   logEvent(HOST_EVENT_MOUNT, port);
+  return true;
+}
+
+void tuh_midi_mount_cb(uint8_t idx, const tuh_midi_mount_cb_t *mount_cb_data) {
+  if (idx >= CFG_TUH_MIDI) return;
+  const bool writable = mount_cb_data->tx_cable_count > 0;
+  if (placeMidi(idx, mount_cb_data->daddr, writable)) return;
+  waitingMidi[idx] = WaitingMidi{true, mount_cb_data->daddr, writable};
+  portMapDirty = true;
+  logEvent(HOST_EVENT_FULL, 0, mount_cb_data->daddr);
+}
+
+// A slot freed up: the first device that was waiting takes it.
+void placeWaitingMidi() {
+  for (uint8_t i = 0; i < CFG_TUH_MIDI; ++i) {
+    if (!waitingMidi[i].used) continue;
+    if (!placeMidi(i, waitingMidi[i].daddr, waitingMidi[i].writable)) return; // still full
+    waitingMidi[i].used = false;
+    portMapDirty = true;
+  }
+}
+
+// The hubs attached, by address, and how many jacks they add up to. A hub chained to another uses
+// one jack of it to connect.
+bool hubMounted[CFG_TUH_HUB];
+
+uint8_t hubJacks() {
+  uint16_t ports = 0;
+  uint8_t hubs = 0;
+  for (uint8_t h = 0; h < CFG_TUH_HUB; ++h) {
+    if (!hubMounted[h]) continue;
+    ++hubs;
+    ports += foxwizard_hub_port_count(CFG_TUH_DEVICE_MAX + 1 + h);
+  }
+  if (!hubs) return 0;
+  const uint16_t jacks = ports > hubs - 1 ? ports - (hubs - 1) : 0;
+  return jacks > 120 ? 120 : jacks;
+}
+
+uint8_t hubCount() {
+  uint8_t n = 0;
+  for (bool m : hubMounted) n += m;
+  return n;
 }
 
 // Any device at all, so the diagnostic light can tell "nothing plugged in" from "not USB MIDI".
 void tuh_mount_cb(uint8_t daddr) {
   tusb_desc_device_t desc;
-  if (tuh_descriptor_get_device_local(daddr, &desc) && desc.bDeviceClass == TUSB_CLASS_HUB) return; // cached copy, no USB transfer
+  if (tuh_descriptor_get_device_local(daddr, &desc) && desc.bDeviceClass == TUSB_CLASS_HUB) { // cached copy, no USB transfer
+    if (daddr > CFG_TUH_DEVICE_MAX && daddr <= CFG_TUH_DEVICE_MAX + CFG_TUH_HUB) hubMounted[daddr - 1 - CFG_TUH_DEVICE_MAX] = true;
+    portMapDirty = true;
+    return;
+  }
   ++usbDevicesMounted;
   blackBox.devices = usbDevicesMounted;
   noteStatusActivity(STATUS_WHITE);
 }
 
 void tuh_umount_cb(uint8_t daddr) {
-  (void)daddr;
+  if (daddr > CFG_TUH_DEVICE_MAX) { // a hub
+    if (daddr <= CFG_TUH_DEVICE_MAX + CFG_TUH_HUB) hubMounted[daddr - 1 - CFG_TUH_DEVICE_MAX] = false;
+    portMapDirty = true;
+    return;
+  }
   if (usbDevicesMounted > 0) --usbDevicesMounted;
   blackBox.devices = usbDevicesMounted;
 }
 
 void tuh_midi_umount_cb(uint8_t idx) {
   if (idx >= CFG_TUH_MIDI) return;
+  waitingMidi[idx].used = false;
   uint8_t port = midiIdxToPort[idx];
   midiIdxToPort[idx] = 0;
-  if (port == 0) return;
+  if (port == 0) { portMapDirty = true; return; }
   resetHubPort(hubPorts[port - 1]);
   portMapDirty = true;
   blackBox.port[port - 1].mounted = false; // the rest stays, for a report
   logEvent(HOST_EVENT_UNMOUNT, port);
+  placeWaitingMidi();
 }
 
 // Reads a device only while the link queue has room for a whole USB packet's worth. Otherwise the

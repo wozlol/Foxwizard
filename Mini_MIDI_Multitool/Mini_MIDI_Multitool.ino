@@ -97,7 +97,7 @@ constexpr uint8_t SYSEX_MFR_ID = 0x7D;   // reserved for non-commercial/educatio
 constexpr uint8_t SYSEX_DEVICE_ID = 0x4D; // 'M'
 constexpr uint8_t PROTOCOL_VERSION = 4; // 2: 45-byte routes with port masks, GET_STATUS. 3: clock settings, LEARN. 4: 53-byte routes with feature fields, feature blocks
 constexpr uint8_t FW_VERSION_MAJOR = 1;
-constexpr uint8_t FW_VERSION_MINOR = 70;
+constexpr uint8_t FW_VERSION_MINOR = 71;
 constexpr uint8_t FW_CHUNK_BYTES = 128;          // firmware bytes per FW_DATA message, 147 once packed
 constexpr uint32_t FW_REBOOT_DELAY_MS = 300;     // lets the FW_END ACK reach the host before rebooting
 const char DEVICE_NAME[] = "FoxWizard Mini MIDI Multitool"; // long name sent in the SysEx IDENTITY_REPLY
@@ -347,6 +347,10 @@ uint8_t hostRestartPort = 0;             // hub port, for RESTART_WEDGE
 uint8_t hostRestartCount = 0;            // recovery restarts since the host brain powered up, saturates at 127
 bool hostRestartSeen = false;            // hostRestartCount holds a real value
 bool hostRestarted = false;              // set when the host brain restarts, handled in the loop
+bool hostHubSeen = false;                // 1.71: the host brain has said what hubs it has (host firmware 4)
+uint8_t hostHubJacks = 0;                // downstream jacks of the hubs attached, 0 with no hub
+uint8_t hostHubCount = 0;                // hubs attached
+uint8_t hostWaiting = 0;                 // devices plugged in with no free USB Host slot
 uint8_t hostReport[HOST_REPORT_BYTES];   // 1.63: the host brain's report from its last restart
 uint8_t hostReportGot[HOST_REPORT_BYTES / 16]; // which 2-byte pieces have arrived
 
@@ -4954,6 +4958,11 @@ void handleSysexCommand(uint8_t sourcePort, const uint8_t *cmdBuf, uint8_t cmdLe
       appendReply((bpmNow >> 7) & 0x7F);
       appendReply(clockStatus());
       appendReply(hostHasTrs ? 1 : 0); // 1.44: whether the host brain has TRS 2-6 wired (Patchling only cares while sidecar is present)
+      // 1.71: what hubs the host brain has, for Patchling to show only the USB Host ports there is room for
+      appendReply(hostPresent() && hostHubSeen ? 1 : 0);
+      appendReply(hostHubJacks & 0x7F);
+      appendReply(hostHubCount & 0x7F);
+      appendReply(hostWaiting & 0x7F);
       sendReply(sourcePort);
       break;
     }
@@ -5420,6 +5429,11 @@ void pumpHostIn() {
         if (!hostRestartSeen || packet[3] != hostRestartCount) memset(hostReportGot, 0, sizeof(hostReportGot)); // a new report follows
         hostRestartCount = packet[3];
         hostRestartSeen = true;
+      } else if (type == CONTROL_HOST_HUB) {
+        hostHubSeen = true;
+        hostHubJacks = packet[1];
+        hostHubCount = packet[2];
+        hostWaiting = packet[3];
       } else if (type == CONTROL_HOST_REPORT) {
         const uint8_t k = packet[1];
         if (k < HOST_REPORT_BYTES / 2) {

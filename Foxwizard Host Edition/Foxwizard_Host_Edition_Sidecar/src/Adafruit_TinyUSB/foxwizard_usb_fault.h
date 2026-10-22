@@ -16,6 +16,9 @@ enum {
 
 void foxwizard_usb_fault(uint8_t fault);
 
+// Defined in host/hub.c: how many downstream ports the hub at this address has, 0 if it isn't one.
+uint8_t foxwizard_hub_port_count(uint8_t daddr);
+
 #ifdef __cplusplus
 }
 #endif

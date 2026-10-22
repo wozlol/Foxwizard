@@ -38,6 +38,7 @@ function eventText(type, port, a) {
     case 4: return `${host} took nothing for 1 s, its output is being dropped`;
     case 5: return `recovery restart, reason ${a}${port ? ', ' + host : ''}`;
     case 6: return `USB driver fault ${a}`;
+    case 7: return 'a device came with all four USB Host ports taken, and waits for one to free up';
     default: return `event ${type}`;
   }
 }
@@ -63,7 +64,7 @@ export function parseHostReport(b) {
   }
   return {
     reason: b[1], port: b[2], stage: b[3], uptimeMs: u32(b, 4), maxLoopUs: u16(b, 8), stallDrops: u16(b, 10),
-    devices: b[12], restarts: b[13], hostVersion: b[14], ports, events
+    devices: b[12], restarts: b[13], hostVersion: b[14], jacks: b[15], ports, events
   };
 }
 
@@ -80,7 +81,7 @@ export function hostReportText(r, headline) {
   if (!r) return 'No report from the Host Edition yet. It needs host brain firmware 3 or later.';
   const lines = [headline, ''];
   lines.push(`Up ${secs(r.uptimeMs)} before restarting. The loop was ${STAGES[r.stage] || 'somewhere unknown'}.`);
-  lines.push(`Longest loop pass: ${r.maxLoopUs} µs. Packets dropped to stuck ports: ${r.stallDrops}. USB devices: ${r.devices}. Recovery restarts: ${r.restarts}. Host brain firmware ${r.hostVersion}.`);
+  lines.push(`Longest loop pass: ${r.maxLoopUs} µs. Packets dropped to stuck ports: ${r.stallDrops}. USB devices: ${r.devices}. Hub jacks: ${r.jacks || 'no hub'}. Recovery restarts: ${r.restarts}. Host brain firmware ${r.hostVersion}.`);
   lines.push('');
   for (const p of r.ports) {
     if (!p.vid && !p.pid && !p.sent && !p.received) { lines.push(`USB Host ${p.port}: empty`); continue; }

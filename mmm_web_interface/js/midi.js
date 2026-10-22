@@ -673,7 +673,9 @@ export class DeviceLink extends EventTarget {
       bpm: reply.length >= 9 ? reply[6] | (reply[7] << 7) : null,
       clockStatus: reply[8] ?? 0,
       // Firmware before 1.44 never sends byte 9: assume TRS 2-6 exist (every deployed sidecar so far).
-      hasTrs: reply[9] === undefined ? true : reply[9] === 1
+      hasTrs: reply[9] === undefined ? true : reply[9] === 1,
+      // 1.71, host firmware 4: the hubs attached. hubKnown is false from older firmware, which shows all 4 ports.
+      hubKnown: reply[10] === 1, hubJacks: reply[11] ?? 0, hubCount: reply[12] ?? 0, hostWaiting: reply[13] ?? 0
     };
   }
 
