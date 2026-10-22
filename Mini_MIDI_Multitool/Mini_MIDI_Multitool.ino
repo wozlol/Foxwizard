@@ -97,7 +97,7 @@ constexpr uint8_t SYSEX_MFR_ID = 0x7D;   // reserved for non-commercial/educatio
 constexpr uint8_t SYSEX_DEVICE_ID = 0x4D; // 'M'
 constexpr uint8_t PROTOCOL_VERSION = 4; // 2: 45-byte routes with port masks, GET_STATUS. 3: clock settings, LEARN. 4: 53-byte routes with feature fields, feature blocks
 constexpr uint8_t FW_VERSION_MAJOR = 1;
-constexpr uint8_t FW_VERSION_MINOR = 78;
+constexpr uint8_t FW_VERSION_MINOR = 79;
 constexpr uint8_t FW_CHUNK_BYTES = 128;          // firmware bytes per FW_DATA message, 147 once packed
 constexpr uint32_t FW_REBOOT_DELAY_MS = 300;     // lets the FW_END ACK reach the host before rebooting
 const char DEVICE_NAME[] = "FoxWizard Mini MIDI Multitool"; // long name sent in the SysEx IDENTITY_REPLY
@@ -1460,8 +1460,8 @@ void noteActivity(ActivityLed &led) {
 uint8_t ledFlashLeft = 0;
 bool ledFlashLit = false;
 uint32_t ledFlashAtMs = 0;
-constexpr uint32_t LED_COUNT_ON_MS = 140;
-constexpr uint32_t LED_COUNT_OFF_MS = 220;
+constexpr uint32_t LED_COUNT_ON_MS = 70;
+constexpr uint32_t LED_COUNT_OFF_MS = 110;
 
 void flashAllLedsCount(uint8_t count) {
   ledFlashLeft = count;
@@ -2861,6 +2861,11 @@ void loopHeldUpdate(uint16_t tag, bool on, uint8_t channel, uint8_t note, uint8_
 }
 
 // A CC only goes into a take already recording (a Note On starts a take, a CC never does).
+// The looper asks at the top of each cycle of an overdub whether a note it's carrying is still held.
+bool looperHeldCheck(void *, uint8_t channel, uint8_t note, uint16_t) {
+  return !looperCaptureInputs() || noteOwners[channel & 15][note & 127];
+}
+
 // A note let go of anywhere is no longer held, whichever input it came from.
 void loopHeldForget(uint8_t channel, uint8_t note) {
   for (uint8_t k = 0; k < loopHeldCount;) {
@@ -3095,8 +3100,8 @@ uint8_t lpShown[LAUNCHPAD_BUTTONS];   // the color last sent, 0xFF when it needs
 uint8_t lpChannel = 0;                // the channel the Launchpad's own messages arrive on
 struct LpBlink { uint8_t left; bool lit; uint32_t atMs; };
 LpBlink lpBlink[LAUNCHPAD_BUTTONS];
-constexpr uint32_t LP_BLINK_ON_MS = 140;
-constexpr uint32_t LP_BLINK_OFF_MS = 220;
+constexpr uint32_t LP_BLINK_ON_MS = 70;
+constexpr uint32_t LP_BLINK_OFF_MS = 110;
 
 uint16_t lpOwnerRoute() {
   for (uint16_t i = 0; i < routeCount; ++i) if (routes[i].features & FEATURE_LAUNCHPAD) return i;
@@ -6005,6 +6010,7 @@ void setup() {
   Serial1.begin(DIN_BAUD);
 
   looper.setEraseHook(looperEraseHook, nullptr); // Note Delete
+  looper.setHeldCheck(looperHeldCheck, nullptr);
   linkSerial.begin(LINK_BAUD);
   gpio_pull_up(PIN_LINK_RX); // holds the line idle with no host brain attached, so it reads nothing
 

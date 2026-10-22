@@ -317,8 +317,33 @@ bool Looper::capture(uint64_t nowUs, const LoopMidiEvent &input) {
   if (type == 0x90 || type == 0x80) {
     const uint8_t channel = input.status & 0x0F;
     recordHeld_[channel][input.data1] = noteOn ? static_cast<uint16_t>(input.tag + 1U) : 0;
+    if (noteOn) recordHeldVelocity_[channel][input.data1] = input.data2;
   }
   return true;
+}
+
+// FoxWizard 1.79: an overdub pass goes round the loop again and again, so a note held across the top
+// of the loop is cut there and started again, the way it would be if it had been recorded one cycle at
+// a time. Without this its Note On is late in the loop and its Note Off early in the next, and the loop
+// plays it from the Note On to the end only. The Note On put at the top isn't played in the cycle that's
+// recording it (see tick), only from the next. A note the sketch says isn't held any more ends here.
+void Looper::splitHeldAtWrap(uint8_t trackIndex) {
+  const uint32_t last = tracks_[trackIndex].lengthUs - 1U;
+  const uint8_t layer = static_cast<uint8_t>(overdubbing_ ? currentLayer_ : 0);
+  for (uint8_t channel = 0; channel < 16; ++channel) {
+    for (uint8_t note = 0; note < 128; ++note) {
+      if (!recordHeld_[channel][note]) continue;
+      const uint16_t tag = static_cast<uint16_t>(recordHeld_[channel][note] - 1U);
+      insertEvent(trackIndex, LoopMidiEvent{last, static_cast<uint8_t>(0x80 | channel), note, 0, tag, layer});
+      if (heldFn_ && !heldFn_(heldContext_, channel, note, tag)) { // its Note Off never came: it ends here
+        recordHeld_[channel][note] = 0;
+        continue;
+      }
+      insertEvent(trackIndex, LoopMidiEvent{0, static_cast<uint8_t>(0x90 | channel), note,
+                                            recordHeldVelocity_[channel][note] ? recordHeldVelocity_[channel][note] : static_cast<uint8_t>(100),
+                                            tag, layer});
+    }
+  }
 }
 
 void Looper::closeHeldRecordingNotes(uint32_t boundaryUs) {
@@ -604,6 +629,7 @@ void Looper::tick(uint64_t nowUs, EmitFn emit, ReleaseFn release,
     if (track.count == 0 || track.lengthUs == 0) continue;
     if (nowUs - track.cycleStartUs >= track.lengthUs) {
       if (release) release(context, trackIndex);
+      if (recording_ && overdubbing_ && recordingTrack_ == trackIndex) splitHeldAtWrap(trackIndex);
       const uint64_t cycles = (nowUs - track.cycleStartUs) / track.lengthUs;
       track.cycleStartUs += cycles * track.lengthUs;
       track.playCursor = track.head;
@@ -619,7 +645,12 @@ void Looper::tick(uint64_t nowUs, EmitFn emit, ReleaseFn release,
         ++processed;
         continue;
       }
-      if (canEmit && emit && !layerHidden(slot.layer)) emit(context, trackIndex, slot.event());
+      // FoxWizard 1.79: a Note On recorded into the pass being played right now, for a note you're still
+      // holding, isn't played back over yourself. It was only put there to carry the hold into the next
+      // cycle, and its Note Off isn't recorded until you let go, so it would hold on after you did.
+      const bool liveOwnNote = recording_ && overdubbing_ && (slot.status & 0xF0) == 0x90 && slot.data2 &&
+                               slot.layer == currentLayer_ && recordHeld_[slot.status & 0x0F][slot.data1];
+      if (canEmit && emit && !layerHidden(slot.layer) && !liveOwnNote) emit(context, trackIndex, slot.event());
       track.playCursor = slot.next;
       ++processed;
     }

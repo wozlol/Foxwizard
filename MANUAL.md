@@ -306,7 +306,8 @@ A note held by you and by the loop stays held until both let go. The loop lettin
 holding doesn't stop your roll, and you letting go of one the loop still holds doesn't either.
 
 A note you're already holding when an overdub starts is recorded from the start of the overdub, so a held
-hat for a roll starts with it and ends when you let go.
+hat for a roll starts with it and ends when you let go. A note held right across the top of the loop is
+recorded as one held note that carries over the top, instead of losing its part after the top.
 
 ### Note Delete
 
