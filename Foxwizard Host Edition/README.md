@@ -123,7 +123,7 @@ A board adding TRS 2-6 grounds GP14; nothing else changes in the firmware.
 2. Check continuity between the 5V pin and USB-C VBUS.
 3. Power the Zero from 5 V on the 5V pin. Never connect the computer while that supply is on.
 4. Plug a USB-C male to USB-A female OTG adapter into the Zero, then a USB-A hub or MIDI device into that.
-5. Use a hub, or plug one device straight in. A device on the first hub keeps its jack number, and a device plugged straight in counts as 1. Hubs made of chained chips, or a hub plugged into a hub, number their jacks twice over, so those devices take a free slot, the highest first. The host brain handles up to 4 hubs and 13 devices, but has 4 USB Host slots, so up to four devices work at once whichever jacks they're in. A fifth waits, and takes the next slot to free up. A device's other MIDI interfaces aren't separate ports.
+5. Use a hub, or plug one device straight in. A device on the first hub keeps its jack number, and a device plugged straight in counts as 1. Hubs made of chained chips, or a hub plugged into a hub, number their jacks twice over, so those devices take a free slot, the highest first. The host brain handles up to 4 hubs and 13 devices, with 64 USB endpoint slots between them (a device takes one for itself, and two for each MIDI interface), but has 4 USB Host slots, so up to four devices work at once whichever jacks they're in. A fifth waits, and takes the next slot to free up. A device's other MIDI interfaces aren't separate ports.
 
 Patchling shows only the USB Host ports there's room for: one with no hub, otherwise the hubs' jacks up to 4. A port shows once a device is plugged into the one before it, and stays until Patchling reconnects.
 

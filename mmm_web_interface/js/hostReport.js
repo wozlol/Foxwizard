@@ -29,16 +29,22 @@ export function packetText(p) {
   return raw;
 }
 
-function eventText(type, port, a) {
+const SPEEDS = ['full speed', 'low speed', 'high speed'];
+
+function eventText(type, port, a, b) {
   const host = `USB Host ${port}`;
   switch (type) {
     case 1: return a ? `started after a recovery restart (reason ${a})` : 'started';
-    case 2: return `${host} connected`;
+    case 2: return `${host} connected, ${SPEEDS[a] || 'unknown speed'}, ${b >> 4} MIDI in and ${b & 15} out cable${(b >> 4) === 1 && (b & 15) === 1 ? '' : 's'}`;
     case 3: return `${host} disconnected`;
     case 4: return `${host} took nothing for 1 s, its output is being dropped`;
     case 5: return `recovery restart, reason ${a}${port ? ', ' + host : ''}`;
     case 6: return `USB driver fault ${a}`;
     case 7: return 'a device came with all four USB Host ports taken, and waits for one to free up';
+    case 8: return port === 1 ? `a device ${a ? `behind hub ${a}, port ${b}` : 'on the first port'} never finished enumerating`
+      : port === 2 ? `no free USB endpoint slot (${a} in use) for device ${b}, so it can't be set up`
+      : `USB stack note ${port} (${a}, ${b})`;
+    case 9: return `USB device ${a} enumerated${port ? `, hub port ${port}` : ''}, ${SPEEDS[b] || 'unknown speed'}`;
     default: return `event ${type}`;
   }
 }
@@ -92,7 +98,7 @@ export function hostReportText(r, headline) {
   }
   if (r.events.length) {
     lines.push('', 'Recent events (time since it started):');
-    for (const e of r.events) lines.push(`  ${secs(e.ms).padStart(9)}  ${eventText(e.type, e.port, e.a)}`);
+    for (const e of r.events) lines.push(`  ${secs(e.ms).padStart(9)}  ${eventText(e.type, e.port, e.a, e.b)}`);
   }
   return lines.join('\n');
 }

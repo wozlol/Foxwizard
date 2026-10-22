@@ -13,6 +13,7 @@
 #include "../tusb.h"
 #include "usbh_pvt.h"
 #include "hub.h"
+#include "../foxwizard_usb_fault.h"
 
 //--------------------------------------------------------------------+
 // Configuration
@@ -2329,6 +2330,7 @@ static void enum_teardown(bool success) {
 
 static void enum_full_complete(bool success) {
   TU_LOG_USBH("Enumeration complete: success = %u\r\n", success);
+  if (!success) foxwizard_usb_trace(FOXWIZARD_TRACE_ENUM_FAILED, _usbh_data.dev0_bus.hub_addr, _usbh_data.dev0_bus.hub_port);
   enum_teardown(success);
 
   #if CFG_TUH_HUB

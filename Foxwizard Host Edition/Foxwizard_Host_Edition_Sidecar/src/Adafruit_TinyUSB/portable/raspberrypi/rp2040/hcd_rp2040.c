@@ -34,7 +34,11 @@
 //--------------------------------------------------------------------+
 
 // Host mode uses one shared endpoint register for non-interrupt endpoint
-static hw_endpoint_t  ep_pool[USB_MAX_ENDPOINTS];
+// FoxWizard: 64 (stock USB_MAX_ENDPOINTS, 16). Every device uses a slot for its control endpoint and
+// two for each MIDI interface, every hub one more for its status endpoint, so 15 ran out at about
+// four devices behind two hubs, and the last device never got its MIDI interface.
+#define FOXWIZARD_EP_POOL 64
+static hw_endpoint_t  ep_pool[FOXWIZARD_EP_POOL];
 static hw_endpoint_t *epx = &ep_pool[0]; // current active endpoint
 
   #ifndef HAS_STOP_EPX_ON_NAK
@@ -645,6 +649,11 @@ bool hcd_edpt_open(uint8_t rhport, uint8_t dev_addr, const tusb_desc_endpoint_t 
     ep = &ep_pool[0];
   } else {
     ep = edpt_alloc();
+  }
+  if (!ep) {
+    uint8_t used = 0;
+    for (size_t i = 0; i < TU_ARRAY_SIZE(ep_pool); i++) if (ep_pool[i].max_packet_size) ++used;
+    foxwizard_usb_trace(FOXWIZARD_TRACE_EDPT_POOL_FULL, used, dev_addr);
   }
   TU_ASSERT(ep);
 

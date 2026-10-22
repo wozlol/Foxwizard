@@ -565,10 +565,16 @@ async function showHostReport() {
   ]);
 }
 
+// Polls in a row that found no Host Edition. A host brain restarting is gone for a moment, so a
+// couple of misses keep the ports showing instead of redrawing every route and back.
+let sidecarMisses = 0;
+
 async function refreshSidecarStatus() {
   if (!device.connected || updateInProgress || !overlay.hidden) return;
   let status;
   try { status = await device.getStatus(); } catch (err) { return; }
+  if (status.sidecar) sidecarMisses = 0;
+  else if (sidecarPresent && ++sidecarMisses < 3) return;
   const sidecarChanged = status.sidecar !== sidecarPresent;
   const trsChanged = status.hasTrs !== sidecarHasTrs;
   const portsChanged = status.hostPortMask !== hostPortMask;
@@ -655,6 +661,7 @@ device.addEventListener('status', async (e) => {
     hostRestartCount = null;
     lastHostStatus = null;
     hostHub = { known: false, jacks: 0, hubs: 0, waiting: 0 };
+    sidecarMisses = 0;
     updateHostPortsShown();
   }
   if (connectionState !== 'connected' && sidecarPresent) {
@@ -1449,7 +1456,7 @@ function trsUnavailable(p) {
 
 // How many USB Host ports there is room for: one with no hub (a device plugged straight in), else the
 // hubs' jacks, up to the 4 the FoxWizard has.
-function hostCapacity() { return hostHub.jacks ? Math.min(4, hostHub.jacks) : 1; }
+function hostCapacity() { return hostHub.jacks ? Math.min(4, hostHub.jacks) : (hostHub.hubs ? 4 : 1); }
 
 // Works out how many USB Host chips show: the highest port with a device plus one to plug into next, at
 // least one, at most the room the hubs have. Only grows while connected. True if it changed.
@@ -1462,7 +1469,8 @@ function updateHostPortsShown() {
     let highest = 0;
     for (let i = 0; i < 4; i++) if (hostPortMask & (1 << i)) highest = i + 1;
     hostPortsSeen = Math.max(hostPortsSeen, highest + 1, 1);
-    hostPortsShown = Math.min(hostCapacity(), hostPortsSeen);
+    // A device on a port means there's room for it, whatever the hub report says.
+    hostPortsShown = Math.min(Math.max(hostCapacity(), highest), hostPortsSeen);
   }
   return hostPortsShown !== before;
 }

@@ -18,6 +18,8 @@ Upstream's RP2040 driver files alone, over 3.7.7's stack, broke a Launchpad's no
 | `portable/raspberrypi/rp2040/rp2040_usb.c` | Buffer armed twice calls `foxwizard_usb_fault()`. Stock: `panic()` | Same |
 | `foxwizard_usb_fault.h` | New | The fault hook, defined in `Foxwizard_Host_Edition_Sidecar.ino`, and the hub port count accessor |
 | `host/hub.c` | `foxwizard_hub_port_count()` added | The sketch counts how many jacks the attached hubs have |
+| `portable/raspberrypi/rp2040/hcd_rp2040.c` | Endpoint pool 64 (stock 16), and `foxwizard_usb_trace()` when it runs out | Each device takes a slot for its control endpoint and two per MIDI interface, each hub one more, so 15 ran out at about four devices behind two hubs and the last device never got its MIDI interface |
+| `host/usbh.c` | `foxwizard_usb_trace()` when an enumeration fails | It shows in the host report's events |
 
 Recovering in place (rolling back the data sequence, clearing stalls to DATA0) was tried and caused more faults, mostly buffers armed twice, so every fault restarts instead.
 

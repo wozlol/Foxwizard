@@ -68,7 +68,7 @@ constexpr uint8_t PIN_TRS_BOARD = 14; // floating (its internal pull-up): a bare
                                        // Tells the main brain whether TRS 2-6 physically exist.
 
 constexpr uint32_t DIN_BAUD = 31250;
-constexpr uint8_t HOST_FW_VERSION = 4; // 3: the host report. 4: chained hubs, hub and spare device reporting
+constexpr uint8_t HOST_FW_VERSION = 5; // 3: the host report. 4: chained hubs, hub and spare device reporting. 5: 64 endpoint slots, stack trace events
 
 constexpr uint8_t HUB_PORTS = 4;
 constexpr uint8_t DIN_OUTS = 5;
@@ -286,6 +286,11 @@ void recoveryRestart(uint8_t reason, uint8_t port) {
   logEvent(HOST_EVENT_RESTART, port, reason);
   watchdog_hw->scratch[0] = RESTART_TAG | ((uint32_t)reason << 8) | port;
   rp2040.reboot();
+}
+
+// Things the USB stack did that nothing else reports (see foxwizard_usb_fault.h).
+extern "C" void foxwizard_usb_trace(uint8_t code, uint8_t a, uint8_t b) {
+  logEvent(HOST_EVENT_TRACE, code, a, b);
 }
 
 // USB driver faults, from the vendored driver where stock TinyUSB halts with panic(). Called from
@@ -683,7 +688,7 @@ void resetHubPort(HubPort &hp) {
 }
 
 // MIDI interfaces that came while all four slots were taken. They wait, and take the next one to free.
-struct WaitingMidi { bool used; uint8_t daddr; bool writable; };
+struct WaitingMidi { bool used; uint8_t daddr; bool writable; uint8_t cables; };
 WaitingMidi waitingMidi[CFG_TUH_MIDI];
 
 uint8_t waitingDeviceCount() {
@@ -698,7 +703,7 @@ uint8_t waitingDeviceCount() {
 }
 
 // Puts a MIDI interface in a slot. False if all four are taken.
-bool placeMidi(uint8_t idx, uint8_t daddr, bool writable) {
+bool placeMidi(uint8_t idx, uint8_t daddr, bool writable, uint8_t cables) {
   tuh_bus_info_t info;
   if (!tuh_bus_info_get(daddr, &info)) return true; // already gone, nothing to wait for
   for (const HubPort &other : hubPorts) if (other.mounted && other.daddr == daddr) return true; // its other MIDI interface
@@ -734,15 +739,16 @@ bool placeMidi(uint8_t idx, uint8_t daddr, bool writable) {
   bb.writable = hp.writable;
   bb.hubPort = info.hub_port;
   bb.tier = tier;
-  logEvent(HOST_EVENT_MOUNT, port);
+  logEvent(HOST_EVENT_MOUNT, port, (uint8_t)tuh_speed_get(daddr), cables);
   return true;
 }
 
 void tuh_midi_mount_cb(uint8_t idx, const tuh_midi_mount_cb_t *mount_cb_data) {
   if (idx >= CFG_TUH_MIDI) return;
   const bool writable = mount_cb_data->tx_cable_count > 0;
-  if (placeMidi(idx, mount_cb_data->daddr, writable)) return;
-  waitingMidi[idx] = WaitingMidi{true, mount_cb_data->daddr, writable};
+  const uint8_t cables = (uint8_t)((mount_cb_data->rx_cable_count << 4) | (mount_cb_data->tx_cable_count & 0x0F)); // in cables high, out cables low
+  if (placeMidi(idx, mount_cb_data->daddr, writable, cables)) return;
+  waitingMidi[idx] = WaitingMidi{true, mount_cb_data->daddr, writable, cables};
   portMapDirty = true;
   logEvent(HOST_EVENT_FULL, 0, mount_cb_data->daddr);
 }
@@ -751,7 +757,7 @@ void tuh_midi_mount_cb(uint8_t idx, const tuh_midi_mount_cb_t *mount_cb_data) {
 void placeWaitingMidi() {
   for (uint8_t i = 0; i < CFG_TUH_MIDI; ++i) {
     if (!waitingMidi[i].used) continue;
-    if (!placeMidi(i, waitingMidi[i].daddr, waitingMidi[i].writable)) return; // still full
+    if (!placeMidi(i, waitingMidi[i].daddr, waitingMidi[i].writable, waitingMidi[i].cables)) return; // still full
     waitingMidi[i].used = false;
     portMapDirty = true;
   }
@@ -782,9 +788,12 @@ uint8_t hubCount() {
 
 // Any device at all, so the diagnostic light can tell "nothing plugged in" from "not USB MIDI".
 void tuh_mount_cb(uint8_t daddr) {
-  tusb_desc_device_t desc;
-  if (tuh_descriptor_get_device_local(daddr, &desc) && desc.bDeviceClass == TUSB_CLASS_HUB) { // cached copy, no USB transfer
-    if (daddr > CFG_TUH_DEVICE_MAX && daddr <= CFG_TUH_DEVICE_MAX + CFG_TUH_HUB) hubMounted[daddr - 1 - CFG_TUH_DEVICE_MAX] = true;
+  // The stack gives hubs the addresses above CFG_TUH_DEVICE_MAX, so that's what makes one a hub.
+  tuh_bus_info_t info;
+  const bool known = tuh_bus_info_get(daddr, &info);
+  logEvent(HOST_EVENT_DEVICE, known ? info.hub_port : 0, daddr, (uint8_t)tuh_speed_get(daddr));
+  if (daddr > CFG_TUH_DEVICE_MAX) {
+    if (daddr <= CFG_TUH_DEVICE_MAX + CFG_TUH_HUB) hubMounted[daddr - 1 - CFG_TUH_DEVICE_MAX] = true;
     portMapDirty = true;
     return;
   }

@@ -35,6 +35,8 @@ constexpr uint8_t HOST_EVENT_SKIP = 4;     // the port accepted nothing for 1 s,
 constexpr uint8_t HOST_EVENT_RESTART = 5;  // a = reason
 constexpr uint8_t HOST_EVENT_FAULT = 6;    // a = USB driver fault code
 constexpr uint8_t HOST_EVENT_FULL = 7;     // a = device address. It came while all four USB Host slots were taken, and waits
+constexpr uint8_t HOST_EVENT_TRACE = 8;    // port = what (FOXWIZARD_TRACE_*), a and b as that says
+constexpr uint8_t HOST_EVENT_DEVICE = 9;   // a USB device finished enumerating. port = its hub port, a = its address, b = speed (0 full, 1 low, 2 high)
 // Where the host brain's loop was, for a restart the watchdog caused
 constexpr uint8_t HOST_STAGE_USB_TASK = 1, HOST_STAGE_LINK_IN = 2, HOST_STAGE_DIN_IN = 3, HOST_STAGE_USB_IN = 4,
                   HOST_STAGE_DISPATCH = 5, HOST_STAGE_USB_OUT = 6, HOST_STAGE_DIN_OUT = 7, HOST_STAGE_CONTROL = 8,

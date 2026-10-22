@@ -19,6 +19,14 @@ void foxwizard_usb_fault(uint8_t fault);
 // Defined in host/hub.c: how many downstream ports the hub at this address has, 0 if it isn't one.
 uint8_t foxwizard_hub_port_count(uint8_t daddr);
 
+// Things the host stack does that nothing else reports, for the host report's event list. Defined in
+// Foxwizard_Host_Edition_Sidecar.ino, called from the USB task, never an interrupt.
+enum {
+  FOXWIZARD_TRACE_ENUM_FAILED = 1,   // a device never finished enumerating. a = its hub's address, b = its hub port
+  FOXWIZARD_TRACE_EDPT_POOL_FULL = 2 // no free endpoint slot for a device. a = slots in use, b = the device's address
+};
+void foxwizard_usb_trace(uint8_t code, uint8_t a, uint8_t b);
+
 #ifdef __cplusplus
 }
 #endif
