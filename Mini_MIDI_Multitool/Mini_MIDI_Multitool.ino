@@ -97,7 +97,7 @@ constexpr uint8_t SYSEX_MFR_ID = 0x7D;   // reserved for non-commercial/educatio
 constexpr uint8_t SYSEX_DEVICE_ID = 0x4D; // 'M'
 constexpr uint8_t PROTOCOL_VERSION = 4; // 2: 45-byte routes with port masks, GET_STATUS. 3: clock settings, LEARN. 4: 53-byte routes with feature fields, feature blocks
 constexpr uint8_t FW_VERSION_MAJOR = 1;
-constexpr uint8_t FW_VERSION_MINOR = 74;
+constexpr uint8_t FW_VERSION_MINOR = 75;
 constexpr uint8_t FW_CHUNK_BYTES = 128;          // firmware bytes per FW_DATA message, 147 once packed
 constexpr uint32_t FW_REBOOT_DELAY_MS = 300;     // lets the FW_END ACK reach the host before rebooting
 const char DEVICE_NAME[] = "FoxWizard Mini MIDI Multitool"; // long name sent in the SysEx IDENTITY_REPLY
@@ -3211,6 +3211,28 @@ void looperSetQuantize() {
   looper.setRecordQuantizeUs(q && q <= fw::kMusicalDivisionCount ? (uint32_t)fw::divisionDurationUs(arpDivisionFrom(q), clockEngine.bpm()) : 0);
 }
 
+// An overdub that starts with notes already held begins with them, at the start of the pass, so a hat
+// held for a roll gets its start note and ends when it's let go (1.75). Each is counted as part of the
+// pass, so its Note Off is kept.
+void looperStartOverdub() {
+  looperSetQuantize();
+  looper.armRecord(0, 0, true);
+  if (!looper.recording()) return;
+  loopPassGeneration = looper.track(0).generation;
+  loopPassCount = 0;
+  const uint64_t now = time_us_64();
+  for (uint8_t k = 0; k < loopHeldCount; ++k) {
+    const LoopHeld &h = loopHeld[k];
+    fw::LoopMidiEvent e;
+    e.status = 0x90 | h.channel;
+    e.data1 = h.note;
+    e.data2 = h.velocity ? h.velocity : 100;
+    e.tag = h.tag;
+    looper.capture(now, e);
+    loopPassTake(h.tag, true, h.channel, h.note);
+  }
+}
+
 void looperArm() {
   looperSetQuantize();
   const uint8_t bars = looperSettings.bars <= 16 ? looperSettings.bars : 0;
@@ -3243,8 +3265,7 @@ bool looperFinish(uint64_t now, bool startIfStopped) {
 // Auto Overdub: a new take that starts playing goes straight into overdub.
 void looperAutoOverdub() {
   if (!looperSettings.autoOverdub || looper.recording() || looper.recordingArmed()) return;
-  looperSetQuantize();
-  looper.armRecord(0, 0, true);
+  looperStartOverdub();
 }
 
 // Drops a take in progress, nothing of it kept.
@@ -3347,8 +3368,7 @@ void looperTap() {
       if (looper.overdubbing()) {
         looperFinish(now, false);
       } else {
-        looperSetQuantize();
-        looper.armRecord(0, 0, true); // overdub on
+        looperStartOverdub(); // overdub on
       }
       break;
     case LS_STOPPED: looper.start(now); break;
@@ -3827,7 +3847,7 @@ void looperResize(bool grow) {
   const uint64_t target = grow ? (uint64_t)t.lengthUs * 2 : t.lengthUs / 2;
   const bool fits = grow ? target <= (uint64_t)barUs * 64 : target >= beatUs; // 64 bars, one beat
   if (fits && looper.resizeTrack(0, (uint32_t)target, now, looperRelease, nullptr)) looperRetrigger();
-  if (wasOverdubbing) { looperSetQuantize(); looper.armRecord(0, 0, true); }
+  if (wasOverdubbing) looperStartOverdub();
   const uint32_t bars = barUs ? (looper.track(0).lengthUs + barUs / 2) / barUs : 1;
   const uint8_t shown = bars < 1 ? 1 : (bars > 64 ? 64 : bars);
   flashAllLedsCount(shown);
@@ -3868,7 +3888,7 @@ void looperAction(uint8_t id, bool down) {
     case LOOP_ACT_OVERDUB:
       if (!looper.playing()) break;
       if (looper.overdubbing()) looperFinish(now, false);
-      else { looperSetQuantize(); looper.armRecord(0, 0, true); }
+      else looperStartOverdub();
       break;
     case LOOP_ACT_CLEAR:
       if (looper.overdubbing()) looper.cancelRecording();
@@ -3891,7 +3911,7 @@ void looperAction(uint8_t id, bool down) {
         case LS_RECORDING: looperFinish(now, true); break;
         case LS_PLAYING:
           if (looper.overdubbing()) looperFinish(now, false);
-          else { looperSetQuantize(); looper.armRecord(0, 0, true); }
+          else looperStartOverdub();
           break;
         default: looperArm(); break;
       }

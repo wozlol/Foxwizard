@@ -169,6 +169,7 @@ class Looper {
                                   ReleaseFn release, void *context);
   void resetPlaybackCursors(uint64_t nowUs);
   void closeHeldRecordingNotes(uint32_t boundaryUs);
+  void splitHeldAtWrap(uint8_t track);
   void unlinkSlot(uint8_t track, uint16_t slot);
   uint16_t eraseNote(uint8_t track, uint16_t onSlot);
   bool layerHasEvents(uint8_t layer) const;
@@ -206,6 +207,7 @@ class Looper {
   uint16_t recordStartCount_ = 0;
   bool importing_[kLoopTrackCount]{};
   uint16_t recordHeld_[16][128]{}; // FoxWizard: the held note's tag + 1, 0 not held
+  uint8_t recordHeldVelocity_[16][128]{}; // FoxWizard 1.75: its velocity, for restarting it at the top of the loop
   uint8_t layers_[kMaxUndoLayers]{};  // overdub layers, oldest first, hidden ones included
   uint8_t layerCount_ = 0;
   uint8_t hidden_[kMaxUndoLayers]{};  // hidden layers in the order they were hidden

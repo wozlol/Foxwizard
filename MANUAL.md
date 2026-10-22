@@ -296,6 +296,12 @@ With no loop yet, Double and Half change the Length the next take gets, 1 to 16 
 you Save to Device again. Either way, the lights blink the new number of bars.
 | Note Delete | hold it and play notes to erase them from the loop, see below |
 
+### Held notes
+
+A note you're already holding when an overdub starts is recorded from the start of the overdub, so a held
+hat for a roll starts with it and ends when you let go. A note held right across the top of the loop is
+recorded as one held note that carries over the top, instead of losing its part after the top.
+
 ### Note Delete
 
 Hold Note Delete while the loop plays, and the notes you play don't sound.
