@@ -97,7 +97,7 @@ constexpr uint8_t SYSEX_MFR_ID = 0x7D;   // reserved for non-commercial/educatio
 constexpr uint8_t SYSEX_DEVICE_ID = 0x4D; // 'M'
 constexpr uint8_t PROTOCOL_VERSION = 4; // 2: 45-byte routes with port masks, GET_STATUS. 3: clock settings, LEARN. 4: 53-byte routes with feature fields, feature blocks
 constexpr uint8_t FW_VERSION_MAJOR = 1;
-constexpr uint8_t FW_VERSION_MINOR = 83;
+constexpr uint8_t FW_VERSION_MINOR = 84;
 constexpr uint8_t FW_CHUNK_BYTES = 128;          // firmware bytes per FW_DATA message, 147 once packed
 constexpr uint32_t FW_REBOOT_DELAY_MS = 300;     // lets the FW_END ACK reach the host before rebooting
 const char DEVICE_NAME[] = "FoxWizard Mini MIDI Multitool"; // long name sent in the SysEx IDENTITY_REPLY
@@ -5491,6 +5491,7 @@ void pumpDinIn() {
   uint8_t budget = INPUT_BUDGET;
   if (!outputsHaveRoom()) return;
   while (budget-- && Serial1.available() > 0) {
+    if ((budget & 0x1F) == 0x1F) serviceTiming(); // every 32 bytes
     processDinByte(static_cast<uint8_t>(Serial1.read()));
   }
 }
@@ -5568,7 +5569,10 @@ void pumpUsbIn() {
   uint8_t packet[4];
   uint8_t budget = INPUT_BUDGET; // a flood (a feedback loop in a DAW) can't starve everything else
   if (!outputsHaveRoom()) return; // an output backed up: the computer waits, nothing is dropped
-  while (budget-- && usb_midi.readPacket(packet)) handleUsbMidiPacket(DEV_USB, usbSysex, packet);
+  while (budget-- && usb_midi.readPacket(packet)) {
+    if ((budget & 0x0F) == 0x0F) serviceTiming(); // every 16 packets
+    handleUsbMidiPacket(DEV_USB, usbSysex, packet);
+  }
 }
 
 // Host brain frames: ports 1-4 are hub ports, 5 is its DIN IN, 15 is control. All parsing is
@@ -5615,10 +5619,19 @@ void serviceStuckNoteGuard() {
   hostEverPresent |= present;
 }
 
+// The clock and the arps are the timing that has to stay put, so they run first each loop, and again every
+// few input messages, instead of waiting for a long run of input to finish (1.84).
+void serviceTiming() {
+  serviceClock();
+  serviceArps();
+}
+
 void pumpHostIn() {
   uint16_t budget = LINK_RX_BUDGET;
+  uint8_t sinceTiming = 0;
   if (!outputsHaveRoom()) { ++perfInputHeldBack; return; } // backlog builds, so the host brain is asked to pause
   while (budget-- && linkSerial.available() > 0) {
+    if (++sinceTiming >= 40) { sinceTiming = 0; serviceTiming(); } // every 8 frames' worth of bytes
     if (!linkReader.feed((uint8_t)linkSerial.read())) continue;
     uint8_t packet[4];
     uint8_t port = decodeLinkFrame(linkReader.frame, packet);
@@ -6061,6 +6074,7 @@ void loop() {
   TinyUSBDevice.task();
 #endif
 
+  serviceTiming(); // before any input, so a long run of it can't hold the clock up
   pumpUsbIn();
   pumpDinIn();
   pumpHostIn();
