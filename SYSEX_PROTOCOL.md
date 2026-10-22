@@ -594,7 +594,7 @@ It copies the bytes that were saved and leaves the rest zero, so new fields go a
 struct and zero must mean off. `FOX1` (firmware 1.0) has no size bytes, a 6-byte global, and 41-byte
 routes, and loads the same way. The first COMMIT rewrites it as `FOX2`.
 
-64 routes leave each route room to grow from 41 to 63 bytes within 4 KB. The firmware's static_assert
+60 routes (64 before 1.48) leave each route room to grow from 41 to 63 bytes within 4 KB. The firmware's static_assert
 fails the build if MAX_ROUTES times the route size stops fitting. Growing the route struct also
 changes the wire format, which needs a PROTOCOL_VERSION bump. Patchling doesn't check
 PROTOCOL_VERSION yet, so that change has to add the check.

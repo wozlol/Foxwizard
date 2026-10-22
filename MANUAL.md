@@ -17,6 +17,28 @@ The Host Edition adds four USB Host ports and more TRS/DIN ports. See
 - TRS MIDI OUT: 3.5mm TRS-A MIDI output.
 - Button: single multi-function button.
 
+## Host Edition ports
+
+The Host Edition adds a host brain to the FoxWizard, and with it more ports. All of them route
+through the same routes.
+
+| Port | In | Out | Notes |
+|---|---|---|---|
+| USB Device (USB-C) | 1 | 1 | to a computer |
+| TRS/DIN | 1 | 1 | the FoxWizard's own |
+| USB Host 1-4 | 4 | 4 | one device each, through the board's hub |
+| TRS 2 | 1 | 1 | needs the TRS board |
+| TRS 3-6 | | 4 | needs the TRS board |
+
+That is **13 MIDI connections**, 7 inputs and 11 outputs to route between. Without the TRS board it is
+7 connections, 6 inputs and 6 outputs. Up to 60 routes.
+
+Up to four USB devices work at once, whichever hub jacks they're plugged into. A fifth waits and starts
+working when a port frees up. Patchling shows only the USB Host ports there's room for. With no hub,
+that's one, for a device plugged straight in. With a hub it's the hub's jacks, up to four, and the next
+port shows up once a device is plugged into the one before it. A hub made of more than one chip, or a
+hub plugged into a hub, works too.
+
 ## Status LEDs
 
 - IN LED: flashes on TRS MIDI input activity.
