@@ -321,7 +321,7 @@ Mapped notes and CCs don't pass through. Messages go to the route's outputs and 
 | 8 | Program Up/Down | 1 up, 0 down | | press, from the last program sent, wrapping |
 | 9 | Live Out Channel | channel 0-15 | | press: the route sends only on that channel for the session, pressed again it's back. Notes sounding on the old channels get All Notes Off, and the route's arp lets go |
 | 10 | Live Velocity | 0 follows the value, 1-20 = 10-200% | | follows: every CC value or press velocity sets 10-200%. Fixed: press sets it, pressed again it's back. Takes the place of the route's Velocity % for the session |
-| 11 | Looper | 0 1-Button (as the button in Looper mode, hold included), 1 Play/Arm/Rec, 2 Stop/Clear/Undo, 3 Play, 4 Stop, 5 Pause, 6 Overdub, 7 Clear, 8 Un-Clear, 9 Rec/Arm, 10 Un-Overdub, 11 Re-Overdub, 12 Double, 13 Half (10-13 from 1.60) | | press (1-Button: press and release) |
+| 11 | Looper | 0 1-Button (as the button in Looper mode, hold included), 1 Play/Arm/Rec, 2 Stop/Clear/Undo, 3 Play, 4 Stop, 5 Pause, 6 Overdub, 7 Clear, 8 Un-Clear, 9 Rec/Arm, 10 Un-Overdub, 11 Re-Overdub, 12 Double, 13 Half (10-13 from 1.60), 14 Note Delete (1.66) | | press (1-Button: press and release) |
 | 12 | Tap Tempo | | | press |
 | 13 | Live Ch Up/Down | 1 up, 0 down | | press: the live out channel steps, wrapping |
 | 14 | Arp Div Up/Down | 1 up, 0 down | | press: the route's arp division steps |
@@ -339,6 +339,11 @@ Mapped notes and CCs don't pass through. Messages go to the route's outputs and 
 Live out channel and velocity are session only, cleared when routes change. With a live out channel on,
 a route's arp is bypassed (notes play straight on the live channel, no Bypass or Bass) unless its
 Follows Live Ch Change switch is on (arp block byte 14), then it arpeggiates onto the live channel.
+Note Delete (1.66) is held: press and release. While the loop plays, the notes the user plays don't pass
+(Note to Feature notes excepted) and each erases, from the loop, the notes it stands for as playback reaches
+their Note On, and the Note Off that ends them. Recording inputs, a key stands for its own channel and note. Recording
+after routes, for the notes its routes would make from it (Scale, Auto Chord, transpose, arp octaves) on any channel.
+Notes are erased for good. A key pressed before Note Delete, or after it's let go, plays as normal.
 Echo and Stutter apply either way. Stop starts the next Play from the top, Pause carries on from
 where it stopped. Rec/Arm arms, and pressed again while armed starts recording at once. Types 1 and
 2 are unused.

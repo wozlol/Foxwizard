@@ -51,6 +51,9 @@ class Looper {
   using EmitFn = void (*)(void *context, uint8_t track, const LoopMidiEvent &event);
   using ReleaseFn = void (*)(void *context, uint8_t track);
   using VisitFn = bool (*)(void *context, uint8_t track, const LoopMidiEvent &event);
+  // FoxWizard 1.66, Note Delete: asked about each Note On as playback reaches it. True erases that
+  // note from the loop, its Note Off too, and nothing sounds.
+  using EraseFn = bool (*)(void *context, const LoopMidiEvent &event);
   using HeldNoteFn = void (*)(void *context, uint8_t track, uint16_t tag, uint8_t channel,
                               uint8_t note, uint8_t velocity);
 
@@ -91,6 +94,7 @@ class Looper {
   // they fall past the last kMaxUndoLayers, so a layer undone before a newer overdub can still come
   // back. The take itself (layer 0) is only ever cleared, never un-overdubbed.
   static constexpr uint8_t kMaxUndoLayers = 16;
+  void setEraseHook(EraseFn fn, void *context) { eraseFn_ = fn; eraseContext_ = context; }
   bool unOverdub(uint64_t nowUs);
   bool reOverdub();
   bool layerHidden(uint8_t layer) const { return layerHiddenBits_[layer >> 3] & (1U << (layer & 7)); }
@@ -156,6 +160,9 @@ class Looper {
                                   ReleaseFn release, void *context);
   void resetPlaybackCursors(uint64_t nowUs);
   void closeHeldRecordingNotes(uint32_t boundaryUs);
+  void unlinkSlot(uint8_t track, uint16_t slot);
+  uint16_t eraseNote(uint8_t track, uint16_t onSlot);
+  bool layerHasEvents(uint8_t layer) const;
   void resetLayers();
   void startOverdubLayer();
   void forgetLayer(uint8_t layer);
@@ -197,6 +204,8 @@ class Looper {
   uint8_t layerHiddenBits_[32]{};
   uint8_t currentLayer_ = 0;          // the layer the pass being recorded writes
   uint32_t layerStamp_ = 0;
+  EraseFn eraseFn_ = nullptr;
+  void *eraseContext_ = nullptr;
 };
 
 }  // namespace fw

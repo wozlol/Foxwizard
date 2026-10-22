@@ -42,8 +42,9 @@ export const ACTION_TYPES = [
 export const TRANSPORTS = ['Play', 'Stop', 'Continue', 'Pause', 'Record', 'Record Exit', 'Rewind', 'Fast Forward', 'Return to Start'];
 
 // Undo here is Un-Clear: it brings back a cleared loop. Un-Overdub and Re-Overdub (1.60) step through
-// overdub layers instead. Double and Half change the loop's length while it plays.
-export const LOOPER_ACTIONS = ['1-Button', 'Play/Arm/Rec', 'Stop/Clear/Undo', 'Play', 'Stop', 'Pause', 'Overdub', 'Clear', 'Un-Clear', 'Rec/Arm', 'Un-Overdub', 'Re-Overdub', 'Double', 'Half'];
+// overdub layers instead. Double and Half change the loop's length while it plays. Note Delete (1.66)
+// is held: notes played meanwhile erase the same notes from the loop as it plays them.
+export const LOOPER_ACTIONS = ['1-Button', 'Play/Arm/Rec', 'Stop/Clear/Undo', 'Play', 'Stop', 'Pause', 'Overdub', 'Clear', 'Un-Clear', 'Rec/Arm', 'Un-Overdub', 'Re-Overdub', 'Double', 'Half', 'Note Delete'];
 
 // The mapper's Stutter Length action (1.48): bar fractions, measured against the actual time
 // signature, rather than the arp-style musical divisions the route's own Stutter squares use.
@@ -123,7 +124,7 @@ export function defaultLpActions() {
     { type: ACT.STUTTER_LENGTH, a: 2, b: 0 },      // Side 3: Stutter 1/2 bar
     { type: ACT.STUTTER_LENGTH, a: 1, b: 0 },      // Side 4: Stutter 1/4 bar
     { type: ACT.STUTTER_LENGTH, a: 0, b: 0 },      // Side 5: Stutter 1/8 bar
-    { type: ACT.ECHO_TOGGLE, a: 0, b: 0 },         // Side 6: Echo On/Off
+    { type: ACT.LOOPER, a: 14, b: 0 },             // Side 6: Looper Note Delete
     { type: ACT.LOOPER, a: 1, b: 0 },              // Side 7: Looper Play/Arm/Rec
     { type: ACT.LOOPER, a: 2, b: 0 }               // Side 8: Looper Stop/Clear/Undo
   ];

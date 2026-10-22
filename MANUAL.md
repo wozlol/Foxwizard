@@ -247,6 +247,23 @@ Hold Clears off swaps hold and double press.
 | Re-Overdub | brings back the overdub layer removed most recently |
 | Double | the loop plays twice in a loop twice as long, ready to overdub something longer |
 | Half | plays the first half. Half then Double brings the original back. |
+| Note Delete | hold it and play notes to erase them from the loop, see below |
+
+### Note Delete
+
+Hold Note Delete while the loop plays, and the notes you play don't sound.
+Instead, each one erases itself from the loop: whenever the loop reaches
+a note you're holding, that note is removed, along with its end. Notes
+the loop plays while you're not holding them stay. Letting go of Note
+Delete stops it. Erased notes are gone for good. With the loop stopped
+or empty, nothing happens and your notes play as normal.
+
+With Record After Routes on, a note matches the pitches its routes would
+make from it (Scale, Auto Chord, transpose, arp octaves), on any channel.
+With it off, it matches the note and channel you played.
+
+By default Note Delete is Launchpad Side 6, the third button up from the
+bottom.
 
 Up to 16 overdub layers can be stepped back and forth. A layer removed
 with Un-Overdub can still come back after newer overdubs. Removed layers

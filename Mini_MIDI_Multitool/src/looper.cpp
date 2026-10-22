@@ -80,6 +80,50 @@ void Looper::deleteLayer(uint8_t layer) {
   forgetLayer(layer);
 }
 
+bool Looper::layerHasEvents(uint8_t layer) const {
+  for (uint16_t slot = tracks_[recordingTrack_].head; slot != kNoLoopEvent; slot = slots_[slot].next) {
+    if (slots_[slot].layer == layer) return true;
+  }
+  return false;
+}
+
+// Takes one event out of a track's list.
+void Looper::unlinkSlot(uint8_t trackIndex, uint16_t slot) {
+  LoopTrackState &track = tracks_[trackIndex];
+  uint16_t previous = kNoLoopEvent;
+  uint16_t s = track.head;
+  while (s != kNoLoopEvent && s != slot) { previous = s; s = slots_[s].next; }
+  if (s == kNoLoopEvent) return;
+  const uint16_t next = slots_[slot].next;
+  if (previous == kNoLoopEvent) track.head = next;
+  else slots_[previous].next = next;
+  if (track.tail == slot) track.tail = previous;
+  if (track.playCursor == slot) track.playCursor = next;
+  freeSlot(slot);
+  if (track.count) --track.count;
+}
+
+// Erases a note: its Note On, and the Note Off that ends it (the next one for the same channel,
+// note and tag, wrapping around the loop). Returns the event that followed the Note On.
+uint16_t Looper::eraseNote(uint8_t trackIndex, uint16_t onSlot) {
+  LoopTrackState &track = tracks_[trackIndex];
+  const EventSlot on = slots_[onSlot];
+  auto endsIt = [&](uint16_t s) {
+    const EventSlot &e = slots_[s];
+    const uint8_t type = e.status & 0xF0;
+    return (type == 0x80 || (type == 0x90 && e.data2 == 0)) && (e.status & 0x0F) == (on.status & 0x0F) &&
+           e.data1 == on.data1 && e.tag == on.tag && e.layer == on.layer;
+  };
+  uint16_t off = kNoLoopEvent;
+  for (uint16_t s = on.next; s != kNoLoopEvent && off == kNoLoopEvent; s = slots_[s].next) if (endsIt(s)) off = s;
+  for (uint16_t s = track.head; s != onSlot && s != kNoLoopEvent && off == kNoLoopEvent; s = slots_[s].next) if (endsIt(s)) off = s;
+  uint16_t next = on.next;
+  if (off == next && off != kNoLoopEvent) next = slots_[off].next;
+  if (off != kNoLoopEvent) unlinkSlot(trackIndex, off);
+  unlinkSlot(trackIndex, onSlot);
+  return next;
+}
+
 // Memory full: the layer undone longest ago goes for good, so recording can carry on.
 bool Looper::dropOldestHiddenLayer() {
   if (hiddenCount_ == 0) return false;
@@ -320,7 +364,7 @@ bool Looper::finishRecording(uint64_t nowUs) {
   }
   closeHeldRecordingNotes(closeAtUs);
   // An overdub pass that captured nothing isn't a layer to undo.
-  if (overdubbing_ && currentLayer_ && track.count <= recordStartCount_) forgetLayer(currentLayer_);
+  if (overdubbing_ && currentLayer_ && !layerHasEvents(currentLayer_)) forgetLayer(currentLayer_);
   currentLayer_ = 0;
   recording_ = false;
   overdubbing_ = false;
@@ -569,6 +613,12 @@ void Looper::tick(uint64_t nowUs, EmitFn emit, ReleaseFn release,
     while (track.playCursor != kNoLoopEvent && processed < maxEvents) {
       const EventSlot &slot = slots_[track.playCursor];
       if (slot.atUs > elapsed) break;
+      if (canEmit && eraseFn_ && (slot.status & 0xF0) == 0x90 && slot.data2 && !layerHidden(slot.layer) &&
+          eraseFn_(eraseContext_, slot.event())) {
+        track.playCursor = eraseNote(trackIndex, track.playCursor); // never played, and gone
+        ++processed;
+        continue;
+      }
       if (canEmit && emit && !layerHidden(slot.layer)) emit(context, trackIndex, slot.event());
       track.playCursor = slot.next;
       ++processed;

@@ -97,7 +97,7 @@ constexpr uint8_t SYSEX_MFR_ID = 0x7D;   // reserved for non-commercial/educatio
 constexpr uint8_t SYSEX_DEVICE_ID = 0x4D; // 'M'
 constexpr uint8_t PROTOCOL_VERSION = 4; // 2: 45-byte routes with port masks, GET_STATUS. 3: clock settings, LEARN. 4: 53-byte routes with feature fields, feature blocks
 constexpr uint8_t FW_VERSION_MAJOR = 1;
-constexpr uint8_t FW_VERSION_MINOR = 65;
+constexpr uint8_t FW_VERSION_MINOR = 66;
 constexpr uint8_t FW_CHUNK_BYTES = 128;          // firmware bytes per FW_DATA message, 147 once packed
 constexpr uint32_t FW_REBOOT_DELAY_MS = 300;     // lets the FW_END ACK reach the host before rebooting
 const char DEVICE_NAME[] = "FoxWizard Mini MIDI Multitool"; // long name sent in the SysEx IDENTITY_REPLY
@@ -413,6 +413,7 @@ enum : uint8_t {
   LOOP_ACT_BUTTON = 0, LOOP_ACT_PLAY_ARM_REC, LOOP_ACT_STOP_CLEAR_UNDO, LOOP_ACT_PLAY, LOOP_ACT_STOP,
   LOOP_ACT_PAUSE, LOOP_ACT_OVERDUB, LOOP_ACT_CLEAR, LOOP_ACT_UNDO, LOOP_ACT_REC_ARM,
   LOOP_ACT_UN_OVERDUB, LOOP_ACT_RE_OVERDUB, LOOP_ACT_DOUBLE, LOOP_ACT_HALF, // 1.60
+  LOOP_ACT_NOTE_DELETE, // 1.66
   LOOP_ACT_COUNT
 };
 constexpr uint8_t MAP_ENTRIES = 16;
@@ -425,6 +426,14 @@ MapEntry noteMap[MAP_ENTRIES];      // Note to Feature
 MapEntry ccMap[MAP_ENTRIES];        // CC to Feature
 MapAction lpActions[LAUNCHPAD_BUTTONS];
 bool noteMapToggle[MAP_ENTRIES], ccMapToggle[MAP_ENTRIES], lpToggle[LAUNCHPAD_BUTTONS];
+
+// Note Delete (1.66), see the Note Delete section. Types here so the auto prototypes can see them.
+constexpr uint8_t DELETE_KEYS = 16;
+constexpr uint8_t DELETE_NOTES = 24;
+struct DeleteKey {
+  uint8_t device, channel, note, count;
+  uint8_t notes[DELETE_NOTES]; // what the key stands for in a loop recorded after routes
+};
 bool ccMapHeld[MAP_ENTRIES];        // a CC source at 64 and up, so it presses once
 constexpr uint8_t LP_NOT_GRID = 0xFF; // not a grid pad: a side button, or outside the grid
 
@@ -1247,7 +1256,7 @@ const MapAction LP_DEFAULT_ACTIONS[LAUNCHPAD_BUTTONS] = {
   {ACT_LIVE_CHANNEL, 1, 0, 0}, {ACT_LIVE_CHANNEL, 2, 0, 0},     // Live Ch 2, 3
   {ACT_STUTTER_LENGTH, 4, 0, 0}, {ACT_STUTTER_LENGTH, 3, 0, 0}, // Stutter 2 bars, 1 bar
   {ACT_STUTTER_LENGTH, 2, 0, 0}, {ACT_STUTTER_LENGTH, 1, 0, 0}, // Stutter 1/2, 1/4 bar
-  {ACT_STUTTER_LENGTH, 0, 0, 0}, {ACT_ECHO_TOGGLE, 0, 0, 0},    // Stutter 1/8 bar, Echo On/Off
+  {ACT_STUTTER_LENGTH, 0, 0, 0}, {ACT_LOOPER, LOOP_ACT_NOTE_DELETE, 0, 0}, // Stutter 1/8 bar, Looper Note Delete
   {ACT_LOOPER, 1, 0, 0}, {ACT_LOOPER, 2, 0, 0},                 // Looper Play/Arm/Rec, Stop/Clear/Undo
 };
 
@@ -2988,6 +2997,82 @@ void looperRelease(void *, uint8_t) {
   flushPending();
 }
 
+// ============================================================================================
+// Note Delete (1.66). While the action is held and the loop plays, every note the user plays is
+// kept from the routes (nothing sounds, nothing is recorded) and becomes an eraser: a loop note of
+// the same pitch that plays while that key is down is erased from the loop, its Note Off too. A
+// loop that records inputs matches the key's own channel and note. One that records after routes
+// matches the notes the routes would have made from the key (Scale, Auto Chord, transpose, arp
+// octaves), on any channel.
+// ============================================================================================
+DeleteKey deleteKeys[DELETE_KEYS];
+uint8_t deleteKeyCount = 0;
+bool noteDeleteHeld = false;
+
+bool noteDeleteActive() {
+  const fw::LoopTrackState &t = looper.track(0);
+  return noteDeleteHeld && looper.playing() && !looper.paused() && t.count > 0 && !t.hidden;
+}
+
+void noteDeleteSet(bool down) {
+  noteDeleteHeld = down;
+  if (down) deleteKeyCount = 0; // keys from an earlier hold don't carry over
+}
+
+void noteDeleteAdd(DeleteKey &key, int16_t note) {
+  if (note < 0 || note > 127 || key.count >= DELETE_NOTES) return;
+  for (uint8_t k = 0; k < key.count; ++k) if (key.notes[k] == note) return;
+  key.notes[key.count++] = (uint8_t)note;
+}
+
+// A user note, as a normal controller would send it, with Note Delete active. Returns true if it's
+// the eraser's, so it goes no further. A Note to Feature note is a control, not music, so it's left alone.
+bool noteDeleteKeyPress(uint8_t inputDevice, uint8_t channel, uint8_t note, int16_t skipRoute) {
+  if (deleteKeyCount >= DELETE_KEYS) return false;
+  for (uint16_t i = 0; i < routeCount; ++i) {
+    if (!(routes[i].features & FEATURE_NOTE_TO_CC)) continue;
+    for (uint8_t e = 0; e < MAP_ENTRIES; ++e) if (noteMap[e].sourcePlusOne == note + 1) return false;
+  }
+  DeleteKey &key = deleteKeys[deleteKeyCount++];
+  key = DeleteKey{inputDevice, channel, note, 0, {}};
+  for (uint16_t i = 0; i < routeCount && !loopTagsAreInputs; ++i) {
+    if ((int16_t)i == skipRoute || !routeMatches(routes[i], inputDevice, channel, MK_NOTE, note)) continue;
+    uint8_t outs[CHORD_MAX];
+    uint8_t n = 1;
+    outs[0] = note;
+    if (routes[i].features & (FEATURE_SCALE | FEATURE_AUTO_CHORD)) n = notesForInput(routes[i], note, outs);
+    const uint8_t octaves = (routes[i].arpSlot && routes[i].arpSlot <= ARP_SLOTS) ? arpOctavesOf(arpSettings[routes[i].arpSlot - 1]) : 1;
+    for (uint8_t k = 0; k < n; ++k) {
+      for (uint8_t o = 0; o < octaves; ++o) noteDeleteAdd(key, (int16_t)outs[k] + routeTranspose(routes[i]) + 12 * o);
+    }
+  }
+  return true;
+}
+
+// A Note Off for a key the eraser took, true if it was one.
+bool noteDeleteKeyRelease(uint8_t inputDevice, uint8_t channel, uint8_t note) {
+  for (uint8_t k = 0; k < deleteKeyCount; ++k) {
+    if (deleteKeys[k].device != inputDevice || deleteKeys[k].channel != channel || deleteKeys[k].note != note) continue;
+    deleteKeys[k] = deleteKeys[--deleteKeyCount];
+    return true;
+  }
+  return false;
+}
+
+// Asked as playback reaches each Note On.
+bool looperEraseHook(void *, const fw::LoopMidiEvent &e) {
+  if (!noteDeleteHeld) return false;
+  for (uint8_t k = 0; k < deleteKeyCount; ++k) {
+    const DeleteKey &key = deleteKeys[k];
+    if (loopTagsAreInputs) {
+      if ((e.tag >> 8) == key.device && (e.status & 0x0F) == key.channel && e.data1 == key.note) return true;
+    } else {
+      for (uint8_t n = 0; n < key.count; ++n) if (key.notes[n] == e.data1) return true;
+    }
+  }
+  return false;
+}
+
 uint32_t looperBarUs() {
   return (uint32_t)fw::barDurationUs(clockEngine.bpm(), globalSettings.beatsPerBar ? globalSettings.beatsPerBar : 4,
                                      globalSettings.beatUnit ? globalSettings.beatUnit : 4);
@@ -3612,6 +3697,7 @@ void looperAction(uint8_t id, bool down) {
     else looperMapHeld = false;
     return;
   }
+  if (id == LOOP_ACT_NOTE_DELETE) { noteDeleteSet(down); return; }
   if (!down) return;
   switch (id) {
     case LOOP_ACT_PLAY_ARM_REC: looperTap(); break;
@@ -4415,6 +4501,12 @@ void processIncomingEvent(uint8_t inputDevice, uint8_t statusHi, uint8_t channel
       number = shiftedNote;
       data1 = shiftedNote;
     }
+  }
+
+  // Note Delete (1.66): the user's notes erase from the loop instead of playing.
+  if (kind == MK_NOTE && !looperEmitting) {
+    if (isNoteOn ? (noteDeleteActive() && noteDeleteKeyPress(inputDevice, channel, number, lpSkipRoute))
+                 : noteDeleteKeyRelease(inputDevice, channel, number)) return;
   }
 
   // Keep the note-hold stack (used for poly aftertouch -> CC priority, see noteStacks above) in
@@ -5677,6 +5769,7 @@ void setup() {
   Serial1.setFIFOSize(256); // room for TRS/DIN input while the loop holds off reading it
   Serial1.begin(DIN_BAUD);
 
+  looper.setEraseHook(looperEraseHook, nullptr); // Note Delete
   linkSerial.begin(LINK_BAUD);
   gpio_pull_up(PIN_LINK_RX); // holds the line idle with no host brain attached, so it reads nothing
 
