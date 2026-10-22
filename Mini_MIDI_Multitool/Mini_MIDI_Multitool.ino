@@ -97,7 +97,7 @@ constexpr uint8_t SYSEX_MFR_ID = 0x7D;   // reserved for non-commercial/educatio
 constexpr uint8_t SYSEX_DEVICE_ID = 0x4D; // 'M'
 constexpr uint8_t PROTOCOL_VERSION = 4; // 2: 45-byte routes with port masks, GET_STATUS. 3: clock settings, LEARN. 4: 53-byte routes with feature fields, feature blocks
 constexpr uint8_t FW_VERSION_MAJOR = 1;
-constexpr uint8_t FW_VERSION_MINOR = 68;
+constexpr uint8_t FW_VERSION_MINOR = 69;
 constexpr uint8_t FW_CHUNK_BYTES = 128;          // firmware bytes per FW_DATA message, 147 once packed
 constexpr uint32_t FW_REBOOT_DELAY_MS = 300;     // lets the FW_END ACK reach the host before rebooting
 const char DEVICE_NAME[] = "FoxWizard Mini MIDI Multitool"; // long name sent in the SysEx IDENTITY_REPLY
@@ -895,10 +895,22 @@ void recomputeAnyAftertouchMapRoutes() {
 bool routeNotesOffArmed = false; // set once settings have loaded at power on
 uint32_t routeNotesOffAtMs = 0;  // 0 = none due
 
+// 1.69: only the channels a port has been sent a Note On on since its last All Notes Off. A save
+// used to send all 16 to every port, and a run of autosaves while editing a route's ports made a
+// storm that wedged a USB device (a JamJum took 6 of 16 and then stopped taking data).
+uint16_t notedChannels[PORT_COUNT];
+
 void serviceRouteNotesOff() {
   if (!routeNotesOffAtMs || (int32_t)(millis() - routeNotesOffAtMs) < 0) return;
   routeNotesOffAtMs = 0;
-  for (uint8_t ch = 0; ch < 16; ++ch) sendToOutputs(availablePorts(), 0xB0, ch, 123, 0, 3);
+  const uint16_t available = availablePorts();
+  for (uint8_t ch = 0; ch < 16; ++ch) {
+    uint16_t mask = 0;
+    for (uint8_t b = 0; b < PORT_COUNT; ++b) if (notedChannels[b] & (1u << ch)) mask |= 1u << b;
+    mask &= available;
+    if (mask) sendToOutputs(mask, 0xB0, ch, 123, 0, 3);
+  }
+  memset(notedChannels, 0, sizeof(notedChannels));
 }
 
 void resetAllRouteNoteTracks() {
@@ -1909,6 +1921,9 @@ uint8_t linkPortsFor(uint16_t mask, uint8_t ports[9]) {
 }
 
 void sendToOutputs(uint16_t mask, uint8_t statusHi, uint8_t channel, uint8_t data1, uint8_t data2, uint8_t len) {
+  if (statusHi == 0x90 && data2) { // remembered for the next All Notes Off, see serviceRouteNotesOff
+    for (uint8_t b = 0; b < PORT_COUNT; ++b) if (mask & (1u << b)) notedChannels[b] |= 1u << (channel & 0x0F);
+  }
   if (mask & PORT_TRS) {
     const uint8_t bytes[3] = {(uint8_t)(statusHi | channel), data1, data2};
     trsSend(bytes, len);

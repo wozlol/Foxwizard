@@ -235,18 +235,71 @@ if (!toastStack) {
   toastStack.className = 'toast-stack';
   document.body.appendChild(toastStack);
 }
-// sticky: stays until clicked, for things worth reading after the fact.
-function toast(message, kind, sticky) {
+// What a pasted report should say about the software that made it.
+const APP_VERSION = document.querySelector('.app-footer')?.textContent.match(/v\d+\.\d+/)?.[0] || '';
+function versionLine() {
+  const v = deviceVersion();
+  return `Patchling ${APP_VERSION}, firmware ${v ? versionText(v) : 'unknown'}`;
+}
+
+// Puts text on the clipboard, the older way too where the page isn't a secure context.
+async function copyText(text) {
+  try {
+    await navigator.clipboard.writeText(text);
+    return true;
+  } catch (err) {
+    const box = document.createElement('textarea');
+    box.value = text;
+    box.style.position = 'fixed';
+    box.style.opacity = '0';
+    document.body.appendChild(box);
+    box.select();
+    let ok = false;
+    try { ok = document.execCommand('copy'); } catch (e2) { /* no clipboard */ }
+    box.remove();
+    return ok;
+  }
+}
+
+// sticky: stays until dismissed, with a Copy button (copying copyWith when given, else the message),
+// an OK button and an x in the corner, for things worth reading and passing on after the fact.
+function toast(message, kind, sticky, copyWith) {
   const el = document.createElement('div');
   el.className = 'toast' + (kind ? ` toast-${kind}` : '') + (sticky ? ' toast-sticky' : '');
-  el.textContent = message;
-  toastStack.appendChild(el);
-  if (sticky) {
-    el.title = 'Click to dismiss';
-    el.addEventListener('click', () => el.remove());
-  } else {
+  if (!sticky) {
+    el.textContent = message;
+    toastStack.appendChild(el);
     setTimeout(() => el.remove(), 3200);
+    return;
   }
+  const text = document.createElement('div');
+  text.className = 'toast-text';
+  text.textContent = message;
+  const close = document.createElement('button');
+  close.type = 'button';
+  close.className = 'toast-close';
+  close.title = 'Dismiss';
+  close.setAttribute('aria-label', 'Dismiss');
+  close.textContent = '\u00D7';
+  close.addEventListener('click', () => el.remove());
+  const copy = document.createElement('button');
+  copy.type = 'button';
+  copy.className = 'btn btn-ghost btn-tiny';
+  copy.textContent = 'Copy';
+  copy.addEventListener('click', async () => {
+    copy.textContent = (await copyText(copyWith || message)) ? 'Copied' : 'Copy failed';
+    setTimeout(() => { copy.textContent = 'Copy'; }, 1600);
+  });
+  const ok = document.createElement('button');
+  ok.type = 'button';
+  ok.className = 'btn btn-primary btn-tiny';
+  ok.textContent = 'OK';
+  ok.addEventListener('click', () => el.remove());
+  const actions = document.createElement('div');
+  actions.className = 'toast-actions';
+  actions.append(copy, ok);
+  el.append(close, text, actions);
+  toastStack.appendChild(el);
 }
 
 const saveToDeviceBtn = document.getElementById('saveToDeviceBtn');
@@ -499,10 +552,10 @@ async function fetchHostReport() {
 
 async function showHostReport() {
   const report = await fetchHostReport();
-  const text = hostReportText(report, restartMessage(lastHostStatus));
+  const text = hostReportText(report, `${restartMessage(lastHostStatus)}.\n${versionLine()}`);
   const pre = text.replace(/[&<>]/g, c => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;' }[c]));
   openDialog('Host Edition Report', `<pre class="host-report">${pre}</pre>`, [
-    { label: 'Copy', kind: 'ghost', onClick: () => navigator.clipboard.writeText(text).then(() => toast('Report copied', 'success'), () => {}) },
+    { label: 'Copy', kind: 'ghost', onClick: async () => { if (await copyText(text)) toast('Report copied', 'success'); } },
     { label: 'Close', kind: 'primary' }
   ]);
 }
@@ -525,12 +578,15 @@ async function refreshSidecarStatus() {
       // The report arrives over the next second or two, after the restart itself.
       const time = new Date().toLocaleTimeString();
       setTimeout(async () => {
-        const summary = hostReportSummary(await fetchHostReport());
+        const report = await fetchHostReport();
+        const summary = hostReportSummary(report);
         const more = summary ? ` ${summary} Click the Connected badge for the full report.` : '';
         if (status.restartReason === 3 || status.restartReason === 4) {
           toast(`${restartMessage(status)}.${more}`, 'warn');
         } else {
-          toast(`${time} ${restartMessage(status)}.${more} (click to dismiss)`, 'error', true);
+          // Copy takes the whole report, with the versions, so a paste says everything.
+          const headline = `${time} ${restartMessage(status)}.\n${versionLine()}`;
+          toast(`${time} ${restartMessage(status)}.${more}`, 'error', true, report ? hostReportText(report, headline) : headline);
         }
       }, 2500);
     }
