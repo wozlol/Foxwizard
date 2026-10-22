@@ -302,8 +302,6 @@ While a loop is recording, armed or playing, the arps keep one beat grid. A new 
 grid the way it does with no loop, so an arp on playback lines up with the way you played it. A loop
 that starts from its top starts the grid there, and a take plants it at the first arp phrase.
 
-A drum roll pad hits the moment you press it, then rolls on that grid.
-
 A note held by you and by the loop stays held until both let go. If two layers hold the same note
 and overlap, it stays held until the last of them lets go. The loop letting go of a hat you're still
 holding doesn't stop your roll, and you letting go of one the loop still holds doesn't either.
