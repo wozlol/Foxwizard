@@ -54,9 +54,6 @@ class Looper {
   // FoxWizard 1.66, Note Delete: asked about each Note On as playback reaches it. True erases that
   // note from the loop, its Note Off too, and nothing sounds.
   using EraseFn = bool (*)(void *context, const LoopMidiEvent &event);
-  // FoxWizard 1.79: asked at the top of the loop for each note a pass is holding, whether it's still
-  // held. A note whose Note Off was missed is closed there instead of being carried round for ever.
-  using HeldCheckFn = bool (*)(void *context, uint8_t channel, uint8_t note, uint16_t tag);
   using HeldNoteFn = void (*)(void *context, uint8_t track, uint16_t tag, uint8_t channel,
                               uint8_t note, uint8_t velocity);
 
@@ -98,7 +95,6 @@ class Looper {
   // back. The take itself (layer 0) is only ever cleared, never un-overdubbed.
   static constexpr uint8_t kMaxUndoLayers = 16;
   void setEraseHook(EraseFn fn, void *context) { eraseFn_ = fn; eraseContext_ = context; }
-  void setHeldCheck(HeldCheckFn fn, void *context) { heldFn_ = fn; heldContext_ = context; }
   // FoxWizard 1.73: a take's set length can change while it's armed or taking.
   uint32_t recordFixedLengthUs() const { return recordFixedLengthUs_; }
   void setRecordFixedLengthUs(uint32_t us) { recordFixedLengthUs_ = us; }
@@ -173,7 +169,19 @@ class Looper {
                                   ReleaseFn release, void *context);
   void resetPlaybackCursors(uint64_t nowUs);
   void closeHeldRecordingNotes(uint32_t boundaryUs);
-  void splitHeldAtWrap(uint8_t track);
+  // FoxWizard 1.80: an overdub records a held note as one finished hold, put in when it's let go.
+  struct PendingHold {
+    bool used = false;
+    uint8_t channel = 0, note = 0, velocity = 0, layer = 0;
+    uint16_t tag = 0;
+    uint32_t positionUs = 0;  // where in the loop it was pressed
+    uint32_t startUs = 0;     // when, the low 32 bits of the clock, for telling how long it lasted
+  };
+  static constexpr uint8_t kHoldCount = 32;
+  bool startHold(uint8_t channel, uint8_t note, uint8_t velocity, uint16_t tag, uint32_t positionUs, uint64_t nowUs);
+  bool endHold(uint8_t channel, uint8_t note, uint32_t positionUs, uint64_t nowUs);
+  void flushHold(PendingHold &hold, uint32_t endPositionUs, uint64_t nowUs);
+  void flushAllHolds(uint32_t endPositionUs, uint64_t nowUs);
   void unlinkSlot(uint8_t track, uint16_t slot);
   uint16_t eraseNote(uint8_t track, uint16_t onSlot);
   bool layerHasEvents(uint8_t layer) const;
@@ -211,7 +219,7 @@ class Looper {
   uint16_t recordStartCount_ = 0;
   bool importing_[kLoopTrackCount]{};
   uint16_t recordHeld_[16][128]{}; // FoxWizard: the held note's tag + 1, 0 not held
-  uint8_t recordHeldVelocity_[16][128]{}; // FoxWizard 1.79: its velocity, for restarting it at the top of the loop
+  PendingHold holds_[kHoldCount];
   uint8_t layers_[kMaxUndoLayers]{};  // overdub layers, oldest first, hidden ones included
   uint8_t layerCount_ = 0;
   uint8_t hidden_[kMaxUndoLayers]{};  // hidden layers in the order they were hidden
@@ -221,8 +229,6 @@ class Looper {
   uint32_t layerStamp_ = 0;
   EraseFn eraseFn_ = nullptr;
   void *eraseContext_ = nullptr;
-  HeldCheckFn heldFn_ = nullptr;
-  void *heldContext_ = nullptr;
 };
 
 }  // namespace fw

@@ -97,7 +97,7 @@ constexpr uint8_t SYSEX_MFR_ID = 0x7D;   // reserved for non-commercial/educatio
 constexpr uint8_t SYSEX_DEVICE_ID = 0x4D; // 'M'
 constexpr uint8_t PROTOCOL_VERSION = 4; // 2: 45-byte routes with port masks, GET_STATUS. 3: clock settings, LEARN. 4: 53-byte routes with feature fields, feature blocks
 constexpr uint8_t FW_VERSION_MAJOR = 1;
-constexpr uint8_t FW_VERSION_MINOR = 79;
+constexpr uint8_t FW_VERSION_MINOR = 80;
 constexpr uint8_t FW_CHUNK_BYTES = 128;          // firmware bytes per FW_DATA message, 147 once packed
 constexpr uint32_t FW_REBOOT_DELAY_MS = 300;     // lets the FW_END ACK reach the host before rebooting
 const char DEVICE_NAME[] = "FoxWizard Mini MIDI Multitool"; // long name sent in the SysEx IDENTITY_REPLY
@@ -2861,11 +2861,6 @@ void loopHeldUpdate(uint16_t tag, bool on, uint8_t channel, uint8_t note, uint8_
 }
 
 // A CC only goes into a take already recording (a Note On starts a take, a CC never does).
-// The looper asks at the top of each cycle of an overdub whether a note it's carrying is still held.
-bool looperHeldCheck(void *, uint8_t channel, uint8_t note, uint16_t) {
-  return !looperCaptureInputs() || noteOwners[channel & 15][note & 127];
-}
-
 // A note let go of anywhere is no longer held, whichever input it came from.
 void loopHeldForget(uint8_t channel, uint8_t note) {
   for (uint8_t k = 0; k < loopHeldCount;) {
@@ -6010,7 +6005,6 @@ void setup() {
   Serial1.begin(DIN_BAUD);
 
   looper.setEraseHook(looperEraseHook, nullptr); // Note Delete
-  looper.setHeldCheck(looperHeldCheck, nullptr);
   linkSerial.begin(LINK_BAUD);
   gpio_pull_up(PIN_LINK_RX); // holds the line idle with no host brain attached, so it reads nothing
 

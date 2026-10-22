@@ -31,6 +31,7 @@ void Looper::reset() {
   recordStartCount_ = 0;
   memset(importing_, 0, sizeof(importing_));
   memset(recordHeld_, 0, sizeof(recordHeld_));
+  for (PendingHold &h : holds_) h.used = false;
   resetLayers();
 }
 
@@ -253,6 +254,7 @@ void Looper::armRecord(uint8_t track, uint32_t fixedLengthUs, bool overdub) {
   if (overdub) recordStartCount_ = tracks_[track].count;
   if (overdub) startOverdubLayer();
   memset(recordHeld_, 0, sizeof(recordHeld_));
+  for (PendingHold &h : holds_) h.used = false;
   // Arming stays non-destructive.  A cleared track keeps its undo material
   // until the first captured event actually replaces it, so the armed target
   // can still move to another track without losing anything.
@@ -300,6 +302,16 @@ bool Looper::capture(uint64_t nowUs, const LoopMidiEvent &input) {
     if (recordFixedLengthUs_ > 0 && elapsed >= recordFixedLengthUs_) return false;
     atUs = static_cast<uint32_t>(elapsed);
   }
+  // FoxWizard 1.80: a note an overdub holds is put in whole when it's let go, wherever the hold lands.
+  // Put in at the press and the release as they come, a hold that crosses the top of the loop, or lasts
+  // longer than the loop, ended up cutting itself off partway through the loop.
+  if (overdubbing_ && playing_ && track.lengthUs > 0 && (type == 0x90 || type == 0x80)) {
+    if (noteOn) {
+      if (startHold(input.status & 0x0F, input.data1, input.data2, input.tag, atUs, nowUs)) return true;
+    } else if (endHold(input.status & 0x0F, input.data1, atUs, nowUs)) {
+      return true;
+    }
+  }
   LoopMidiEvent event = input;
   event.layer = overdubbing_ ? currentLayer_ : 0;
   if (recordQuantizeUs_ > 0) {
@@ -317,33 +329,59 @@ bool Looper::capture(uint64_t nowUs, const LoopMidiEvent &input) {
   if (type == 0x90 || type == 0x80) {
     const uint8_t channel = input.status & 0x0F;
     recordHeld_[channel][input.data1] = noteOn ? static_cast<uint16_t>(input.tag + 1U) : 0;
-    if (noteOn) recordHeldVelocity_[channel][input.data1] = input.data2;
   }
   return true;
 }
 
-// FoxWizard 1.79: an overdub pass goes round the loop again and again, so a note held across the top
-// of the loop is cut there and started again, the way it would be if it had been recorded one cycle at
-// a time. Without this its Note On is late in the loop and its Note Off early in the next, and the loop
-// plays it from the Note On to the end only. The Note On put at the top isn't played in the cycle that's
-// recording it (see tick), only from the next. A note the sketch says isn't held any more ends here.
-void Looper::splitHeldAtWrap(uint8_t trackIndex) {
-  const uint32_t last = tracks_[trackIndex].lengthUs - 1U;
-  const uint8_t layer = static_cast<uint8_t>(overdubbing_ ? currentLayer_ : 0);
-  for (uint8_t channel = 0; channel < 16; ++channel) {
-    for (uint8_t note = 0; note < 128; ++note) {
-      if (!recordHeld_[channel][note]) continue;
-      const uint16_t tag = static_cast<uint16_t>(recordHeld_[channel][note] - 1U);
-      insertEvent(trackIndex, LoopMidiEvent{last, static_cast<uint8_t>(0x80 | channel), note, 0, tag, layer});
-      if (heldFn_ && !heldFn_(heldContext_, channel, note, tag)) { // its Note Off never came: it ends here
-        recordHeld_[channel][note] = 0;
-        continue;
-      }
-      insertEvent(trackIndex, LoopMidiEvent{0, static_cast<uint8_t>(0x90 | channel), note,
-                                            recordHeldVelocity_[channel][note] ? recordHeldVelocity_[channel][note] : static_cast<uint8_t>(100),
-                                            tag, layer});
-    }
+bool Looper::startHold(uint8_t channel, uint8_t note, uint8_t velocity, uint16_t tag, uint32_t positionUs, uint64_t nowUs) {
+  for (PendingHold &h : holds_) { // pressed again without being let go: the first hold ends here
+    if (h.used && h.channel == channel && h.note == note) { flushHold(h, positionUs, nowUs); break; }
   }
+  for (PendingHold &h : holds_) {
+    if (h.used) continue;
+    h = PendingHold{true, channel, note, velocity, currentLayer_, tag, positionUs, static_cast<uint32_t>(nowUs)};
+    return true;
+  }
+  return false; // no room to keep it: it goes in as played
+}
+
+bool Looper::endHold(uint8_t channel, uint8_t note, uint32_t positionUs, uint64_t nowUs) {
+  for (PendingHold &h : holds_) {
+    if (!h.used || h.channel != channel || h.note != note) continue;
+    flushHold(h, positionUs, nowUs);
+    return true;
+  }
+  return false;
+}
+
+// Puts a finished hold into the loop. Held for the whole loop or longer, it's held everywhere. Crossing
+// the top once, it's two pieces, the press to the end and the start to the release. Otherwise it's one.
+void Looper::flushHold(PendingHold &h, uint32_t endPositionUs, uint64_t nowUs) {
+  const uint32_t length = tracks_[recordingTrack_].lengthUs;
+  const uint32_t heldUs = static_cast<uint32_t>(nowUs) - h.startUs;
+  const uint32_t last = length > 0 ? length - 1U : 0U;
+  const uint8_t on = static_cast<uint8_t>(0x90 | h.channel), off = static_cast<uint8_t>(0x80 | h.channel);
+  auto put = [&](uint32_t at, uint8_t status, uint8_t velocity) {
+    const LoopMidiEvent e{at, status, h.note, velocity, h.tag, h.layer};
+    while (!insertEvent(recordingTrack_, e)) { if (!dropOldestHiddenLayer()) break; }
+  };
+  if (heldUs >= length || length == 0) {
+    put(0, on, h.velocity);
+    put(last, off, 0);
+  } else if (h.positionUs <= endPositionUs) {
+    put(h.positionUs, on, h.velocity);
+    put(endPositionUs, off, 0);
+  } else {
+    put(h.positionUs, on, h.velocity);
+    put(last, off, 0);
+    put(0, on, h.velocity);
+    put(endPositionUs, off, 0);
+  }
+  h.used = false;
+}
+
+void Looper::flushAllHolds(uint32_t endPositionUs, uint64_t nowUs) {
+  for (PendingHold &h : holds_) if (h.used) flushHold(h, endPositionUs, nowUs);
 }
 
 void Looper::closeHeldRecordingNotes(uint32_t boundaryUs) {
@@ -387,6 +425,7 @@ bool Looper::finishRecording(uint64_t nowUs) {
   if (overdubbing_ && playing_) {
     closeAtUs = static_cast<uint32_t>((nowUs - track.cycleStartUs) % track.lengthUs);
   }
+  if (overdubbing_) flushAllHolds(closeAtUs, nowUs);
   closeHeldRecordingNotes(closeAtUs);
   // An overdub pass that captured nothing isn't a layer to undo.
   if (overdubbing_ && currentLayer_ && !layerHasEvents(currentLayer_)) forgetLayer(currentLayer_);
@@ -394,6 +433,7 @@ bool Looper::finishRecording(uint64_t nowUs) {
   recording_ = false;
   overdubbing_ = false;
   memset(recordHeld_, 0, sizeof(recordHeld_));
+  for (PendingHold &h : holds_) h.used = false;
   // Whether THIS pass captured anything, not just whether the track holds
   // anything at all: an overdub track already had content before the pass
   // began, so track.count alone cannot tell the two apart. A pass that added
@@ -406,6 +446,7 @@ void Looper::cancelRecording() {
   recording_ = false;
   overdubbing_ = false;
   memset(recordHeld_, 0, sizeof(recordHeld_));
+  for (PendingHold &h : holds_) h.used = false;
 }
 
 // Where a track sits inside the shared transport cycle. Tracks are allowed to
@@ -629,7 +670,6 @@ void Looper::tick(uint64_t nowUs, EmitFn emit, ReleaseFn release,
     if (track.count == 0 || track.lengthUs == 0) continue;
     if (nowUs - track.cycleStartUs >= track.lengthUs) {
       if (release) release(context, trackIndex);
-      if (recording_ && overdubbing_ && recordingTrack_ == trackIndex) splitHeldAtWrap(trackIndex);
       const uint64_t cycles = (nowUs - track.cycleStartUs) / track.lengthUs;
       track.cycleStartUs += cycles * track.lengthUs;
       track.playCursor = track.head;
@@ -645,12 +685,7 @@ void Looper::tick(uint64_t nowUs, EmitFn emit, ReleaseFn release,
         ++processed;
         continue;
       }
-      // FoxWizard 1.79: a Note On recorded into the pass being played right now, for a note you're still
-      // holding, isn't played back over yourself. It was only put there to carry the hold into the next
-      // cycle, and its Note Off isn't recorded until you let go, so it would hold on after you did.
-      const bool liveOwnNote = recording_ && overdubbing_ && (slot.status & 0xF0) == 0x90 && slot.data2 &&
-                               slot.layer == currentLayer_ && recordHeld_[slot.status & 0x0F][slot.data1];
-      if (canEmit && emit && !layerHidden(slot.layer) && !liveOwnNote) emit(context, trackIndex, slot.event());
+      if (canEmit && emit && !layerHidden(slot.layer)) emit(context, trackIndex, slot.event());
       track.playCursor = slot.next;
       ++processed;
     }
