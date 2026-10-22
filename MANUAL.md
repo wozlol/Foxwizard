@@ -296,7 +296,14 @@ With no loop yet, Double and Half change the Length the next take gets, 1 to 16 
 you Save to Device again. Either way, the lights blink the new number of bars.
 | Note Delete | hold it and play notes to erase them from the loop, see below |
 
-### Held notes
+### Held notes and the arp
+
+While a loop is recording, armed or playing, the arps keep one beat grid. A new phrase doesn't start a new
+grid the way it does with no loop, so an arp on playback lines up with the way you played it. A loop
+that starts from its top starts the grid there, and a take plants it at the first arp phrase.
+
+A note held by you and by the loop stays held until both let go. The loop letting go of a hat you're still
+holding doesn't stop your roll, and you letting go of one the loop still holds doesn't either.
 
 A note you're already holding when an overdub starts is recorded from the start of the overdub, so a held
 hat for a roll starts with it and ends when you let go. A note held right across the top of the loop is

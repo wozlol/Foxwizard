@@ -97,7 +97,7 @@ constexpr uint8_t SYSEX_MFR_ID = 0x7D;   // reserved for non-commercial/educatio
 constexpr uint8_t SYSEX_DEVICE_ID = 0x4D; // 'M'
 constexpr uint8_t PROTOCOL_VERSION = 4; // 2: 45-byte routes with port masks, GET_STATUS. 3: clock settings, LEARN. 4: 53-byte routes with feature fields, feature blocks
 constexpr uint8_t FW_VERSION_MAJOR = 1;
-constexpr uint8_t FW_VERSION_MINOR = 76;
+constexpr uint8_t FW_VERSION_MINOR = 77;
 constexpr uint8_t FW_CHUNK_BYTES = 128;          // firmware bytes per FW_DATA message, 147 once packed
 constexpr uint32_t FW_REBOOT_DELAY_MS = 300;     // lets the FW_END ACK reach the host before rebooting
 const char DEVICE_NAME[] = "FoxWizard Mini MIDI Multitool"; // long name sent in the SysEx IDENTITY_REPLY
@@ -360,6 +360,10 @@ constexpr uint8_t HOST_REPORT_PAGE = 120; // bytes of the report in each reply
 // held, 1-4 = the USB Host port, 0x80 = TRS 2. If the host brain restarts or disappears, their Note
 // Offs never arrive, so the main brain releases them itself, through the same routes.
 uint8_t sidecarHeld[16][128];
+// 1.77: who holds each note, so the loop letting go of a note you're still holding doesn't drop it,
+// nor you the loop's. Bit 0 is the user, bit 1 the loop playing back its inputs.
+uint8_t noteOwners[16][128];
+bool noteOffSwallowed = false; // this Note Off is for a note the other owner still holds
 bool hostWasPresent = false;
 bool hostEverPresent = false; // the first time the host brain appears isn't a return
 uint32_t hostLastStatusMs = 0;
@@ -927,6 +931,7 @@ void serviceRouteNotesOff() {
 void resetAllRouteNoteTracks() {
   if (routeNotesOffArmed) routeNotesOffAtMs = millis() + 50; // after the last route of a save
   for (uint16_t i = 0; i < MAX_ROUTES; ++i) routeNoteTracks[i] = RouteNoteTrack();
+  memset(noteOwners, 0, sizeof(noteOwners)); // route state is fresh, so nothing is held
   launchpadPorts = 0; // routes may have moved, the next press learns each Launchpad again
   memset(liveChannel, 0xFF, sizeof(liveChannel)); // live changes end with the routes they were on
   memset(liveVelocity, 0, sizeof(liveVelocity));
@@ -2776,6 +2781,11 @@ bool beforeRouteTap(uint16_t i, bool on, uint8_t note, uint8_t velocity) {
 constexpr uint32_t LOOP_DOUBLE_TAP_MS = 1000; // ARPnMIDI's window
 constexpr uint32_t LOOP_HOLD_MS = 500;
 fw::Looper looper;
+// 1.77: while a loop is recording, armed or playing the arps keep one beat grid. A new phrase doesn't
+// plant a new one, which is what put a loop and an arp out of step after any gap between notes (ARPnMIDI's
+// loopLocksArpClock). The grid is planted by the first arp to start in a take, and again at the top of
+// a loop that starts playing.
+bool loopGridPlanted = false;
 uint32_t looperLastTapMs = 0;
 uint8_t looperStateBeforeTap = 0;
 bool looperSafeClearArmed = false;
@@ -2962,6 +2972,7 @@ void looperEmit(void *, uint8_t, const fw::LoopMidiEvent &e) {
 void looperRelease(void *, uint8_t) {
   for (uint8_t k = 0; k < loopSoundingCount; ++k) looperSend(loopSounding[k].tag, false, loopSounding[k].channel, loopSounding[k].note, 0);
   loopSoundingCount = 0;
+  for (uint8_t ch = 0; ch < 16; ++ch) for (uint8_t n = 0; n < 128; ++n) noteOwners[ch][n] &= ~2; // nothing of the loop is held now
   flushPending();
 }
 
@@ -4437,6 +4448,16 @@ void arpStep(uint8_t slot, uint64_t nowUs) {
 
 void serviceArps() {
   const uint64_t now = time_us_64();
+  static bool loopWasPlaying = false;
+  const bool loopActive = looper.recording() || looper.recordingArmed() || looper.playing();
+  if (!loopActive) loopGridPlanted = false;
+  if (looper.playing() && !loopWasPlaying) { // a loop started from its top: that's the grid's one
+    bool anyRunning = false;
+    for (uint8_t s = 0; s < ARP_SLOTS; ++s) anyRunning = anyRunning || arps[s].running;
+    if (!anyRunning && !clockFollowPort()) clockEngine.start(now);
+    loopGridPlanted = true;
+  }
+  loopWasPlaying = looper.playing();
   for (uint8_t s = 0; s < ARP_SLOTS; ++s) {
     ArpRuntime &r = arps[s];
     if (r.gateOffUs && now >= r.gateOffUs) {
@@ -4449,7 +4470,8 @@ void serviceArps() {
       const uint16_t div = fw::divisionPulses(arpCurrentDivision(s));
       // A fresh start restarts the master grid. Joining a running arp, or following another clock,
       // lines up with that grid's next step instead.
-      if (!otherArpRunning(s) && !clockFollowPort()) clockEngine.start(now);
+      if (!otherArpRunning(s) && !clockFollowPort() && !(loopActive && loopGridPlanted)) clockEngine.start(now);
+      if (loopActive) loopGridPlanted = true;
       const uint32_t pulse = clockEngine.internalPulse();
       r.nextStepPulse = ((pulse + div - 1) / div) * div;
       r.sequenceStep = 0;
@@ -4533,19 +4555,19 @@ void dispatchNoteEvent(uint8_t inputDevice, uint8_t channel, bool isNoteOn, uint
       matchedAny = true;
       // Recorded like the route's own notes, so loop playback changes the division again.
       if (!routeLooperOff(routes[i])) matchedLooperRoute = true;
-      arpSquarePress(routes[i].arpSlot - 1, square, isNoteOn);
+      if (!noteOffSwallowed) arpSquarePress(routes[i].arpSlot - 1, square, isNoteOn);
       continue;
     }
     const int8_t stutterSquare = stutterSquareFor(i, inputDevice, 1, channel, rawNote);
     if (stutterSquare >= 0) {
       matchedAny = true;
-      stutterPress(stutterSquare, isNoteOn);
+      if (!noteOffSwallowed) stutterPress(stutterSquare, isNoteOn);
       continue;
     }
     const int8_t echoSquare = echoSquareFor(i, inputDevice, 1, channel, rawNote);
     if (echoSquare >= 0) {
       matchedAny = true;
-      echoPress(echoSquare, isNoteOn);
+      if (!noteOffSwallowed) echoPress(echoSquare, isNoteOn);
       continue;
     }
     if (routeMatches(routes[i], inputDevice, channel, MK_NOTE, note)) {
@@ -4554,6 +4576,7 @@ void dispatchNoteEvent(uint8_t inputDevice, uint8_t channel, bool isNoteOn, uint
       // make loop playback fire that action again from inside the looper.
       if (handleNoteMap(i, isNoteOn, note, velocity)) continue;
       if (!routeLooperOff(routes[i])) matchedLooperRoute = true;
+      if (noteOffSwallowed) continue; // still recorded below, but the route keeps what the other owner holds
       if (i == plockRouteIdx) plockNote(inputDevice, channel, isNoteOn, note);
       if (!beforeRouteTap(i, isNoteOn, note, velocity)) routeNoteIn(i, isNoteOn, note, velocity);
     }
@@ -4562,7 +4585,7 @@ void dispatchNoteEvent(uint8_t inputDevice, uint8_t channel, bool isNoteOn, uint
   flushPending();
 
   if (!matchedAny) {
-    applyModeDefault(inputDevice, isNoteOn ? 0x90 : 0x80, channel, rawNote, velocity, 3);
+    if (!noteOffSwallowed) applyModeDefault(inputDevice, isNoteOn ? 0x90 : 0x80, channel, rawNote, velocity, 3);
   } else {
     // still count as "seen" on the input side for the IN LED even if fully consumed by routes
     if (inputDevice == DEV_USB) noteActivity(ledUsb); else noteActivity(ledIn);
@@ -4693,9 +4716,16 @@ void processIncomingEvent(uint8_t inputDevice, uint8_t statusHi, uint8_t channel
   }
 
   if (kind == MK_NOTE) {
+    // A note held by you and by the loop is held until both let go (1.77).
+    uint8_t &owners = noteOwners[channel & 15][number & 127];
+    const uint8_t mine = looperEmitting ? 2 : 1;
+    if (isNoteOn) owners |= mine; else owners &= ~mine;
+    const bool outerSwallowed = noteOffSwallowed; // an action that runs from inside can play loop notes
+    noteOffSwallowed = !isNoteOn && owners != 0;
     edgeLaunchpadPort = lpPort;
     edgeSkipRoute = lpSkipRoute;
     dispatchNoteEvent(inputDevice, channel, isNoteOn, number, data2);
+    noteOffSwallowed = outerSwallowed;
     edgeLaunchpadPort = 0;
     edgeSkipRoute = -1;
     return;
@@ -5652,6 +5682,7 @@ uint8_t resolveButtonChannel() {
 }
 
 void sendPanic() {
+  memset(noteOwners, 0, sizeof(noteOwners)); // nothing is held by anyone now
   arpPanic(); // otherwise a held arp keeps stepping right after
   echoStop();
   stutterHeldCount = 0;
