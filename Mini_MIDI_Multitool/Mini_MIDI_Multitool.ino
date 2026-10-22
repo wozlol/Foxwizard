@@ -97,7 +97,7 @@ constexpr uint8_t SYSEX_MFR_ID = 0x7D;   // reserved for non-commercial/educatio
 constexpr uint8_t SYSEX_DEVICE_ID = 0x4D; // 'M'
 constexpr uint8_t PROTOCOL_VERSION = 4; // 2: 45-byte routes with port masks, GET_STATUS. 3: clock settings, LEARN. 4: 53-byte routes with feature fields, feature blocks
 constexpr uint8_t FW_VERSION_MAJOR = 1;
-constexpr uint8_t FW_VERSION_MINOR = 72;
+constexpr uint8_t FW_VERSION_MINOR = 73;
 constexpr uint8_t FW_CHUNK_BYTES = 128;          // firmware bytes per FW_DATA message, 147 once packed
 constexpr uint32_t FW_REBOOT_DELAY_MS = 300;     // lets the FW_END ACK reach the host before rebooting
 const char DEVICE_NAME[] = "FoxWizard Mini MIDI Multitool"; // long name sent in the SysEx IDENTITY_REPLY
@@ -591,6 +591,7 @@ LooperSettings looperSettings;
 // and which route each belongs to. No note goes to such a port as it is: every note headed there, from
 // any route and channel, lights the pads that play it on that Launchpad route instead, on channel 1.
 uint16_t launchpadPorts = 0;
+bool lpRepaint = true; // a Launchpad showed up: every button light is sent again
 uint8_t launchpadOwner[PORT_COUNT]; // route index per port
 // The mapper's live, session-only route changes: an output channel (-1 none) and a velocity percent
 // (0 none, else 10-200 in place of the route's Velocity %), and the last program change sent.
@@ -1037,6 +1038,7 @@ uint16_t routeOutputsNow(const RouteData &r) {
 }
 
 void launchpadLearnPort(uint16_t port, uint16_t routeIndex) {
+  if (port & ~launchpadPorts) lpRepaint = true; // a Launchpad not known before
   launchpadPorts |= port;
   for (uint8_t b = 0; b < PORT_COUNT; ++b) if (port & (1u << b)) launchpadOwner[b] = (uint8_t)routeIndex;
 }
@@ -1926,7 +1928,7 @@ uint8_t linkPortsFor(uint16_t mask, uint8_t ports[9]) {
 
 void sendToOutputs(uint16_t mask, uint8_t statusHi, uint8_t channel, uint8_t data1, uint8_t data2, uint8_t len) {
   if (statusHi == 0x90 && data2) { // remembered for the next All Notes Off, see serviceRouteNotesOff
-    for (uint8_t b = 0; b < PORT_COUNT; ++b) if (mask & (1u << b)) notedChannels[b] |= 1u << (channel & 0x0F);
+    for (uint8_t b = 0; b < PORT_COUNT; ++b) if ((mask & ~launchpadPorts) & (1u << b)) notedChannels[b] |= 1u << (channel & 0x0F); // lights aren't notes
   }
   if (mask & PORT_TRS) {
     const uint8_t bytes[3] = {(uint8_t)(statusHi | channel), data1, data2};
@@ -2668,65 +2670,6 @@ int8_t stutterSquareFor(uint16_t routeIndex, uint8_t inputDevice, uint8_t type, 
   return k;
 }
 
-// Launchpad button lights (1.62). A button stays lit while it's held, and also while the Stutter or
-// Echo it turned on stays latched on, going dark when that ends however it ends.
-uint16_t lpBtnPort[LAUNCHPAD_BUTTONS];   // where the button was last pressed, 0 never
-uint8_t lpBtnChannel[LAUNCHPAD_BUTTONS];
-uint8_t lpBtnColor[LAUNCHPAD_BUTTONS];
-bool lpBtnHeld[LAUNCHPAD_BUTTONS];
-bool lpBtnLit[LAUNCHPAD_BUTTONS];
-
-bool stutterLatchedOn(uint8_t square) {
-  return stutterSettings.latching && stutterRouteIdx < routeCount && stutterHeldCount && stutterHeld[stutterHeldCount - 1] == square;
-}
-
-bool echoLatchedOn(int8_t square) {
-  if (echoSettings.momentary || echoRouteIdx >= routeCount || echoOff) return false;
-  return square == ARP_SQUARES || echoLatched == square;
-}
-
-bool lpButtonLatched(uint8_t b) {
-  const MapAction &act = lpActions[b];
-  if (act.type == ACT_STUTTER_LENGTH) return act.a < STUTTER_LENGTH_PRESETS && stutterLatchedOn(ARP_SQUARES + 1 + act.a);
-  if (act.type == ACT_ECHO_TOGGLE) return echoLatchedOn(ARP_SQUARES);
-  if (act.type != ACT_NONE || b >= 8) return false;
-  // A top button with no action can be a Stutter or Echo square's trigger.
-  const uint8_t ch = lpBtnChannel[b], cc = LP_TOP_BUTTON_CC + b;
-  const StutterSettings &st = stutterSettings;
-  const int8_t sk = squareFor(st.squares, st.defaultTriggerType, st.defaultTriggerChannel, st.defaultTriggerNumber, 2, ch, cc);
-  if (sk >= 0 && stutterLatchedOn((uint8_t)sk)) return true;
-  const EchoSettings &e = echoSettings;
-  const int8_t ek = squareFor(e.squares, e.defaultTriggerType, e.defaultTriggerChannel, e.defaultTriggerNumber, 2, ch, cc);
-  return ek >= 0 && echoLatchedOn(ek);
-}
-
-void lpButtonRefresh(uint8_t b) {
-  if (!lpBtnPort[b]) return;
-  const bool lit = lpBtnHeld[b] || lpButtonLatched(b);
-  if (lit == lpBtnLit[b]) return;
-  lpBtnLit[b] = lit;
-  if (b < 8) sendToOutputs(lpBtnPort[b], 0xB0, lpBtnChannel[b], LP_TOP_BUTTON_CC + b, lit ? lpBtnColor[b] : 0, 3);
-  else sendToOutputs(lpBtnPort[b], lit ? 0x90 : 0x80, lpBtnChannel[b], (b - 8) * 16 + 8, lit ? lpBtnColor[b] : 0, 3);
-}
-
-// A Launchpad button pressed or let go: its light follows, then its action runs.
-void lpButtonInput(uint16_t routeIndex, uint8_t b, bool down, uint16_t port, uint8_t channel, uint8_t color) {
-  lpBtnPort[b] = port;
-  lpBtnChannel[b] = channel;
-  if (down) lpBtnColor[b] = color;
-  lpBtnHeld[b] = down;
-  lpBtnLit[b] = !down; // forces the press or release out
-  lpButtonRefresh(b);
-  if (routeIndex < routeCount) handleLaunchpadButton(routeIndex, b, down);
-}
-
-void serviceLaunchpadLights() {
-  static uint32_t lastMs = 0;
-  if (millis() - lastMs < 20) return;
-  lastMs = millis();
-  for (uint8_t b = 0; b < LAUNCHPAD_BUTTONS; ++b) lpButtonRefresh(b);
-}
-
 void serviceStutter() {
   if (stutterRouteIdx == 0xFFFF) return;
   const uint64_t now = time_us_64();
@@ -3104,6 +3047,152 @@ bool looperEraseHook(void *, const fw::LoopMidiEvent &e) {
     }
   }
   return false;
+}
+
+// ============================================================================================
+// Launchpad button lights (1.73). Each of the 16 round buttons shows what its action is doing: held,
+// Stutter or Echo on, the looper's state (armed, recording, playing, a clear that can be undone, a
+// layer that can be undone or redone), a live channel, octave or Break Off a Quad that's on, a toggle
+// that's on. The button's own color, if it has one, takes the place of the usual one. A count, the
+// bars after Double or Half, blinks on the button. Lights go to every Launchpad the FoxWizard knows,
+// and everything is painted again when one shows up.
+// ============================================================================================
+constexpr uint8_t LP_RED = 15, LP_GREEN = 60, LP_AMBER = 63, LP_ORANGE = 31, LP_DIM_GREEN = 28; // 16 x green + red + 12
+bool lpHeld[LAUNCHPAD_BUTTONS];
+uint8_t lpHeldColor[LAUNCHPAD_BUTTONS];
+uint8_t lpShown[LAUNCHPAD_BUTTONS];   // the color last sent, 0xFF when it needs sending
+uint8_t lpChannel = 0;                // the channel the Launchpad's own messages arrive on
+struct LpBlink { uint8_t left; bool lit; uint32_t atMs; };
+LpBlink lpBlink[LAUNCHPAD_BUTTONS];
+constexpr uint32_t LP_BLINK_ON_MS = 140;
+constexpr uint32_t LP_BLINK_OFF_MS = 220;
+
+uint16_t lpOwnerRoute() {
+  for (uint16_t i = 0; i < routeCount; ++i) if (routes[i].features & FEATURE_LAUNCHPAD) return i;
+  return 0xFFFF;
+}
+
+bool stutterSquareOn(uint8_t square) {
+  return stutterRouteIdx < routeCount && stutterHeldCount && stutterHeld[stutterHeldCount - 1] == square;
+}
+
+bool echoSquareOn(int8_t square) {
+  if (echoRouteIdx >= routeCount || echoSilent()) return false;
+  return square == ARP_SQUARES || echoLatched == square;
+}
+
+// The color a button shows for what its action is doing, 0 for nothing.
+uint8_t lpStatus(uint8_t b) {
+  const MapAction &act = lpActions[b];
+  const uint16_t route = lpOwnerRoute();
+  const fw::LoopTrackState &t = looper.track(0);
+  uint8_t color = LP_GREEN;
+  bool on = false;
+  switch (act.type) {
+    case ACT_ECHO_TOGGLE: on = echoSquareOn(ARP_SQUARES); break;
+    case ACT_STUTTER_LENGTH:
+      on = act.a < STUTTER_LENGTH_PRESETS && stutterSquareOn(ARP_SQUARES + 1 + act.a);
+      color = LP_RED;
+      break;
+    case ACT_LIVE_CHANNEL: on = route != 0xFFFF && liveChannel[route] == (int8_t)act.a; break;
+    case ACT_OCTAVE: on = route != 0xFFFF && liveOctave[route] == (act.a ? 1 : -1); color = LP_ORANGE; break;
+    case ACT_QUAD_TOGGLE: on = route != 0xFFFF && (routes[route].launchpadQuad & 0x01) && !quadToggleOff[route]; break;
+    case ACT_NOTE_TOGGLE: case ACT_CC_TOGGLE: on = lpToggle[b]; break;
+    case ACT_LOOPER: {
+      const uint8_t state = looperState();
+      switch (act.a) {
+        case LOOP_ACT_BUTTON: case LOOP_ACT_PLAY_ARM_REC: case LOOP_ACT_REC_ARM:
+          if (looper.overdubbing() || state == LS_RECORDING) { on = true; color = LP_RED; }
+          else if (state == LS_ARMED) { on = true; color = LP_AMBER; }
+          else if (state == LS_PLAYING) on = true;
+          else if (state == LS_STOPPED) { on = true; color = LP_DIM_GREEN; }
+          break;
+        case LOOP_ACT_PLAY: on = state == LS_PLAYING && !looper.paused(); break;
+        case LOOP_ACT_STOP: on = state == LS_STOPPED; color = LP_ORANGE; break;
+        case LOOP_ACT_PAUSE: on = looper.paused(); color = LP_AMBER; break;
+        case LOOP_ACT_OVERDUB: on = looper.overdubbing(); color = LP_RED; break;
+        case LOOP_ACT_STOP_CLEAR_UNDO: on = t.hidden || looperSafeClearArmed; color = LP_AMBER; break; // the next press clears or brings it back
+        case LOOP_ACT_UNDO: on = t.hidden; color = LP_AMBER; break;
+        case LOOP_ACT_UN_OVERDUB: on = looper.canUnOverdub(); color = LP_ORANGE; break;
+        case LOOP_ACT_RE_OVERDUB: on = looper.canReOverdub(); color = LP_ORANGE; break;
+        default: break;
+      }
+      break;
+    }
+    case ACT_NONE: {
+      if (b >= 8) break;
+      // A top button with no action can be a Stutter or Echo square's trigger.
+      const uint8_t cc = LP_TOP_BUTTON_CC + b;
+      const StutterSettings &st = stutterSettings;
+      const int8_t sk = squareFor(st.squares, st.defaultTriggerType, st.defaultTriggerChannel, st.defaultTriggerNumber, 2, lpChannel, cc);
+      if (sk >= 0 && stutterSquareOn((uint8_t)sk)) return LP_RED;
+      const EchoSettings &e = echoSettings;
+      const int8_t ek = squareFor(e.squares, e.defaultTriggerType, e.defaultTriggerChannel, e.defaultTriggerNumber, 2, lpChannel, cc);
+      if (ek >= 0 && echoSquareOn(ek)) return LP_GREEN;
+      break;
+    }
+    default: break;
+  }
+  if (!on) return 0;
+  return act.c ? act.c : color;
+}
+
+uint8_t lpColorNow(uint8_t b) {
+  if (lpBlink[b].left) return lpBlink[b].lit ? LP_AMBER : 0;
+  if (lpHeld[b]) return lpHeldColor[b];
+  return lpStatus(b);
+}
+
+void lpSend(uint8_t b, uint8_t color) {
+  if (b < 8) sendToOutputs(launchpadPorts, 0xB0, lpChannel, LP_TOP_BUTTON_CC + b, color, 3);
+  else sendToOutputs(launchpadPorts, color ? 0x90 : 0x80, lpChannel, (b - 8) * 16 + 8, color, 3);
+}
+
+void lpButtonRefresh(uint8_t b) {
+  if (!launchpadPorts) return;
+  const uint8_t color = lpColorNow(b);
+  if (color == lpShown[b]) return;
+  lpShown[b] = color;
+  lpSend(b, color);
+}
+
+// A Launchpad button pressed or let go: its light follows, then its action runs.
+void lpButtonInput(uint16_t routeIndex, uint8_t b, bool down, uint8_t channel, uint8_t color) {
+  lpChannel = channel;
+  lpHeld[b] = down;
+  if (down) lpHeldColor[b] = color;
+  lpButtonRefresh(b);
+  if (routeIndex < routeCount) handleLaunchpadButton(routeIndex, b, down);
+}
+
+// The bars a loop is now, blinked on the Launchpad buttons mapped to Double and Half.
+void lpBlinkBars(uint8_t bars) {
+  for (uint8_t b = 0; b < LAUNCHPAD_BUTTONS; ++b) {
+    if (lpActions[b].type != ACT_LOOPER || (lpActions[b].a != LOOP_ACT_DOUBLE && lpActions[b].a != LOOP_ACT_HALF)) continue;
+    lpBlink[b] = LpBlink{bars, false, millis() + 150};
+    lpShown[b] = 0xFF;
+  }
+}
+
+void serviceLaunchpadLights() {
+  static uint32_t lastMs = 0;
+  const uint32_t now = millis();
+  if (now - lastMs < 20) return;
+  lastMs = now;
+  if (!launchpadPorts) return;
+  if (lpRepaint) {
+    lpRepaint = false;
+    for (uint8_t b = 0; b < LAUNCHPAD_BUTTONS; ++b) lpShown[b] = 0xFF;
+  }
+  for (uint8_t b = 0; b < LAUNCHPAD_BUTTONS; ++b) {
+    LpBlink &k = lpBlink[b];
+    if (k.left && (int32_t)(now - k.atMs) >= 0) {
+      k.lit = !k.lit;
+      if (!k.lit) --k.left;
+      k.atMs = now + (k.lit ? LP_BLINK_ON_MS : LP_BLINK_OFF_MS);
+    }
+    lpButtonRefresh(b);
+  }
 }
 
 uint32_t looperBarUs() {
@@ -3704,9 +3793,25 @@ void looperRetrigger() {
 // Half plays the first half. Half then Double gets the original back, nothing copied. An overdub in
 // progress becomes its own layer first, then carries on over the new length. The lights count the
 // new length in bars.
+// With no loop yet, Double and Half change the length the next take gets, the Length setting, until
+// it's saved over. Free counts as one bar to step from. Armed, or taking at a set length, the take
+// changes length at once.
+void looperResizeNext(bool grow) {
+  const uint32_t barUs = looperBarUs();
+  const bool taking = looper.recording() && !looper.overdubbing();
+  if (taking && looper.recordFixedLengthUs() == 0) return; // a Free take ends when it's ended
+  uint8_t bars = looperSettings.bars <= 16 ? looperSettings.bars : 0;
+  if (bars == 0) bars = 1;
+  bars = grow ? (bars >= 16 ? 16 : (bars * 2 > 16 ? 16 : bars * 2)) : (bars > 1 ? bars / 2 : 1);
+  looperSettings.bars = bars;
+  if (taking || looper.recordingArmed()) looper.setRecordFixedLengthUs(barUs * bars);
+  flashAllLedsCount(bars);
+  lpBlinkBars(bars);
+}
+
 void looperResize(bool grow) {
   const fw::LoopTrackState &t = looper.track(0);
-  if (t.count == 0 || t.hidden || t.lengthUs == 0) return;
+  if (t.count == 0 || t.hidden || t.lengthUs == 0) { looperResizeNext(grow); return; }
   if (looper.recording() && !looper.overdubbing()) return; // a first take's length isn't set yet
   const uint64_t now = time_us_64();
   const bool wasOverdubbing = looper.overdubbing();
@@ -3718,7 +3823,9 @@ void looperResize(bool grow) {
   if (fits && looper.resizeTrack(0, (uint32_t)target, now, looperRelease, nullptr)) looperRetrigger();
   if (wasOverdubbing) { looperSetQuantize(); looper.armRecord(0, 0, true); }
   const uint32_t bars = barUs ? (looper.track(0).lengthUs + barUs / 2) / barUs : 1;
-  flashAllLedsCount(bars < 1 ? 1 : (bars > 64 ? 64 : bars));
+  const uint8_t shown = bars < 1 ? 1 : (bars > 64 ? 64 : bars);
+  flashAllLedsCount(shown);
+  lpBlinkBars(shown);
   flushPending();
 }
 
@@ -4476,12 +4583,13 @@ void processIncomingEvent(uint8_t inputDevice, uint8_t statusHi, uint8_t channel
     }
     if (lp >= 0) {
       const uint16_t port = sourcePort(inputDevice);
+      lpChannel = channel;
       launchpadLearnPort(port, lp);
       const uint8_t side = launchpadSideButton(number);
       // A mapped side button with a custom color lights with that, otherwise the channel's color.
       const uint8_t litColor = (side < LAUNCHPAD_BUTTONS && lpActions[side].c) ? lpActions[side].c : launchpadChannelColor(channel);
       if (side < LAUNCHPAD_BUTTONS) {
-        lpButtonInput(lp, side, isNoteOn, port, channel, litColor);
+        lpButtonInput(lp, side, isNoteOn, channel, litColor);
         return;
       }
       sendToOutputs(port, isNoteOn ? 0x90 : 0x80, channel, number, isNoteOn ? litColor : 0, 3);
@@ -4573,12 +4681,12 @@ void processIncomingEvent(uint8_t inputDevice, uint8_t statusHi, uint8_t channel
     if (kind == MK_CC && (routes[i].features & FEATURE_LAUNCHPAD) && number >= LP_TOP_BUTTON_CC && number < LP_TOP_BUTTON_CC + 8) {
       const uint8_t button = number - LP_TOP_BUTTON_CC;
       if (routeAcceptsSource(routes[i], inputDevice, channel)) {
+        lpChannel = channel;
         launchpadLearnPort(sourcePort(inputDevice), i);
         // A mapped top button with a custom color (1.48) lights with that instead of echoing the
         // Launchpad's own CC value back.
         const bool acts = lpActions[button].type != ACT_NONE;
-        lpButtonInput(acts ? i : 0xFFFF, button, data2 > 0, sourcePort(inputDevice), channel,
-                      lpActions[button].c ? lpActions[button].c : data2);
+        lpButtonInput(acts ? i : 0xFFFF, button, data2 > 0, channel, lpActions[button].c ? lpActions[button].c : data2);
         if (acts) {
           matchedAny = true;
           flushPending();
@@ -5416,6 +5524,7 @@ void pumpHostIn() {
         // feed) are released here. Bit 4 says whether TRS 2-6 are wired, not a hub port, masked off
         // before comparing mounted ports.
         const uint8_t gone = hostPortMask & ~packet[1] & 0x0F;
+        if (packet[1] & ~hostPortMask & 0x0F) lpRepaint = true; // a device plugged in might be a Launchpad that's lost its lights
         hostPortMask = packet[1] & 0x0F;
         hostHasTrs = (packet[1] & 0x10) != 0;
         for (uint8_t p = 1; p <= 4; ++p) if (gone & (1 << (p - 1))) releaseSidecarNotes(p);

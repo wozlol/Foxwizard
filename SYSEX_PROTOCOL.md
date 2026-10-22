@@ -339,6 +339,10 @@ Mapped notes and CCs don't pass through. Messages go to the route's outputs and 
 Live out channel and velocity are session only, cleared when routes change. With a live out channel on,
 a route's arp is bypassed (notes play straight on the live channel, no Bypass or Bass) unless its
 Follows Live Ch Change switch is on (arp block byte 14), then it arpeggiates onto the live channel.
+Double and Half (1.60) with no loop playing (none recorded, or a cleared one) change the Length setting in
+RAM for the next take instead, Free counting as 1 bar, and a take armed or recording at a set length changes
+length at once (1.73). Launchpad buttons light to show their action's state (1.73), and blink the bar count
+for Double and Half.
 Note Delete (1.66) is held: press and release. While the loop plays, the notes the user plays don't pass
 (Note to Feature notes excepted, unless they're also a division trigger, which the loop records and Note Delete erases) and each erases, from the loop, the notes it stands for as playback reaches
 their Note On, and the Note Off that ends them. Recording inputs, a key stands for its own channel and note. Recording

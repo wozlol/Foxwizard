@@ -225,7 +225,26 @@ light up with whatever notes play back to them, in each channel's color.
 | Break Off a Quad | one 4x4 Quadrant plays on its own Channel from its own Start Note, as if it were a separate controller. Defaults: Upper Right, channel 10, note 36. |
 | Top 1-8, Side 1-8 | each button runs an action, with an optional light color (a raw Launchpad velocity, 0 for the usual channel color). Reset to Defaults restores the factory set. |
 
-A button that latches Stutter or Echo on stays lit until it ends.
+Each button lights to show what its action is doing, in a color from a fixed set, or the button's own
+color if you set one:
+
+| Action | Lit while |
+|---|---|
+| Echo On/Off | Echo is on |
+| Stutter Length | that length is stuttering |
+| Looper: 1-Button, Play/Arm/Rec, Rec/Arm | armed (amber), recording or overdubbing (red), playing (green), stopped with a loop (dim green) |
+| Looper: Play | playing |
+| Looper: Stop | stopped with a loop |
+| Looper: Pause | paused |
+| Looper: Overdub | overdubbing |
+| Looper: Stop/Clear/Undo, Un-Clear | a cleared loop can be brought back |
+| Looper: Un-Overdub, Re-Overdub | there's a layer to remove, or to bring back |
+| Looper: Double, Half | blinks the loop's length in bars when pressed |
+| Note Delete, and any button | held |
+| Live Ch, Octave Up/Down | that channel or octave is on |
+| LP Quad, Note Toggle, CC Toggle | on |
+
+All the buttons are painted when a Launchpad first sends something to the FoxWizard or is plugged in.
 
 ## Looper
 
@@ -269,6 +288,10 @@ Hold Clears off swaps hold and double press.
 | Re-Overdub | brings back the overdub layer removed most recently |
 | Double | the loop plays twice in a loop twice as long, ready to overdub something longer |
 | Half | plays the first half. Half then Double brings the original back. |
+
+With no loop yet, Double and Half change the Length the next take gets, 1 to 16 bars, and Free counts as
+1 bar. Armed or recording at a set length, the take changes length right away. The change lasts until
+you Save to Device again. Either way, the lights blink the new number of bars.
 | Note Delete | hold it and play notes to erase them from the loop, see below |
 
 ### Note Delete

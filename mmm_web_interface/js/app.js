@@ -1850,7 +1850,7 @@ function launchpadSectionHtml(route, index) {
         <div class="arp-field"><label>Start Note</label><select data-lp-quad-field="startNote" ${qAttrs}>${noteSelectOptions(quad.startNote)}</select></div>` : ''}
       </div>` : switchHtml(index, 'launchpad', on, 'Launchpad')}
       ${on ? `<div class="lp-buttons-header">
-        <p class="note-hint">Button light color is a raw Launchpad velocity, 0 keeps the usual channel-color indicator.</p>
+        <p class="note-hint">Buttons light to show what they're doing. Button light color is a raw Launchpad velocity, used while the button is on. 0 keeps the usual colors.</p>
         <button type="button" class="btn btn-ghost btn-tiny" data-action="resetLpDefaults">Reset to Defaults</button>
       </div>
       <div class="lp-buttons">${buttons}</div>` : ''}

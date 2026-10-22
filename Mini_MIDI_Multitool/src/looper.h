@@ -95,6 +95,15 @@ class Looper {
   // back. The take itself (layer 0) is only ever cleared, never un-overdubbed.
   static constexpr uint8_t kMaxUndoLayers = 16;
   void setEraseHook(EraseFn fn, void *context) { eraseFn_ = fn; eraseContext_ = context; }
+  // FoxWizard 1.73: a take's set length can change while it's armed or taking.
+  uint32_t recordFixedLengthUs() const { return recordFixedLengthUs_; }
+  void setRecordFixedLengthUs(uint32_t us) { recordFixedLengthUs_ = us; }
+  // Whether Un-Overdub or Re-Overdub would do something, for a button's light.
+  bool canUnOverdub() const {
+    for (uint8_t i = 0; i < layerCount_; ++i) if (!layerHidden(layers_[i])) return true;
+    return false;
+  }
+  bool canReOverdub() const { return hiddenCount_ > 0; }
   bool unOverdub(uint64_t nowUs);
   bool reOverdub();
   bool layerHidden(uint8_t layer) const { return layerHiddenBits_[layer >> 3] & (1U << (layer & 7)); }
