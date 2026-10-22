@@ -97,7 +97,7 @@ constexpr uint8_t SYSEX_MFR_ID = 0x7D;   // reserved for non-commercial/educatio
 constexpr uint8_t SYSEX_DEVICE_ID = 0x4D; // 'M'
 constexpr uint8_t PROTOCOL_VERSION = 4; // 2: 45-byte routes with port masks, GET_STATUS. 3: clock settings, LEARN. 4: 53-byte routes with feature fields, feature blocks
 constexpr uint8_t FW_VERSION_MAJOR = 1;
-constexpr uint8_t FW_VERSION_MINOR = 77;
+constexpr uint8_t FW_VERSION_MINOR = 78;
 constexpr uint8_t FW_CHUNK_BYTES = 128;          // firmware bytes per FW_DATA message, 147 once packed
 constexpr uint32_t FW_REBOOT_DELAY_MS = 300;     // lets the FW_END ACK reach the host before rebooting
 const char DEVICE_NAME[] = "FoxWizard Mini MIDI Multitool"; // long name sent in the SysEx IDENTITY_REPLY
@@ -360,10 +360,11 @@ constexpr uint8_t HOST_REPORT_PAGE = 120; // bytes of the report in each reply
 // held, 1-4 = the USB Host port, 0x80 = TRS 2. If the host brain restarts or disappears, their Note
 // Offs never arrive, so the main brain releases them itself, through the same routes.
 uint8_t sidecarHeld[16][128];
-// 1.77: who holds each note, so the loop letting go of a note you're still holding doesn't drop it,
-// nor you the loop's. Bit 0 is the user, bit 1 the loop playing back its inputs.
+// 1.77: which notes the user is holding right now (bit 0), so the loop letting go of a note you're
+// still holding doesn't drop it. The loop's own holds are what loopSounding says it's playing (1.78),
+// so a flag can't be left set with nothing to clear it.
 uint8_t noteOwners[16][128];
-bool noteOffSwallowed = false; // this Note Off is for a note the other owner still holds
+bool noteOffSwallowed = false; // this Note Off is for a note the other still holds
 bool hostWasPresent = false;
 bool hostEverPresent = false; // the first time the host brain appears isn't a return
 uint32_t hostLastStatusMs = 0;
@@ -2860,6 +2861,14 @@ void loopHeldUpdate(uint16_t tag, bool on, uint8_t channel, uint8_t note, uint8_
 }
 
 // A CC only goes into a take already recording (a Note On starts a take, a CC never does).
+// A note let go of anywhere is no longer held, whichever input it came from.
+void loopHeldForget(uint8_t channel, uint8_t note) {
+  for (uint8_t k = 0; k < loopHeldCount;) {
+    if (loopHeld[k].channel == channel && loopHeld[k].note == note) loopHeld[k] = loopHeld[--loopHeldCount];
+    else ++k;
+  }
+}
+
 void looperCaptureCc(uint16_t tag, uint8_t channel, uint8_t number, uint8_t value) {
   if (!looperSettings.recordCcs || !looper.recording()) return;
   fw::LoopMidiEvent e;
@@ -2908,6 +2917,12 @@ void looperCapture(uint16_t tag, uint8_t status, uint8_t note, uint8_t velocity)
     }
   }
   loopHeldUpdate(tag, on, channel, note, velocity);
+}
+
+// Whether the loop is sounding a note right now.
+bool loopSoundingHas(uint8_t channel, uint8_t note) {
+  for (uint8_t k = 0; k < loopSoundingCount; ++k) if (loopSounding[k].channel == channel && loopSounding[k].note == note) return true;
+  return false;
 }
 
 // Sends one loop note to where it was recorded from.
@@ -2972,7 +2987,6 @@ void looperEmit(void *, uint8_t, const fw::LoopMidiEvent &e) {
 void looperRelease(void *, uint8_t) {
   for (uint8_t k = 0; k < loopSoundingCount; ++k) looperSend(loopSounding[k].tag, false, loopSounding[k].channel, loopSounding[k].note, 0);
   loopSoundingCount = 0;
-  for (uint8_t ch = 0; ch < 16; ++ch) for (uint8_t n = 0; n < 128; ++n) noteOwners[ch][n] &= ~2; // nothing of the loop is held now
   flushPending();
 }
 
@@ -3234,6 +3248,7 @@ void looperStartOverdub() {
   const uint64_t now = time_us_64();
   for (uint8_t k = 0; k < loopHeldCount; ++k) {
     const LoopHeld &h = loopHeld[k];
+    if (looperCaptureInputs() && !noteOwners[h.channel][h.note]) continue; // let go of since, whatever the list says
     fw::LoopMidiEvent e;
     e.status = 0x90 | h.channel;
     e.data1 = h.note;
@@ -3430,6 +3445,12 @@ void serviceLooper() {
   if (wasRecording && !looper.recording()) { // a Measures take finished by itself and plays
     looperAdoptTempo();
     looperAutoOverdub();
+  }
+  // A loop that can't play can't let go of what it was sounding, its cursor never reaches the top that
+  // would release it (ARPnMIDI's releaseSilencedMultitrackOutputs). 1.78.
+  if (loopSoundingCount) {
+    const fw::LoopTrackState &t = looper.track(0);
+    if (!looper.playing() || t.count == 0 || t.lengthUs == 0 || !looper.audible(0)) looperRelease(nullptr, 0);
   }
   flushPending();
 }
@@ -4718,10 +4739,12 @@ void processIncomingEvent(uint8_t inputDevice, uint8_t statusHi, uint8_t channel
   if (kind == MK_NOTE) {
     // A note held by you and by the loop is held until both let go (1.77).
     uint8_t &owners = noteOwners[channel & 15][number & 127];
-    const uint8_t mine = looperEmitting ? 2 : 1;
-    if (isNoteOn) owners |= mine; else owners &= ~mine;
+    if (!looperEmitting) {
+      owners = isNoteOn ? 1 : 0;
+      if (!isNoteOn && looperCaptureInputs()) loopHeldForget(channel, number); // what an overdub starts with is what's held
+    }
     const bool outerSwallowed = noteOffSwallowed; // an action that runs from inside can play loop notes
-    noteOffSwallowed = !isNoteOn && owners != 0;
+    noteOffSwallowed = !isNoteOn && (looperEmitting ? owners != 0 : loopSoundingHas(channel, number));
     edgeLaunchpadPort = lpPort;
     edgeSkipRoute = lpSkipRoute;
     dispatchNoteEvent(inputDevice, channel, isNoteOn, number, data2);
