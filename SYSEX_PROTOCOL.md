@@ -340,7 +340,7 @@ Live out channel and velocity are session only, cleared when routes change. With
 a route's arp is bypassed (notes play straight on the live channel, no Bypass or Bass) unless its
 Follows Live Ch Change switch is on (arp block byte 14), then it arpeggiates onto the live channel.
 Note Delete (1.66) is held: press and release. While the loop plays, the notes the user plays don't pass
-(Note to Feature notes excepted) and each erases, from the loop, the notes it stands for as playback reaches
+(Note to Feature notes excepted, unless they're also a division trigger, which the loop records and Note Delete erases) and each erases, from the loop, the notes it stands for as playback reaches
 their Note On, and the Note Off that ends them. Recording inputs, a key stands for its own channel and note. Recording
 after routes, for the notes its routes would make from it (Scale, Auto Chord, transpose, arp octaves) on any channel.
 Notes are erased for good. A key pressed before Note Delete, or after it's let go, plays as normal.

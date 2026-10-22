@@ -254,8 +254,9 @@ Hold Clears off swaps hold and double press.
 Hold Note Delete while the loop plays, and the notes you play don't sound.
 Instead, each one erases itself from the loop: whenever the loop reaches
 a note you're holding, that note is removed, along with its end. Notes
-the loop plays while you're not holding them stay. Letting go of Note
-Delete stops it. Erased notes are gone for good. With the loop stopped
+the loop plays while you're not holding them stay. Arp division notes
+recorded in the loop erase the same way, so you can take out a division
+change. Letting go of Note Delete stops it. Erased notes are gone for good. With the loop stopped
 or empty, nothing happens and your notes play as normal.
 
 With Record After Routes on, a note matches the pitches its routes would

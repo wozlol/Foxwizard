@@ -97,7 +97,7 @@ constexpr uint8_t SYSEX_MFR_ID = 0x7D;   // reserved for non-commercial/educatio
 constexpr uint8_t SYSEX_DEVICE_ID = 0x4D; // 'M'
 constexpr uint8_t PROTOCOL_VERSION = 4; // 2: 45-byte routes with port masks, GET_STATUS. 3: clock settings, LEARN. 4: 53-byte routes with feature fields, feature blocks
 constexpr uint8_t FW_VERSION_MAJOR = 1;
-constexpr uint8_t FW_VERSION_MINOR = 66;
+constexpr uint8_t FW_VERSION_MINOR = 67;
 constexpr uint8_t FW_CHUNK_BYTES = 128;          // firmware bytes per FW_DATA message, 147 once packed
 constexpr uint32_t FW_REBOOT_DELAY_MS = 300;     // lets the FW_END ACK reach the host before rebooting
 const char DEVICE_NAME[] = "FoxWizard Mini MIDI Multitool"; // long name sent in the SysEx IDENTITY_REPLY
@@ -3025,13 +3025,27 @@ void noteDeleteAdd(DeleteKey &key, int16_t note) {
   key.notes[key.count++] = (uint8_t)note;
 }
 
+// Whether a note is a division trigger on a route that takes it. The loop records these (arp divisions)
+// like any note, so Note Delete can erase them too.
+bool noteIsDivisionTrigger(uint8_t inputDevice, uint8_t channel, uint8_t note, int16_t skipRoute) {
+  for (uint16_t i = 0; i < routeCount; ++i) {
+    if ((int16_t)i == skipRoute) continue;
+    if (arpSquareFor(routes[i], inputDevice, 1, channel, note) >= 0 || stutterSquareFor(i, inputDevice, 1, channel, note) >= 0 ||
+        echoSquareFor(i, inputDevice, 1, channel, note) >= 0) return true;
+  }
+  return false;
+}
+
 // A user note, as a normal controller would send it, with Note Delete active. Returns true if it's
-// the eraser's, so it goes no further. A Note to Feature note is a control, not music, so it's left alone.
+// the eraser's, so it goes no further. A Note to Feature note is a control, not music, so it's left
+// alone, unless it's also a division trigger: those are recorded in the loop, and erase like any note.
 bool noteDeleteKeyPress(uint8_t inputDevice, uint8_t channel, uint8_t note, int16_t skipRoute) {
   if (deleteKeyCount >= DELETE_KEYS) return false;
-  for (uint16_t i = 0; i < routeCount; ++i) {
-    if (!(routes[i].features & FEATURE_NOTE_TO_CC)) continue;
-    for (uint8_t e = 0; e < MAP_ENTRIES; ++e) if (noteMap[e].sourcePlusOne == note + 1) return false;
+  if (!noteIsDivisionTrigger(inputDevice, channel, note, skipRoute)) {
+    for (uint16_t i = 0; i < routeCount; ++i) {
+      if (!(routes[i].features & FEATURE_NOTE_TO_CC)) continue;
+      for (uint8_t e = 0; e < MAP_ENTRIES; ++e) if (noteMap[e].sourcePlusOne == note + 1) return false;
+    }
   }
   DeleteKey &key = deleteKeys[deleteKeyCount++];
   key = DeleteKey{inputDevice, channel, note, 0, {}};
