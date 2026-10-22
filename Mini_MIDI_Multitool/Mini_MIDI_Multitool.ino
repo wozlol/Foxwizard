@@ -97,7 +97,7 @@ constexpr uint8_t SYSEX_MFR_ID = 0x7D;   // reserved for non-commercial/educatio
 constexpr uint8_t SYSEX_DEVICE_ID = 0x4D; // 'M'
 constexpr uint8_t PROTOCOL_VERSION = 4; // 2: 45-byte routes with port masks, GET_STATUS. 3: clock settings, LEARN. 4: 53-byte routes with feature fields, feature blocks
 constexpr uint8_t FW_VERSION_MAJOR = 1;
-constexpr uint8_t FW_VERSION_MINOR = 80;
+constexpr uint8_t FW_VERSION_MINOR = 81;
 constexpr uint8_t FW_CHUNK_BYTES = 128;          // firmware bytes per FW_DATA message, 147 once packed
 constexpr uint32_t FW_REBOOT_DELAY_MS = 300;     // lets the FW_END ACK reach the host before rebooting
 const char DEVICE_NAME[] = "FoxWizard Mini MIDI Multitool"; // long name sent in the SysEx IDENTITY_REPLY
@@ -2793,7 +2793,7 @@ bool looperSafeClearArmed = false;
 uint32_t looperButtonDownMs = 0;
 bool looperHoldDone = false;
 bool looperMapHeld = false; // a mapped Looper Button action held down, holds like the button
-struct LoopSounding { uint16_t tag; uint8_t channel; uint8_t note; };
+struct LoopSounding { uint16_t tag; uint8_t channel; uint8_t note; uint8_t count; }; // count: layers holding it (1.81)
 LoopSounding loopSounding[96];
 uint8_t loopSoundingCount = 0;
 
@@ -2977,8 +2977,12 @@ void looperEmit(void *, uint8_t, const fw::LoopMidiEvent &e) {
   uint8_t k = 0;
   while (k < loopSoundingCount && !(loopSounding[k].tag == e.tag && loopSounding[k].channel == channel && loopSounding[k].note == e.data1)) ++k;
   if (on) {
-    if (k == loopSoundingCount && loopSoundingCount < 96) loopSounding[loopSoundingCount++] = LoopSounding{e.tag, channel, e.data1};
+    if (k < loopSoundingCount) { if (loopSounding[k].count < 255) ++loopSounding[k].count; }
+    else if (loopSoundingCount < 96) loopSounding[loopSoundingCount++] = LoopSounding{e.tag, channel, e.data1, 1};
   } else if (k < loopSoundingCount) {
+    // Two layers holding the same note overlap: it's held until the last of them lets go, not until the
+    // first does, which used to drop a held hat whenever another layer held it too.
+    if (loopSounding[k].count > 1) { --loopSounding[k].count; return; }
     loopSounding[k] = loopSounding[--loopSoundingCount];
   }
   looperSend(e.tag, on, channel, e.data1, e.data2);
@@ -4498,6 +4502,12 @@ void serviceArps() {
       r.sequenceStep = 0;
       r.patternStep = 0;
       r.running = true;
+      // With the loop's grid kept, a drum roll's first hit used to wait for the grid's next step, up to a
+      // whole division after the press. A drum pad hits when it's pressed (1.81), then rolls on the grid,
+      // unless the grid's next step is about to hit anyway.
+      if (loopActive && loopGridPlanted && arpModeOf(arpSettings[s]) == ARP_DRUM && r.nextStepPulse - pulse > div / 8) {
+        arpStep(s, now);
+      }
     }
     if (!r.running) continue;
     if (!clockEngine.synchronizedAdvanceAllowed(now)) continue;
