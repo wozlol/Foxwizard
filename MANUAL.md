@@ -240,7 +240,7 @@ color if you set one:
 | Looper: Pause | paused |
 | Looper: Overdub | overdubbing |
 | Looper: Stop/Clear/Undo, Un-Clear | a cleared loop can be brought back |
-| Looper: Un-Overdub, Re-Overdub | there's a layer to remove, or to bring back |
+| Looper: Layer Undo, Layer Redo | there's a layer to remove, or to bring back |
 | Looper: Double, Half | blinks the loop's length in bars when pressed. Then the one it's moved toward is lit, green after one step from where the loop started, yellow after two, red after three or more, and neither at the start. A loop starts from its own take. Before there's a loop they start from the Length setting. Clearing the loop goes back to the start. |
 | Note Delete, and any button | held |
 | Live Ch, Octave Up/Down | that channel or octave is on |
@@ -286,8 +286,8 @@ Hold Clears off swaps hold and double press.
 | Stop/Clear/Undo | stops, the next press clears, the next brings it back |
 | Play, Stop, Pause, Overdub, Clear, Rec/Arm | as named |
 | Un-Clear | brings back a cleared loop |
-| Un-Overdub | removes the newest overdub layer, ending an overdub in progress first |
-| Re-Overdub | brings back the overdub layer removed most recently |
+| Layer Undo | removes the newest overdub layer, ending an overdub in progress first |
+| Layer Redo | brings back the overdub layer removed most recently |
 | Double | the loop plays twice in a loop twice as long, ready to overdub something longer |
 | Half | plays the first half. Half then Double brings the original back. |
 
@@ -339,7 +339,7 @@ By default Note Delete is Launchpad Side 6, the third button up from the
 bottom.
 
 Up to 16 overdub layers can be stepped back and forth. A layer removed
-with Un-Overdub can still come back after newer overdubs. Removed layers
+with Layer Undo can still come back after newer overdubs. Removed layers
 aren't saved, so only the layers playing survive power off.
 
 ## Configuring with Patchling

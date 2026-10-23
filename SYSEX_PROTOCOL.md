@@ -321,7 +321,7 @@ Mapped notes and CCs don't pass through. Messages go to the route's outputs and 
 | 8 | Program Up/Down | 1 up, 0 down | | press, from the last program sent, wrapping |
 | 9 | Live Out Channel | channel 0-15 | | press: the route sends only on that channel for the session, pressed again it's back. Notes sounding on the old channels get All Notes Off, and the route's arp lets go |
 | 10 | Live Velocity | 0 follows the value, 1-20 = 10-200% | | follows: every CC value or press velocity sets 10-200%. Fixed: press sets it, pressed again it's back. Takes the place of the route's Velocity % for the session |
-| 11 | Looper | 0 1-Button (as the button in Looper mode, hold included), 1 Play/Arm/Rec, 2 Stop/Clear/Undo, 3 Play, 4 Stop, 5 Pause, 6 Overdub, 7 Clear, 8 Un-Clear, 9 Rec/Arm, 10 Un-Overdub, 11 Re-Overdub, 12 Double, 13 Half (10-13 from 1.60), 14 Note Delete (1.66) | | press (1-Button: press and release) |
+| 11 | Looper | 0 1-Button (as the button in Looper mode, hold included), 1 Play/Arm/Rec, 2 Stop/Clear/Undo, 3 Play, 4 Stop, 5 Pause, 6 Overdub, 7 Clear, 8 Un-Clear, 9 Rec/Arm, 10 Layer Undo, 11 Layer Redo, 12 Double, 13 Half (10-13 from 1.60), 14 Note Delete (1.66) | | press (1-Button: press and release) |
 | 12 | Tap Tempo | | | press |
 | 13 | Live Ch Up/Down | 1 up, 0 down | | press: the live out channel steps, wrapping |
 | 14 | Arp Div Up/Down | 1 up, 0 down | | press: the route's arp division steps |
