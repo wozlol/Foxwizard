@@ -97,7 +97,7 @@ constexpr uint8_t SYSEX_MFR_ID = 0x7D;   // reserved for non-commercial/educatio
 constexpr uint8_t SYSEX_DEVICE_ID = 0x4D; // 'M'
 constexpr uint8_t PROTOCOL_VERSION = 4; // 2: 45-byte routes with port masks, GET_STATUS. 3: clock settings, LEARN. 4: 53-byte routes with feature fields, feature blocks
 constexpr uint8_t FW_VERSION_MAJOR = 1;
-constexpr uint8_t FW_VERSION_MINOR = 84;
+constexpr uint8_t FW_VERSION_MINOR = 85;
 constexpr uint8_t FW_CHUNK_BYTES = 128;          // firmware bytes per FW_DATA message, 147 once packed
 constexpr uint32_t FW_REBOOT_DELAY_MS = 300;     // lets the FW_END ACK reach the host before rebooting
 const char DEVICE_NAME[] = "FoxWizard Mini MIDI Multitool"; // long name sent in the SysEx IDENTITY_REPLY
@@ -4493,6 +4493,19 @@ void serviceArps() {
     loopGridPlanted = true;
   }
   loopWasPlaying = looper.playing();
+  // The pulse count starts over at a tempo change (a take adopting its tempo) or an external Start. A running
+  // arp's next step was a pulse count from before that, so it sat silent until the count caught up again, as
+  // long as the arp had been running (1.85). It starts its grid over with the count instead.
+  static uint32_t lastPulse = 0;
+  const uint32_t pulseNow = clockEngine.internalPulse();
+  if (pulseNow < lastPulse) {
+    for (uint8_t s = 0; s < ARP_SLOTS; ++s) {
+      if (!arps[s].running) continue;
+      const uint16_t div = fw::divisionPulses(arpCurrentDivision(s));
+      arps[s].nextStepPulse = ((pulseNow + div - 1) / div) * div;
+    }
+  }
+  lastPulse = pulseNow;
   for (uint8_t s = 0; s < ARP_SLOTS; ++s) {
     ArpRuntime &r = arps[s];
     if (r.gateOffUs && now >= r.gateOffUs) {
