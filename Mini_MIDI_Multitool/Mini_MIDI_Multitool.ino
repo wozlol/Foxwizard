@@ -97,7 +97,7 @@ constexpr uint8_t SYSEX_MFR_ID = 0x7D;   // reserved for non-commercial/educatio
 constexpr uint8_t SYSEX_DEVICE_ID = 0x4D; // 'M'
 constexpr uint8_t PROTOCOL_VERSION = 4; // 2: 45-byte routes with port masks, GET_STATUS. 3: clock settings, LEARN. 4: 53-byte routes with feature fields, feature blocks
 constexpr uint8_t FW_VERSION_MAJOR = 1;
-constexpr uint8_t FW_VERSION_MINOR = 87;
+constexpr uint8_t FW_VERSION_MINOR = 88;
 constexpr uint8_t FW_CHUNK_BYTES = 128;          // firmware bytes per FW_DATA message, 147 once packed
 constexpr uint32_t FW_REBOOT_DELAY_MS = 300;     // lets the FW_END ACK reach the host before rebooting
 const char DEVICE_NAME[] = "FoxWizard Mini MIDI Multitool"; // long name sent in the SysEx IDENTITY_REPLY
@@ -2934,16 +2934,17 @@ void looperCapturePressure(uint16_t tag, uint8_t status, uint8_t key, uint8_t va
   }
   const int delta = (int)value - state->lastSeen;
   const int8_t direction = delta > 0 ? 1 : (delta < 0 ? -1 : 0);
-  // Pressure under 3 apart can't change a velocity you'd hear, so jitter doesn't count as a turn (1.87, not in ARPnMIDI's CC rule).
+  // Pressure under 3 apart can't change a velocity you'd hear, so jitter doesn't count as a turn, and a value is kept no
+  // more often than every 20 ms, the quickest an arp steps (1.88, not in ARPnMIDI's CC rule, aftertouch is noisy).
   const bool directionChanged = direction != 0 && state->direction != 0 && direction != state->direction &&
-                                abs((int)value - state->lastStored) >= 3 && now - state->lastStoredMs >= 8;
+                                abs((int)value - state->lastStored) >= 3 && now - state->lastStoredMs >= 20;
   state->filtered = (uint8_t)(((uint16_t)state->filtered * 2U + value + 1U) / 3U);
   state->lastSeen = value;
   state->lastSeenMs = now;
   state->pending = value != state->lastStored;
   const uint8_t distance = (uint8_t)abs((int)state->filtered - state->lastStored);
   const bool timedSmoothPoint = distance >= 2 && now - state->lastStoredMs >= 25;
-  const bool fastMove = abs(delta) >= 6 && now - state->lastStoredMs >= 8;
+  const bool fastMove = abs(delta) >= 6 && now - state->lastStoredMs >= 20;
   if (directionChanged || timedSmoothPoint || fastMove) {
     const uint8_t storedValue = (directionChanged || fastMove) ? value : state->filtered;
     if (loopPressureStore(state->tag, state->status, state->key, storedValue)) {
