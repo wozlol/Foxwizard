@@ -632,25 +632,35 @@ void Looper::collectHeldNotes(uint8_t track, HeldNoteFn fn, void *context) const
   if (state.head == kNoLoopEvent || state.head == state.playCursor) return;
 
   // FoxWizard: the tag (+ 1, 0 not held) says where the note plays back to. Hidden layers don't sound.
+  // One layer at a time (1.87), so two layers holding the same note are two holds, each ended by its own
+  // Note Off, the way ARPnMIDI keeps its tracks apart.
   static uint16_t heldTag[16][128];
   static uint8_t velocity[16][128];
-  memset(heldTag, 0, sizeof(heldTag));
-  uint16_t slot = state.head;
-  while (slot != kNoLoopEvent && slot != state.playCursor) {
-    const LoopMidiEvent event = slots_[slot].event();
-    const uint8_t type = event.status & 0xF0;
-    if ((type == 0x90 || type == 0x80) && event.data1 <= 127 && !layerHidden(event.layer)) {
-      const uint8_t channel = event.status & 0x0F;
-      const bool on = type == 0x90 && event.data2 > 0;
-      heldTag[channel][event.data1] = on ? static_cast<uint16_t>(event.tag + 1U) : 0;
-      if (on) velocity[channel][event.data1] = event.data2;
+  uint8_t ids[kMaxUndoLayers + 1];
+  uint8_t idCount = 0;
+  ids[idCount++] = 0;
+  for (uint8_t i = 0; i < layerCount_; ++i) ids[idCount++] = layers_[i];
+  for (uint8_t n = 0; n < idCount; ++n) {
+    const uint8_t layer = ids[n];
+    if (layerHidden(layer)) continue;
+    memset(heldTag, 0, sizeof(heldTag));
+    uint16_t slot = state.head;
+    while (slot != kNoLoopEvent && slot != state.playCursor) {
+      const LoopMidiEvent event = slots_[slot].event();
+      const uint8_t type = event.status & 0xF0;
+      if ((type == 0x90 || type == 0x80) && event.data1 <= 127 && event.layer == layer) {
+        const uint8_t channel = event.status & 0x0F;
+        const bool on = type == 0x90 && event.data2 > 0;
+        heldTag[channel][event.data1] = on ? static_cast<uint16_t>(event.tag + 1U) : 0;
+        if (on) velocity[channel][event.data1] = event.data2;
+      }
+      slot = slots_[slot].next;
     }
-    slot = slots_[slot].next;
-  }
-  for (uint8_t channel = 0; channel < 16; ++channel) {
-    for (uint8_t note = 0; note < 128; ++note) {
-      if (heldTag[channel][note]) {
-        fn(context, track, static_cast<uint16_t>(heldTag[channel][note] - 1U), channel, note, velocity[channel][note]);
+    for (uint8_t channel = 0; channel < 16; ++channel) {
+      for (uint8_t note = 0; note < 128; ++note) {
+        if (heldTag[channel][note]) {
+          fn(context, track, static_cast<uint16_t>(heldTag[channel][note] - 1U), channel, note, velocity[channel][note], layer);
+        }
       }
     }
   }

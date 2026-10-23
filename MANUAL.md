@@ -304,7 +304,13 @@ that starts from its top starts the grid there, and a take plants it at the firs
 
 A note held by you and by the loop stays held until both let go. If two layers hold the same note
 and overlap, it stays held until the last of them lets go. The loop letting go of a hat you're still
-holding doesn't stop your roll, and you letting go of one the loop still holds doesn't either.
+holding doesn't stop your roll, and you letting go of one the loop still holds doesn't either. If a loop
+plays a Note On for a note it's still holding, it lets go and plays it again, so a repeated Note On
+never leaves a note stuck. This is how ARPnMIDI's loop playback does it.
+
+An arp set to Aftertouch velocity keeps the pressure that sets its velocities with the loop, when the
+loop records inputs and the route's Looper switch is on, so playback has the velocities you played.
+The values are thinned the way ARPnMIDI thins recorded CCs.
 
 A note you hold during an overdub is recorded as held everywhere you held it. That includes a note you
 were already holding when the overdub started, one held across the top of the loop, and one held for

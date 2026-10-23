@@ -686,7 +686,10 @@ export class DeviceLink extends EventTarget {
       // loop, the rest are counts of loops or 0-127 of a queue's size. Absent from older firmware.
       perf: reply.length >= 22 ? {
         loopUs: reply[15] | (reply[16] << 7), linkLimit: reply[17], heldBack: reply[18],
-        linkPct: Math.round(reply[19] * 100 / 127), trsPct: Math.round(reply[20] * 100 / 127), usbPct: Math.round(reply[21] * 100 / 127)
+        linkPct: Math.round(reply[19] * 100 / 127), trsPct: Math.round(reply[20] * 100 / 127), usbPct: Math.round(reply[21] * 100 / 127),
+        // 1.87: counts of a Note On for a key already down, a Note Off for a key not down, and the loop's own
+        // orphan Note Offs and repeated Note Ons.
+        repeatOn: reply[22] ?? 0, strayOff: reply[23] ?? 0, loopOrphanOff: reply[24] ?? 0, loopRepeatOn: reply[25] ?? 0
       } : null
     };
   }

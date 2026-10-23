@@ -54,8 +54,9 @@ class Looper {
   // FoxWizard 1.66, Note Delete: asked about each Note On as playback reaches it. True erases that
   // note from the loop, its Note Off too, and nothing sounds.
   using EraseFn = bool (*)(void *context, const LoopMidiEvent &event);
+  // FoxWizard 1.87: layer is the pass the hold came from, so the caller can keep each layer's hold apart.
   using HeldNoteFn = void (*)(void *context, uint8_t track, uint16_t tag, uint8_t channel,
-                              uint8_t note, uint8_t velocity);
+                              uint8_t note, uint8_t velocity, uint8_t layer);
 
   Looper();
   void reset();

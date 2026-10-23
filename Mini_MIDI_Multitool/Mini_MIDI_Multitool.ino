@@ -97,7 +97,7 @@ constexpr uint8_t SYSEX_MFR_ID = 0x7D;   // reserved for non-commercial/educatio
 constexpr uint8_t SYSEX_DEVICE_ID = 0x4D; // 'M'
 constexpr uint8_t PROTOCOL_VERSION = 4; // 2: 45-byte routes with port masks, GET_STATUS. 3: clock settings, LEARN. 4: 53-byte routes with feature fields, feature blocks
 constexpr uint8_t FW_VERSION_MAJOR = 1;
-constexpr uint8_t FW_VERSION_MINOR = 86;
+constexpr uint8_t FW_VERSION_MINOR = 87;
 constexpr uint8_t FW_CHUNK_BYTES = 128;          // firmware bytes per FW_DATA message, 147 once packed
 constexpr uint32_t FW_REBOOT_DELAY_MS = 300;     // lets the FW_END ACK reach the host before rebooting
 const char DEVICE_NAME[] = "FoxWizard Mini MIDI Multitool"; // long name sent in the SysEx IDENTITY_REPLY
@@ -374,6 +374,10 @@ uint16_t perfInputHeldBack = 0;
 uint16_t perfLinkHigh = 0;   // bytes waiting from the host brain
 uint16_t perfTrsHigh = 0;    // bytes queued for TRS/DIN
 uint16_t perfUsbHigh = 0;    // packets queued for USB
+uint16_t perfRepeatOn = 0;   // 1.87: a Note On for a key already down
+uint16_t perfStrayOff = 0;   // a Note Off for a key not down
+uint16_t perfLoopOrphanOff = 0; // the loop played a Note Off nothing of the loop's was holding
+uint16_t perfLoopRepeatOn = 0;  // the loop played a Note On for a note it was still holding
 bool noteOffSwallowed = false; // this Note Off is for a note the other still holds
 bool hostWasPresent = false;
 bool hostEverPresent = false; // the first time the host brain appears isn't a return
@@ -2803,7 +2807,10 @@ bool looperSafeClearArmed = false;
 uint32_t looperButtonDownMs = 0;
 bool looperHoldDone = false;
 bool looperMapHeld = false; // a mapped Looper Button action held down, holds like the button
-struct LoopSounding { uint16_t tag; uint8_t channel; uint8_t note; uint8_t count; }; // count: layers holding it (1.81)
+constexpr uint8_t LOOP_SOUNDING_LAYERS = 8;
+// A note the loop is sounding, and the layers holding it (1.87). Each layer is balanced on its own, like ARPnMIDI's
+// playback gate keeps each track, and the note lets go when the last layer does.
+struct LoopSounding { uint16_t tag; uint8_t channel; uint8_t note; uint8_t layerCount; uint8_t layers[LOOP_SOUNDING_LAYERS]; };
 LoopSounding loopSounding[96];
 uint8_t loopSoundingCount = 0;
 
@@ -2876,6 +2883,89 @@ void loopHeldForget(uint8_t channel, uint8_t note) {
   for (uint8_t k = 0; k < loopHeldCount;) {
     if (loopHeld[k].channel == channel && loopHeld[k].note == note) loopHeld[k] = loopHeld[--loopHeldCount];
     else ++k;
+  }
+}
+
+// The pressure an arp set to Aftertouch velocity plays its hits from, kept with a take so the loop plays them with the
+// velocities you played (1.87). Thinned the way ARPnMIDI thins the CC values it records (LoopCcPruneState): a value is
+// stored when the direction turns, on a fast move, or at a smoothed point every 25 ms, and the last one once it settles.
+struct LoopPressurePrune {
+  bool used, pending;
+  uint8_t status, key, lastStored, lastSeen, filtered;
+  int8_t direction;
+  uint16_t tag;
+  uint32_t lastStoredMs, lastSeenMs;
+};
+LoopPressurePrune loopPressurePrune[16];
+uint32_t loopPressureGeneration = 0xFFFFFFFF;
+
+bool loopPressureStore(uint16_t tag, uint8_t status, uint8_t key, uint8_t value) {
+  fw::LoopMidiEvent e;
+  e.status = status;
+  e.data1 = (status & 0xF0) == 0xA0 ? key : value; // poly: key then pressure. channel pressure: the pressure
+  e.data2 = (status & 0xF0) == 0xA0 ? value : 0;
+  e.tag = tag;
+  return looper.capture(time_us_64(), e);
+}
+
+void looperCapturePressure(uint16_t tag, uint8_t status, uint8_t key, uint8_t value) {
+  if (!looper.recording()) return;
+  if (looper.track(0).generation != loopPressureGeneration) { // a new take or overdub pass starts clean
+    loopPressureGeneration = looper.track(0).generation;
+    for (LoopPressurePrune &c : loopPressurePrune) c = LoopPressurePrune{};
+  }
+  LoopPressurePrune *state = nullptr;
+  for (LoopPressurePrune &c : loopPressurePrune) {
+    if (c.used && c.status == status && c.key == key && c.tag == tag) { state = &c; break; }
+    if (!state && !c.used) state = &c;
+  }
+  if (!state) return; // more pressures at once than there's room to follow
+  const uint32_t now = millis();
+  if (!state->used) {
+    *state = LoopPressurePrune{};
+    state->used = true;
+    state->status = status;
+    state->key = key;
+    state->tag = tag;
+    state->lastStored = state->lastSeen = state->filtered = value;
+    state->lastStoredMs = state->lastSeenMs = now;
+    loopPressureStore(state->tag, state->status, state->key, value);
+    return;
+  }
+  const int delta = (int)value - state->lastSeen;
+  const int8_t direction = delta > 0 ? 1 : (delta < 0 ? -1 : 0);
+  // Pressure under 3 apart can't change a velocity you'd hear, so jitter doesn't count as a turn (1.87, not in ARPnMIDI's CC rule).
+  const bool directionChanged = direction != 0 && state->direction != 0 && direction != state->direction &&
+                                abs((int)value - state->lastStored) >= 3 && now - state->lastStoredMs >= 8;
+  state->filtered = (uint8_t)(((uint16_t)state->filtered * 2U + value + 1U) / 3U);
+  state->lastSeen = value;
+  state->lastSeenMs = now;
+  state->pending = value != state->lastStored;
+  const uint8_t distance = (uint8_t)abs((int)state->filtered - state->lastStored);
+  const bool timedSmoothPoint = distance >= 2 && now - state->lastStoredMs >= 25;
+  const bool fastMove = abs(delta) >= 6 && now - state->lastStoredMs >= 8;
+  if (directionChanged || timedSmoothPoint || fastMove) {
+    const uint8_t storedValue = (directionChanged || fastMove) ? value : state->filtered;
+    if (loopPressureStore(state->tag, state->status, state->key, storedValue)) {
+      state->lastStored = storedValue;
+      state->lastStoredMs = now;
+      state->pending = value != storedValue;
+    }
+  }
+  if (direction != 0) state->direction = direction;
+}
+
+// A value that settled without being stored is stored once it's been still for 80 ms, or now.
+void looperFlushPressure(bool forceAll) {
+  const uint32_t now = millis();
+  for (LoopPressurePrune &s : loopPressurePrune) {
+    if (!s.used || !s.pending) continue;
+    if (!forceAll && now - s.lastSeenMs < 80) continue;
+    if (loopPressureStore(s.tag, s.status, s.key, s.lastSeen)) {
+      s.lastStored = s.lastSeen;
+      s.lastStoredMs = now;
+      s.pending = false;
+    }
   }
 }
 
@@ -2978,21 +3068,47 @@ void looperSendCc(uint16_t tag, uint8_t channel, uint8_t number, uint8_t value) 
   looperEmitting = false;
 }
 
+// Pressure replayed into the arp that took its velocity from it (1.87).
+void looperSendPressure(uint16_t tag, uint8_t statusHi, uint8_t channel, uint8_t data1, uint8_t data2) {
+  if (!loopTagsAreInputs) return;
+  looperEmitting = true;
+  const uint8_t device = tag >> 8;
+  if (device == DEV_HOST) currentHostPort = tag & 0xFF;
+  processIncomingEvent(device, statusHi, channel, data1, data2, statusHi == 0xD0 ? 2 : 3);
+  looperEmitting = false;
+}
+
 void looperEmit(void *, uint8_t, const fw::LoopMidiEvent &e) {
   const uint8_t type = e.status & 0xF0;
   if (type == 0xB0) { looperSendCc(e.tag, e.status & 0x0F, e.data1, e.data2); return; }
+  if (type == 0xA0 || type == 0xD0) { looperSendPressure(e.tag, type, e.status & 0x0F, e.data1, e.data2); return; }
   if (type != 0x90 && type != 0x80) return;
   const bool on = type == 0x90 && e.data2;
   const uint8_t channel = e.status & 0x0F;
   uint8_t k = 0;
   while (k < loopSoundingCount && !(loopSounding[k].tag == e.tag && loopSounding[k].channel == channel && loopSounding[k].note == e.data1)) ++k;
+  const bool found = k < loopSoundingCount;
+  uint8_t j = 0; // this layer's place among the layers holding the note
+  if (found) while (j < loopSounding[k].layerCount && loopSounding[k].layers[j] != e.layer) ++j;
   if (on) {
-    if (k < loopSoundingCount) { if (loopSounding[k].count < 255) ++loopSounding[k].count; }
-    else if (loopSoundingCount < 96) loopSounding[loopSoundingCount++] = LoopSounding{e.tag, channel, e.data1, 1};
-  } else if (k < loopSoundingCount) {
-    // Two layers holding the same note overlap: it's held until the last of them lets go, not until the
-    // first does, which used to drop a held hat whenever another layer held it too.
-    if (loopSounding[k].count > 1) { --loopSounding[k].count; return; }
+    if (!found) {
+      if (loopSoundingCount < 96) {
+        LoopSounding &s = loopSounding[loopSoundingCount++];
+        s = LoopSounding{e.tag, channel, e.data1, 1, {e.layer}};
+      }
+    } else if (j < loopSounding[k].layerCount) {
+      // The layer plays a note it's still holding: let go, then play it again, so a repeated Note On can't
+      // leave it stuck. Not while another layer holds it too, that one carries on through the repeat.
+      ++perfLoopRepeatOn;
+      if (loopSounding[k].layerCount == 1) looperSend(e.tag, false, channel, e.data1, 0);
+    } else if (loopSounding[k].layerCount < LOOP_SOUNDING_LAYERS) {
+      loopSounding[k].layers[loopSounding[k].layerCount++] = e.layer;
+    }
+  } else {
+    if (!found || j == loopSounding[k].layerCount) { ++perfLoopOrphanOff; return; } // nothing of this layer's is holding it, an orphan Note Off
+    LoopSounding &s = loopSounding[k];
+    s.layers[j] = s.layers[--s.layerCount];
+    if (s.layerCount) return; // another layer still holds it, it's held until the last lets go
     loopSounding[k] = loopSounding[--loopSoundingCount];
   }
   looperSend(e.tag, on, channel, e.data1, e.data2);
@@ -3295,6 +3411,7 @@ void looperAdoptTempo() {
 // Ends a take or an overdub, keeping it. A fresh Free take sets the tempo.
 bool looperFinish(uint64_t now, bool startIfStopped) {
   const bool fresh = looper.recording() && !looper.overdubbing();
+  if (looper.recording()) looperFlushPressure(true);
   const bool captured = looper.finishRecording(now);
   if (captured && fresh) looperAdoptTempo();
   if (captured && startIfStopped && !looper.playing()) looper.start(now);
@@ -3455,6 +3572,7 @@ void serviceLooper() {
     looperSecondGesture(true);
   }
   const bool wasRecording = looper.recording() && !looper.overdubbing();
+  if (looper.recording()) looperFlushPressure(false);
   looper.tick(time_us_64(), looperEmit, looperRelease, nullptr);
   if (wasRecording && !looper.recording()) { // a Measures take finished by itself and plays
     looperAdoptTempo();
@@ -3846,12 +3964,13 @@ void setLiveOctave(uint16_t routeIndex, int8_t octave) {
 // After layers hide or show, or the loop changes length mid-play: everything the loop is sounding
 // lets go, then whatever should be sounding at this point plays again, each to where it came from.
 // Nothing sticks, and a note held across the change doesn't drop out.
-void looperRetriggerHeld(void *, uint8_t, uint16_t tag, uint8_t channel, uint8_t note, uint8_t velocity) {
+void looperRetriggerHeld(void *, uint8_t, uint16_t tag, uint8_t channel, uint8_t note, uint8_t velocity, uint8_t layer) {
   fw::LoopMidiEvent e;
   e.status = 0x90 | channel;
   e.data1 = note;
   e.data2 = velocity;
   e.tag = tag;
+  e.layer = layer;
   looperEmit(nullptr, 0, e);
 }
 
@@ -4767,6 +4886,7 @@ void processIncomingEvent(uint8_t inputDevice, uint8_t statusHi, uint8_t channel
     // A note held by you and by the loop is held until both let go (1.77).
     uint8_t &owners = noteOwners[channel & 15][number & 127];
     if (!looperEmitting) {
+      if (isNoteOn ? owners != 0 : owners == 0) ++(isNoteOn ? perfRepeatOn : perfStrayOff);
       owners = isNoteOn ? 1 : 0;
       if (!isNoteOn && looperCaptureInputs()) loopHeldForget(channel, number); // what an overdub starts with is what's held
     }
@@ -4783,6 +4903,7 @@ void processIncomingEvent(uint8_t inputDevice, uint8_t statusHi, uint8_t channel
 
   bool matchedAny = false;
   bool matchedLooperRoute = false; // a CC that's this route's own (passed, a division square, Hold), Looper switch on
+  bool pressureForLoop = false;    // pressure an arp takes its velocity from, on a route with its Looper switch on
   for (uint16_t i = 0; i < routeCount; ++i) {
     if (kind == MK_CC && (routes[i].features & FEATURE_LAUNCHPAD) && number >= LP_TOP_BUTTON_CC && number < LP_TOP_BUTTON_CC + 8) {
       const uint8_t button = number - LP_TOP_BUTTON_CC;
@@ -4840,6 +4961,7 @@ void processIncomingEvent(uint8_t inputDevice, uint8_t statusHi, uint8_t channel
     if ((kind == MK_CHAN_PRESSURE || kind == MK_POLY_AT) && routes[i].arpSlot && routes[i].arpSlot <= ARP_SLOTS &&
         arpSettings[routes[i].arpSlot - 1].aftertouchVelocity && routeAcceptsSource(routes[i], inputDevice, channel)) {
       arps[routes[i].arpSlot - 1].pressure = kind == MK_POLY_AT ? data2 : data1;
+      if (!routeLooperOff(routes[i])) pressureForLoop = true;
     }
     if (kind == MK_CC && arpHoldMatches(routes[i], inputDevice, channel, number)) {
       matchedAny = true;
@@ -4864,6 +4986,12 @@ void processIncomingEvent(uint8_t inputDevice, uint8_t statusHi, uint8_t channel
   } else {
     // still count as "seen" on the input side for the IN LED even if fully consumed by routes
     if (inputDevice == DEV_USB) noteActivity(ledUsb); else noteActivity(ledIn);
+  }
+
+  // The pressure an arp's velocity follows is kept with the take, so the loop plays those velocities (1.87).
+  if (pressureForLoop && !looperEmitting && looperRecordsInputs()) {
+    looperCapturePressure((uint16_t)((inputDevice << 8) | (inputDevice == DEV_HOST ? currentHostPort : 0)),
+                          statusHi | channel, kind == MK_POLY_AT ? number : 0, kind == MK_POLY_AT ? data2 : data1);
   }
 
   // The looper's input-side CC capture, the same rule as notes (see dispatchNoteEvent).
@@ -5188,7 +5316,13 @@ void handleSysexCommand(uint8_t sourcePort, const uint8_t *cmdBuf, uint8_t cmdLe
       appendReply((uint8_t)((uint32_t)perfLinkHigh * 127 / LINK_RX_BUFFER));
       appendReply((uint8_t)((uint32_t)perfTrsHigh * 127 / TRS_QUEUE_BYTES));
       appendReply((uint8_t)((uint32_t)perfUsbHigh * 127 / USB_QUEUE_PACKETS));
+      // 1.87: note counts since the last status, 0-127 each, to tell a device repeating itself from the loop.
+      appendReply(perfRepeatOn > 127 ? 127 : perfRepeatOn);
+      appendReply(perfStrayOff > 127 ? 127 : perfStrayOff);
+      appendReply(perfLoopOrphanOff > 127 ? 127 : perfLoopOrphanOff);
+      appendReply(perfLoopRepeatOn > 127 ? 127 : perfLoopRepeatOn);
       perfLoopMaxUs = perfLinkLimitHits = perfInputHeldBack = perfLinkHigh = perfTrsHigh = perfUsbHigh = 0;
+      perfRepeatOn = perfStrayOff = perfLoopOrphanOff = perfLoopRepeatOn = 0;
       sendReply(sourcePort);
       break;
     }
