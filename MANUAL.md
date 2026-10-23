@@ -316,7 +316,10 @@ The values are thinned the way ARPnMIDI thins recorded CCs.
 A note you hold during an overdub is recorded as held everywhere you held it. That includes a note you
 were already holding when the overdub started, one held across the top of the loop, and one held for
 longer than the whole loop, which is held all the way round. A held note goes into the loop when you let
-go of it, so it plays back from the next time round.
+go of it, so it plays back from the next time round, except one held for the whole loop or longer, which
+the loop takes over from you the moment you let go, so it doesn't drop out until it comes round again.
+A note held through the top of the loop, or from one layer into the next, plays straight through with no
+gap where it changes over.
 
 ### Note Delete
 

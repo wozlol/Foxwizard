@@ -97,7 +97,7 @@ constexpr uint8_t SYSEX_MFR_ID = 0x7D;   // reserved for non-commercial/educatio
 constexpr uint8_t SYSEX_DEVICE_ID = 0x4D; // 'M'
 constexpr uint8_t PROTOCOL_VERSION = 4; // 2: 45-byte routes with port masks, GET_STATUS. 3: clock settings, LEARN. 4: 53-byte routes with feature fields, feature blocks
 constexpr uint8_t FW_VERSION_MAJOR = 1;
-constexpr uint8_t FW_VERSION_MINOR = 89;
+constexpr uint8_t FW_VERSION_MINOR = 90;
 constexpr uint8_t FW_CHUNK_BYTES = 128;          // firmware bytes per FW_DATA message, 147 once packed
 constexpr uint32_t FW_REBOOT_DELAY_MS = 300;     // lets the FW_END ACK reach the host before rebooting
 const char DEVICE_NAME[] = "FoxWizard Mini MIDI Multitool"; // long name sent in the SysEx IDENTITY_REPLY
@@ -2811,7 +2811,8 @@ bool looperMapHeld = false; // a mapped Looper Button action held down, holds li
 // whichever layer or pass it came from, so overlapping holds keep it sounding until the last lets go, the way
 // ARPnMIDI counts a note held by more than one source: the Note On goes out when the count goes from 0 to 1, the
 // Note Off when it goes back to 0.
-struct LoopSounding { uint16_t tag; uint8_t channel; uint8_t note; uint8_t count; };
+// carry: holds that ended at the loop's last moment and go on across the top, left sounding through it (1.90).
+struct LoopSounding { uint16_t tag; uint8_t channel; uint8_t note; uint8_t count; uint8_t carry; };
 LoopSounding loopSounding[96];
 uint8_t loopSoundingCount = 0;
 
@@ -3097,23 +3098,56 @@ void looperEmit(void *, uint8_t, const fw::LoopMidiEvent &e) {
   uint8_t k = 0;
   while (k < loopSoundingCount && !(loopSounding[k].tag == e.tag && loopSounding[k].channel == channel && loopSounding[k].note == e.data1)) ++k;
   if (on) {
-    if (k < loopSoundingCount) { // already sounding: one more hold of it, no second Note On
-      ++perfLoopRepeatOn;
+    if (k < loopSoundingCount) {
+      if (loopSounding[k].carry) { // the other half of a hold carried across the top, still sounding
+        --loopSounding[k].carry;
+        if (loopSounding[k].count < 255) ++loopSounding[k].count;
+        return;
+      }
+      ++perfLoopRepeatOn; // already sounding: one more hold of it, no second Note On
       if (loopSounding[k].count < 255) ++loopSounding[k].count;
       return;
     }
-    if (loopSoundingCount < 96) loopSounding[loopSoundingCount++] = LoopSounding{e.tag, channel, e.data1, 1};
+    if (loopSoundingCount < 96) loopSounding[loopSoundingCount++] = LoopSounding{e.tag, channel, e.data1, 1, 0};
   } else {
     if (k >= loopSoundingCount) { ++perfLoopOrphanOff; return; } // nothing of the loop's is holding it, ARPnMIDI drops it
+    const uint32_t lengthUs = looper.track(0).lengthUs;
+    if (lengthUs && e.atUs + 1 >= lengthUs && loopSounding[k].count && looper.hasOnAtTop(0, e.tag, channel, e.data1)) {
+      // The hold ends at the last moment of the loop and starts again at the top: it carries on, no Note Off and no new Note On.
+      --loopSounding[k].count;
+      if (loopSounding[k].carry < 255) ++loopSounding[k].carry;
+      return;
+    }
     if (loopSounding[k].count > 1) { --loopSounding[k].count; return; } // another hold of it goes on
+    if (loopSounding[k].count == 1 && loopSounding[k].carry) { loopSounding[k].count = 0; return; } // a carried hold goes on
+    if (loopSounding[k].count == 1 && looper.onFollows(0, e.tag, channel, e.data1, e.atUs)) {
+      // A hold handed from one layer to the next: the Note On is right behind this Note Off, so the note goes on through.
+      loopSounding[k].count = 0;
+      if (loopSounding[k].carry < 255) ++loopSounding[k].carry;
+      return;
+    }
     loopSounding[k] = loopSounding[--loopSoundingCount];
   }
   looperSend(e.tag, on, channel, e.data1, e.data2);
 }
 
 void looperRelease(void *, uint8_t) {
-  for (uint8_t k = 0; k < loopSoundingCount; ++k) looperSend(loopSounding[k].tag, false, loopSounding[k].channel, loopSounding[k].note, 0);
-  loopSoundingCount = 0;
+  const bool atTop = looper.releasingAtWrap();
+  uint8_t kept = 0;
+  for (uint8_t k = 0; k < loopSoundingCount; ++k) {
+    LoopSounding &s = loopSounding[k];
+    // At the top, the holds of a note that are still going keep sounding as far as the loop starts that many again, and
+    // the Note Ons at the top pick them up. The engine wraps before an Off at the very last moment gets a turn, so this
+    // is where a hold across the top is told from one that ended.
+    if (atTop) {
+      const uint16_t going = (uint16_t)s.count + s.carry;
+      const uint8_t starting = looper.countOnAtTop(0, s.tag, s.channel, s.note);
+      const uint8_t keep = (uint8_t)(going < starting ? going : starting);
+      if (keep) { s.carry = keep; s.count = 0; loopSounding[kept++] = s; continue; }
+    }
+    looperSend(s.tag, false, s.channel, s.note, 0);
+  }
+  loopSoundingCount = kept;
   flushPending();
 }
 
@@ -4915,6 +4949,14 @@ void processIncomingEvent(uint8_t inputDevice, uint8_t statusHi, uint8_t channel
       if (isNoteOn ? owners != 0 : owners == 0) ++(isNoteOn ? perfRepeatOn : perfStrayOff);
       owners = isNoteOn ? 1 : 0;
       if (!isNoteOn && looperCaptureInputs()) loopHeldForget(channel, number); // what an overdub starts with is what's held
+    }
+    // A note held in an overdub for the whole loop or longer is held everywhere in it, so when you let go the loop
+    // takes it over from you right there, instead of staying quiet until it comes round again (1.90).
+    if (!looperEmitting && !isNoteOn && looperCaptureInputs() && looper.overdubbing()) {
+      const uint16_t holdTag = (uint16_t)((inputDevice << 8) | (inputDevice == DEV_HOST ? currentHostPort : 0));
+      if (looper.pendingHoldWholeLoop(channel, number, holdTag, time_us_64()) && !loopSoundingHas(channel, number) && loopSoundingCount < 96) {
+        loopSounding[loopSoundingCount++] = LoopSounding{holdTag, channel, number, 1, 0};
+      }
     }
     const bool outerSwallowed = noteOffSwallowed; // an action that runs from inside can play loop notes
     noteOffSwallowed = !isNoteOn && (looperEmitting ? owners != 0 : loopSoundingHas(channel, number));

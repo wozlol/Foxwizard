@@ -87,6 +87,17 @@ class Looper {
   void tick(uint64_t nowUs, EmitFn emit, ReleaseFn release, void *context,
             uint16_t maxEvents = 96);
   bool playing() const { return playing_; }
+  // FoxWizard 1.90: true while the release callback runs because the loop came round to its top, not because it
+  // stopped or was cleared, so a note that goes on across the top can be left sounding.
+  bool releasingAtWrap() const { return releasingAtWrap_; }
+  // A visible Note On for the note at the very top of the loop, the other half of a hold carried across the top.
+  bool hasOnAtTop(uint8_t track, uint16_t tag, uint8_t channel, uint8_t note) const { return countOnAtTop(track, tag, channel, note) > 0; }
+  uint8_t countOnAtTop(uint8_t track, uint16_t tag, uint8_t channel, uint8_t note) const;
+  // While an event plays: a visible Note On for the same note right behind it, within a few milliseconds, the other half of
+  // a hold handed from one layer to the next.
+  bool onFollows(uint8_t track, uint16_t tag, uint8_t channel, uint8_t note, uint32_t atUs) const;
+  // A hold of the note, still being held, has now lasted the whole loop, so it's held everywhere in it.
+  bool pendingHoldWholeLoop(uint8_t channel, uint8_t note, uint16_t tag, uint64_t nowUs) const;
   bool paused() const { return paused_; } // FoxWizard: Pause resumes where it stopped
 
   // FoxWizard 1.60, overdub layers. Every overdub pass is its own layer. Un-Overdub hides the
@@ -211,6 +222,7 @@ class Looper {
   bool recordingArmed_ = false;
   bool recording_ = false;
   bool overdubbing_ = false;
+  bool releasingAtWrap_ = false;
   // The track's own event count at the instant this pass actually started
   // recording, so finishRecording can tell whether THIS pass added anything.
   // A plain count-is-nonzero check is right for a replacement, which always

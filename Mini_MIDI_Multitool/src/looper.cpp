@@ -633,6 +633,37 @@ bool Looper::audible(uint8_t trackIndex) const {
   return !importing_[trackIndex] && !track.hidden && !track.muted && (!anySolo || track.solo);
 }
 
+uint8_t Looper::countOnAtTop(uint8_t track, uint16_t tag, uint8_t channel, uint8_t note) const {
+  if (track >= kLoopTrackCount) return 0;
+  constexpr uint32_t kTopWindowUs = 3000; // an overdub that starts as a take ends begins a moment after the top
+  uint8_t count = 0;
+  for (uint16_t slot = tracks_[track].head; slot != kNoLoopEvent && slots_[slot].atUs <= kTopWindowUs; slot = slots_[slot].next) {
+    const EventSlot &e = slots_[slot];
+    if ((e.status & 0xF0) == 0x90 && e.data2 && (e.status & 0x0F) == channel && e.data1 == note && e.tag == tag &&
+        !layerHidden(e.layer) && count < 255) ++count;
+  }
+  return count;
+}
+
+bool Looper::onFollows(uint8_t track, uint16_t tag, uint8_t channel, uint8_t note, uint32_t atUs) const {
+  if (track >= kLoopTrackCount || tracks_[track].playCursor == kNoLoopEvent) return false;
+  constexpr uint32_t kHandoffWindowUs = 3000;
+  for (uint16_t slot = slots_[tracks_[track].playCursor].next; slot != kNoLoopEvent && slots_[slot].atUs <= atUs + kHandoffWindowUs; slot = slots_[slot].next) {
+    const EventSlot &e = slots_[slot];
+    if ((e.status & 0xF0) == 0x90 && e.data2 && (e.status & 0x0F) == channel && e.data1 == note && e.tag == tag && !layerHidden(e.layer)) return true;
+  }
+  return false;
+}
+
+bool Looper::pendingHoldWholeLoop(uint8_t channel, uint8_t note, uint16_t tag, uint64_t nowUs) const {
+  const uint32_t length = tracks_[recordingTrack_].lengthUs;
+  if (!recording_ || !overdubbing_ || length == 0) return false;
+  for (const PendingHold &h : holds_) {
+    if (h.used && h.channel == channel && h.note == note && h.tag == tag) return static_cast<uint32_t>(nowUs) - h.startUs >= length;
+  }
+  return false;
+}
+
 void Looper::collectHeldNotes(uint8_t track, HeldNoteFn fn, void *context) const {
   if (track >= kLoopTrackCount || !fn) return;
   const LoopTrackState &state = tracks_[track];
@@ -696,7 +727,9 @@ void Looper::tick(uint64_t nowUs, EmitFn emit, ReleaseFn release,
     LoopTrackState &track = tracks_[trackIndex];
     if (track.count == 0 || track.lengthUs == 0) continue;
     if (nowUs - track.cycleStartUs >= track.lengthUs) {
+      releasingAtWrap_ = true;
       if (release) release(context, trackIndex);
+      releasingAtWrap_ = false;
       const uint64_t cycles = (nowUs - track.cycleStartUs) / track.lengthUs;
       track.cycleStartUs += cycles * track.lengthUs;
       track.playCursor = track.head;
