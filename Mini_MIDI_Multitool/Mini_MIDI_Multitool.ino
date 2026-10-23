@@ -97,7 +97,7 @@ constexpr uint8_t SYSEX_MFR_ID = 0x7D;   // reserved for non-commercial/educatio
 constexpr uint8_t SYSEX_DEVICE_ID = 0x4D; // 'M'
 constexpr uint8_t PROTOCOL_VERSION = 4; // 2: 45-byte routes with port masks, GET_STATUS. 3: clock settings, LEARN. 4: 53-byte routes with feature fields, feature blocks
 constexpr uint8_t FW_VERSION_MAJOR = 1;
-constexpr uint8_t FW_VERSION_MINOR = 85;
+constexpr uint8_t FW_VERSION_MINOR = 86;
 constexpr uint8_t FW_CHUNK_BYTES = 128;          // firmware bytes per FW_DATA message, 147 once packed
 constexpr uint32_t FW_REBOOT_DELAY_MS = 300;     // lets the FW_END ACK reach the host before rebooting
 const char DEVICE_NAME[] = "FoxWizard Mini MIDI Multitool"; // long name sent in the SysEx IDENTITY_REPLY
@@ -4505,7 +4505,6 @@ void serviceArps() {
       arps[s].nextStepPulse = ((pulseNow + div - 1) / div) * div;
     }
   }
-  lastPulse = pulseNow;
   for (uint8_t s = 0; s < ARP_SLOTS; ++s) {
     ArpRuntime &r = arps[s];
     if (r.gateOffUs && now >= r.gateOffUs) {
@@ -4537,6 +4536,7 @@ void serviceArps() {
       if (pulse >= r.nextStepPulse) r.nextStepPulse = ((pulse / div) + 1) * div;
     }
   }
+  lastPulse = clockEngine.internalPulse(); // after this pass's own restarts, which are already handled
 }
 
 // A note going into route i, once it's matched and not taken by a mapping: Scale and Chord, the
