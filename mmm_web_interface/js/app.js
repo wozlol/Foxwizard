@@ -988,7 +988,7 @@ function perfText() {
   if (p.linkPct >= 25) parts.push(`link ${p.linkPct}%`);
   if (p.repeatOn) parts.push(`repeated Note On ${p.repeatOn}`);
   if (p.strayOff) parts.push(`stray Note Off ${p.strayOff}`);
-  if (p.loopRepeatOn) parts.push(`loop repeated On ${p.loopRepeatOn}`);
+  if (p.loopRepeatOn) parts.push(`loop overlapping On ${p.loopRepeatOn}`);
   if (p.loopOrphanOff) parts.push(`loop orphan Off ${p.loopOrphanOff}`);
   return ` · ${parts.join(', ')}`;
 }

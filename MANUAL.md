@@ -241,7 +241,7 @@ color if you set one:
 | Looper: Overdub | overdubbing |
 | Looper: Stop/Clear/Undo, Un-Clear | a cleared loop can be brought back |
 | Looper: Un-Overdub, Re-Overdub | there's a layer to remove, or to bring back |
-| Looper: Double, Half | blinks the loop's length in bars when pressed |
+| Looper: Double, Half | blinks the loop's length in bars when pressed. Then the one it's moved toward is lit, green after one step from where the loop started, yellow after two, red after three or more, and neither at the start. A loop starts from its own take. Before there's a loop they start from the Length setting. Clearing the loop goes back to the start. |
 | Note Delete, and any button | held |
 | Live Ch, Octave Up/Down | that channel or octave is on |
 | LP Quad, Note Toggle, CC Toggle | on |
@@ -304,9 +304,10 @@ that starts from its top starts the grid there, and a take plants it at the firs
 
 A note held by you and by the loop stays held until both let go. If two layers hold the same note
 and overlap, it stays held until the last of them lets go. The loop letting go of a hat you're still
-holding doesn't stop your roll, and you letting go of one the loop still holds doesn't either. If a loop
-plays a Note On for a note it's still holding, it lets go and plays it again, so a repeated Note On
-never leaves a note stuck. This is how ARPnMIDI's loop playback does it.
+holding doesn't stop your roll, and you letting go of one the loop still holds doesn't either. Each hold
+of a note in the loop counts, whichever layer or pass it came from. The loop plays the Note On when the
+first one starts and the Note Off when the last one ends, and drops a Note Off nothing is holding, as
+ARPnMIDI's output count does. A Note On a device repeats while the note is held isn't recorded twice.
 
 An arp set to Aftertouch velocity keeps the pressure that sets its velocities with the loop, when the
 loop records inputs and the route's Looper switch is on, so playback has the velocities you played.

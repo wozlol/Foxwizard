@@ -365,17 +365,26 @@ void Looper::flushHold(PendingHold &h, uint32_t endPositionUs, uint64_t nowUs) {
     const LoopMidiEvent e{at, status, h.note, velocity, h.tag, h.layer};
     while (!insertEvent(recordingTrack_, e)) { if (!dropOldestHiddenLayer()) break; }
   };
+  // Record Quantize rounds a hold's press and release like any other note (ARPnMIDI quantizes every note).
+  auto quantized = [&](uint32_t at) {
+    if (recordQuantizeUs_ == 0) return at;
+    const uint32_t q = static_cast<uint32_t>(((static_cast<uint64_t>(at) + recordQuantizeUs_ / 2U) / recordQuantizeUs_) * recordQuantizeUs_);
+    return q >= length ? last : q;
+  };
   if (heldUs >= length || length == 0) {
     put(0, on, h.velocity);
     put(last, off, 0);
-  } else if (h.positionUs <= endPositionUs) {
-    put(h.positionUs, on, h.velocity);
-    put(endPositionUs, off, 0);
   } else {
-    put(h.positionUs, on, h.velocity);
-    put(last, off, 0);
-    put(0, on, h.velocity);
-    put(endPositionUs, off, 0);
+    const uint32_t from = quantized(h.positionUs), to = quantized(endPositionUs);
+    if (from <= to) {
+      put(from, on, h.velocity);
+      put(to, off, 0);
+    } else {
+      put(from, on, h.velocity);
+      put(last, off, 0);
+      put(0, on, h.velocity);
+      put(to, off, 0);
+    }
   }
   h.used = false;
 }
@@ -632,10 +641,11 @@ void Looper::collectHeldNotes(uint8_t track, HeldNoteFn fn, void *context) const
   if (state.head == kNoLoopEvent || state.head == state.playCursor) return;
 
   // FoxWizard: the tag (+ 1, 0 not held) says where the note plays back to. Hidden layers don't sound.
-  // One layer at a time (1.87), so two layers holding the same note are two holds, each ended by its own
-  // Note Off, the way ARPnMIDI keeps its tracks apart.
+  // One layer at a time (1.87), and each hold counted (1.89), so holds that overlap are as many holds, each ended
+  // by its own Note Off, the way ARPnMIDI keeps its tracks apart.
   static uint16_t heldTag[16][128];
   static uint8_t velocity[16][128];
+  static uint8_t holds[16][128];
   uint8_t ids[kMaxUndoLayers + 1];
   uint8_t idCount = 0;
   ids[idCount++] = 0;
@@ -644,6 +654,7 @@ void Looper::collectHeldNotes(uint8_t track, HeldNoteFn fn, void *context) const
     const uint8_t layer = ids[n];
     if (layerHidden(layer)) continue;
     memset(heldTag, 0, sizeof(heldTag));
+    memset(holds, 0, sizeof(holds));
     uint16_t slot = state.head;
     while (slot != kNoLoopEvent && slot != state.playCursor) {
       const LoopMidiEvent event = slots_[slot].event();
@@ -651,14 +662,20 @@ void Looper::collectHeldNotes(uint8_t track, HeldNoteFn fn, void *context) const
       if ((type == 0x90 || type == 0x80) && event.data1 <= 127 && event.layer == layer) {
         const uint8_t channel = event.status & 0x0F;
         const bool on = type == 0x90 && event.data2 > 0;
-        heldTag[channel][event.data1] = on ? static_cast<uint16_t>(event.tag + 1U) : 0;
-        if (on) velocity[channel][event.data1] = event.data2;
+        uint8_t &count = holds[channel][event.data1];
+        if (on) {
+          heldTag[channel][event.data1] = static_cast<uint16_t>(event.tag + 1U);
+          velocity[channel][event.data1] = event.data2;
+          if (count < 255) ++count;
+        } else if (count > 0) {
+          --count;
+        }
       }
       slot = slots_[slot].next;
     }
     for (uint8_t channel = 0; channel < 16; ++channel) {
       for (uint8_t note = 0; note < 128; ++note) {
-        if (heldTag[channel][note]) {
+        for (uint8_t k = 0; k < holds[channel][note]; ++k) {
           fn(context, track, static_cast<uint16_t>(heldTag[channel][note] - 1U), channel, note, velocity[channel][note], layer);
         }
       }

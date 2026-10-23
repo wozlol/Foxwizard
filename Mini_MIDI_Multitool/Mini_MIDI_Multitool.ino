@@ -97,7 +97,7 @@ constexpr uint8_t SYSEX_MFR_ID = 0x7D;   // reserved for non-commercial/educatio
 constexpr uint8_t SYSEX_DEVICE_ID = 0x4D; // 'M'
 constexpr uint8_t PROTOCOL_VERSION = 4; // 2: 45-byte routes with port masks, GET_STATUS. 3: clock settings, LEARN. 4: 53-byte routes with feature fields, feature blocks
 constexpr uint8_t FW_VERSION_MAJOR = 1;
-constexpr uint8_t FW_VERSION_MINOR = 88;
+constexpr uint8_t FW_VERSION_MINOR = 89;
 constexpr uint8_t FW_CHUNK_BYTES = 128;          // firmware bytes per FW_DATA message, 147 once packed
 constexpr uint32_t FW_REBOOT_DELAY_MS = 300;     // lets the FW_END ACK reach the host before rebooting
 const char DEVICE_NAME[] = "FoxWizard Mini MIDI Multitool"; // long name sent in the SysEx IDENTITY_REPLY
@@ -377,7 +377,7 @@ uint16_t perfUsbHigh = 0;    // packets queued for USB
 uint16_t perfRepeatOn = 0;   // 1.87: a Note On for a key already down
 uint16_t perfStrayOff = 0;   // a Note Off for a key not down
 uint16_t perfLoopOrphanOff = 0; // the loop played a Note Off nothing of the loop's was holding
-uint16_t perfLoopRepeatOn = 0;  // the loop played a Note On for a note it was still holding
+uint16_t perfLoopRepeatOn = 0;  // the loop played a Note On for a note it was already sounding
 bool noteOffSwallowed = false; // this Note Off is for a note the other still holds
 bool hostWasPresent = false;
 bool hostEverPresent = false; // the first time the host brain appears isn't a return
@@ -2807,10 +2807,11 @@ bool looperSafeClearArmed = false;
 uint32_t looperButtonDownMs = 0;
 bool looperHoldDone = false;
 bool looperMapHeld = false; // a mapped Looper Button action held down, holds like the button
-constexpr uint8_t LOOP_SOUNDING_LAYERS = 8;
-// A note the loop is sounding, and the layers holding it (1.87). Each layer is balanced on its own, like ARPnMIDI's
-// playback gate keeps each track, and the note lets go when the last layer does.
-struct LoopSounding { uint16_t tag; uint8_t channel; uint8_t note; uint8_t layerCount; uint8_t layers[LOOP_SOUNDING_LAYERS]; };
+// A note the loop is sounding, and how many holds of it are going (1.89). Each hold is one Note On with its Note Off,
+// whichever layer or pass it came from, so overlapping holds keep it sounding until the last lets go, the way
+// ARPnMIDI counts a note held by more than one source: the Note On goes out when the count goes from 0 to 1, the
+// Note Off when it goes back to 0.
+struct LoopSounding { uint16_t tag; uint8_t channel; uint8_t note; uint8_t count; };
 LoopSounding loopSounding[96];
 uint8_t loopSoundingCount = 0;
 
@@ -2853,6 +2854,12 @@ uint8_t loopHeldCount = 0;
 LoopHeld loopPass[64];
 uint8_t loopPassCount = 0;
 uint32_t loopPassGeneration = 0;
+
+// Whether this pass already holds the note, a Note On for it again is the device repeating itself (1.89).
+bool loopPassHas(uint16_t tag, uint8_t channel, uint8_t note) {
+  for (uint8_t k = 0; k < loopPassCount; ++k) if (loopPass[k].tag == tag && loopPass[k].channel == channel && loopPass[k].note == note) return true;
+  return false;
+}
 
 bool loopPassTake(uint16_t tag, bool on, uint8_t channel, uint8_t note) {
   uint8_t k = 0;
@@ -2993,6 +3000,7 @@ void looperCapture(uint16_t tag, uint8_t status, uint8_t note, uint8_t velocity)
     loopPassCount = 0;
   }
   if (!starting && !looper.recording()) { loopHeldUpdate(tag, on, channel, note, velocity); return; }
+  if (on && !starting && loopPassHas(tag, channel, note)) { loopHeldUpdate(tag, on, channel, note, velocity); return; } // a repeated Note On
   if (!starting && !loopPassTake(tag, on, channel, note)) { loopHeldUpdate(tag, on, channel, note, velocity); return; }
   fw::LoopMidiEvent e;
   e.status = status;
@@ -3088,28 +3096,16 @@ void looperEmit(void *, uint8_t, const fw::LoopMidiEvent &e) {
   const uint8_t channel = e.status & 0x0F;
   uint8_t k = 0;
   while (k < loopSoundingCount && !(loopSounding[k].tag == e.tag && loopSounding[k].channel == channel && loopSounding[k].note == e.data1)) ++k;
-  const bool found = k < loopSoundingCount;
-  uint8_t j = 0; // this layer's place among the layers holding the note
-  if (found) while (j < loopSounding[k].layerCount && loopSounding[k].layers[j] != e.layer) ++j;
   if (on) {
-    if (!found) {
-      if (loopSoundingCount < 96) {
-        LoopSounding &s = loopSounding[loopSoundingCount++];
-        s = LoopSounding{e.tag, channel, e.data1, 1, {e.layer}};
-      }
-    } else if (j < loopSounding[k].layerCount) {
-      // The layer plays a note it's still holding: let go, then play it again, so a repeated Note On can't
-      // leave it stuck. Not while another layer holds it too, that one carries on through the repeat.
+    if (k < loopSoundingCount) { // already sounding: one more hold of it, no second Note On
       ++perfLoopRepeatOn;
-      if (loopSounding[k].layerCount == 1) looperSend(e.tag, false, channel, e.data1, 0);
-    } else if (loopSounding[k].layerCount < LOOP_SOUNDING_LAYERS) {
-      loopSounding[k].layers[loopSounding[k].layerCount++] = e.layer;
+      if (loopSounding[k].count < 255) ++loopSounding[k].count;
+      return;
     }
+    if (loopSoundingCount < 96) loopSounding[loopSoundingCount++] = LoopSounding{e.tag, channel, e.data1, 1};
   } else {
-    if (!found || j == loopSounding[k].layerCount) { ++perfLoopOrphanOff; return; } // nothing of this layer's is holding it, an orphan Note Off
-    LoopSounding &s = loopSounding[k];
-    s.layers[j] = s.layers[--s.layerCount];
-    if (s.layerCount) return; // another layer still holds it, it's held until the last lets go
+    if (k >= loopSoundingCount) { ++perfLoopOrphanOff; return; } // nothing of the loop's is holding it, ARPnMIDI drops it
+    if (loopSounding[k].count > 1) { --loopSounding[k].count; return; } // another hold of it goes on
     loopSounding[k] = loopSounding[--loopSoundingCount];
   }
   looperSend(e.tag, on, channel, e.data1, e.data2);
@@ -3244,6 +3240,23 @@ bool echoSquareOn(int8_t square) {
 }
 
 // The color a button shows for what its action is doing, 0 for nothing.
+// How far the loop's length is from where it started, in doublings (1.89): a loop is measured from its own take, a
+// Double or Half before there's a loop from the Length it was set to. Positive is longer.
+uint32_t looperHomeLengthUs = 0;  // the take's own length, 0 when there's no loop
+int8_t looperBarsShift = 0;       // Doubles minus Halves pressed before a loop, from the Length setting
+uint8_t looperBarsExpected = 0xFF; // the Length those left it at, anything else means it was set by hand
+
+int8_t looperSizeLevel() {
+  const fw::LoopTrackState &t = looper.track(0);
+  if (t.count && !t.hidden && t.lengthUs) {
+    if (!looperHomeLengthUs) looperHomeLengthUs = t.lengthUs; // a loop brought back from a save starts from where it is
+    const long level = lroundf(log2f((float)t.lengthUs / (float)looperHomeLengthUs));
+    return (int8_t)(level < -6 ? -6 : (level > 6 ? 6 : level));
+  }
+  if (looperSettings.bars != looperBarsExpected) looperBarsShift = 0;
+  return looperBarsShift;
+}
+
 uint8_t lpStatus(uint8_t b) {
   const MapAction &act = lpActions[b];
   const uint16_t route = lpOwnerRoute();
@@ -3275,6 +3288,12 @@ uint8_t lpStatus(uint8_t b) {
         case LOOP_ACT_OVERDUB: on = looper.overdubbing(); color = LP_RED; break;
         case LOOP_ACT_STOP_CLEAR_UNDO: on = t.hidden || looperSafeClearArmed; color = LP_AMBER; break; // the next press clears or brings it back
         case LOOP_ACT_UNDO: on = t.hidden; color = LP_AMBER; break;
+        case LOOP_ACT_DOUBLE: case LOOP_ACT_HALF: { // lit toward the way it's moved from the start: green, then yellow, then red
+          const int8_t level = looperSizeLevel();
+          const int8_t n = act.a == LOOP_ACT_DOUBLE ? level : -level;
+          if (n > 0) { on = true; color = n == 1 ? LP_GREEN : (n == 2 ? LP_AMBER : LP_RED); }
+          break;
+        }
         case LOOP_ACT_UN_OVERDUB: on = looper.canUnOverdub(); color = LP_ORANGE; break;
         case LOOP_ACT_RE_OVERDUB: on = looper.canReOverdub(); color = LP_ORANGE; break;
         default: break;
@@ -3414,6 +3433,7 @@ bool looperFinish(uint64_t now, bool startIfStopped) {
   const bool fresh = looper.recording() && !looper.overdubbing();
   if (looper.recording()) looperFlushPressure(true);
   const bool captured = looper.finishRecording(now);
+  if (captured && fresh) looperHomeLengthUs = looper.track(0).lengthUs;
   if (captured && fresh) looperAdoptTempo();
   if (captured && startIfStopped && !looper.playing()) looper.start(now);
   if (captured && fresh && looper.playing()) looperAutoOverdub();
@@ -3576,6 +3596,7 @@ void serviceLooper() {
   if (looper.recording()) looperFlushPressure(false);
   looper.tick(time_us_64(), looperEmit, looperRelease, nullptr);
   if (wasRecording && !looper.recording()) { // a Measures take finished by itself and plays
+    looperHomeLengthUs = looper.track(0).lengthUs;
     looperAdoptTempo();
     looperAutoOverdub();
   }
@@ -3994,8 +4015,12 @@ void looperResizeNext(bool grow) {
   if (taking && looper.recordFixedLengthUs() == 0) return; // a Free take ends when it's ended
   uint8_t bars = looperSettings.bars <= 16 ? looperSettings.bars : 0;
   if (bars == 0) bars = 1;
+  const uint8_t was = bars;
   bars = grow ? (bars >= 16 ? 16 : (bars * 2 > 16 ? 16 : bars * 2)) : (bars > 1 ? bars / 2 : 1);
+  if (looperSettings.bars != looperBarsExpected) looperBarsShift = 0; // set by hand since, so this starts over
+  if (bars != was) looperBarsShift += grow ? 1 : -1;
   looperSettings.bars = bars;
+  looperBarsExpected = bars;
   if (taking || looper.recordingArmed()) looper.setRecordFixedLengthUs(barUs * bars);
   flashAllLedsCount(bars);
   lpBlinkBars(bars);
