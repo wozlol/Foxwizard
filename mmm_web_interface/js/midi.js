@@ -162,7 +162,7 @@ export function bytesToEcho(b) {
 // Looper (the button's Looper mode), firmware 1.27. 48 bytes: bars (0 Free, 1-16), quantize (0 off, else
 // division + 1), auto overdub (1.29), record inputs (0 outputs, 1 inputs), double tap clears (1.29, 0 =
 // holding the button clears and a double tap stops, 1 the other way), play/arm trigger (3), stop/clear
-// trigger (3), 37 spare. 1.93 takes the first spare for Restart Loop on Start.
+// trigger (3), 37 spare. 1.93 takes the first spare for Restart on Clock Start.
 export function defaultLooper() {
   return { bars: 0, quantize: -1, autoOverdub: false, recordInputs: false, holdClears: true, loopUnrouted: true, trigger: noTrigger(), recordCcs: false, restartOnStart: false };
 }

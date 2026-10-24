@@ -934,7 +934,7 @@ function renderLooperRow() {
       ['Hold Clears', sw('holdClears', l.holdClears)],
       ['Global Looper', sw('loopUnrouted', l.loopUnrouted)],
       ['Record CCs', sw('recordCcs', !!l.recordCcs)],
-      ['Restart Loop on Start', sw('restartOnStart', !!l.restartOnStart)]
+      ['Restart on Clock Start', sw('restartOnStart', !!l.restartOnStart)]
     ].map(([title, control]) => `<div class="looper-cell"><p class="looper-cell-title">${title}</p><div class="looper-cell-control">${control}</div></div>`).join('')}</div>` : ''}`;
 }
 

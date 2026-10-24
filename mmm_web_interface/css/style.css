@@ -1033,7 +1033,7 @@ body.dragging-active { overflow: hidden; }
    title track and every control in one control track. A title that wraps to two lines makes that
    whole row's title track taller, so the tops of all titles and all controls stay level. Controls
    are centered in their track, so a switch sits on the same center line as a taller dropdown. */
-.looper-settings { display: grid; grid-template-columns: repeat(7, minmax(0, 1fr)); column-gap: 10px; row-gap: 10px; margin-top: 14px; }
+.looper-settings { display: grid; grid-template-columns: repeat(8, minmax(0, 1fr)); column-gap: 10px; row-gap: 10px; margin-top: 14px; }
 .looper-cell {
   grid-row: span 2;
   display: grid;

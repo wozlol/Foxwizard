@@ -311,7 +311,7 @@ use Note/CC to Feature and select Looper, or set a Looper Button trigger
 | Hold Clears | on: hold clears, double press stops. Off: the other way round. |
 | Global Looper | also records notes no route matches |
 | Record CCs | records CCs too, not just notes |
-| Restart Loop on Start | when the FoxWizard follows a clock and that clock sends Start, the loop plays again from its top. Off: the loop keeps playing and stays in time with the clock. See Loop Lock. |
+| Restart on Clock Start | when the FoxWizard follows a clock and that clock sends a Start message, the loop plays again from its top. Off: the loop keeps playing and stays in time with the clock. See Loop Lock. |
 
 ### Loop Lock
 
@@ -324,8 +324,9 @@ when Clock is set to Auto while a clock is coming in. It has no setting of its o
   the loop. Set Length to a number of bars for the best result. A Free loop is held to the nearest whole beat.
 - **In Auto, when the clock goes away,** the loop keeps its last speed and stays in time with the FoxWizard's
   own clock. When the clock comes back, it follows the clock again.
-- **A Start from the clock** sets the beat count to 0. The loop keeps playing and keeps its place, unless
-  Restart Loop on Start is on. Then the loop plays again from its top, so the loop and the clock start together.
+- **A Start from the clock** sets the beat count to 0. A Start message is what a device sends when you press
+  play on it. The loop keeps playing and keeps its place, unless Restart on Clock Start is on. Then the loop
+  plays again from its top, so the loop and the clock start together.
 - **Loop Lock stops** when you clear or stop the loop, or when Clock is set to master.
 
 While no clock is coming in, the FoxWizard and the other device each keep their own time. They can move apart
