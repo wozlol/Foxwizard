@@ -116,6 +116,24 @@ Tap Tempo).
 
 A loop recorded at Free length sets the tempo from its length.
 
+### Arps on a followed clock
+
+With Clock set to Follow a port, the FoxWizard counts that port's MIDI Clock bytes. Each byte is 4 pulses, 96
+pulses to a quarter note. A division is a whole number of pulses (1/16 is 24, six clock bytes) and its grid
+lines are the multiples of that number, counted from 0.
+
+- **The count** restarts at 0 on a Start from the followed port and when Clock is set to Follow. It carries on
+  through Continue and holds at Stop. Song Position Pointer doesn't move it. An arp steps only while the clock
+  is arriving.
+- **A new arp phrase** doesn't restart the count. After a 6 ms window to catch the whole chord, its first step
+  plays at the next grid line, at once if the count is exactly on one, otherwise up to one division later.
+  Every step after that is on a grid line, on the first clock byte at or after it.
+- **Beats:** the grid lines match the source's own beats when the source sent Start as it began playing. If the
+  FoxWizard began following mid-song, the arp keeps the source's tempo, but its grid lines sit wherever the
+  count began.
+
+As master, a phrase that starts with no other arp running restarts the count, so its first step plays at once.
+
 ## Divisions
 
 Arp, Echo and Stutter each have a division table: a default division,
