@@ -916,8 +916,8 @@ function renderLooperRow() {
   const opt = (v, cur, label) => `<option value="${v}" ${cur === v ? 'selected' : ''}>${label}</option>`;
   // Title at top, control under — same shape as the Length/Quantize boxes beside them, instead of
   // the switch's own inline label making these four look like a different kind of control.
-  const sw = (field, on) => `<label class="switch switch-green looper-switch">
-      <input type="checkbox" data-looper-field="${field}" ${on ? 'checked' : ''}>
+  const sw = (field, on, off = false) => `<label class="switch switch-green looper-switch">
+      <input type="checkbox" data-looper-field="${field}" ${on ? 'checked' : ''} ${off ? 'disabled' : ''}>
       <span class="switch-track"><span class="switch-thumb"></span></span>
     </label>`;
   looperRow.innerHTML = `
@@ -929,13 +929,15 @@ function renderLooperRow() {
     ${mapped ? `<div class="looper-settings">${[
       ['Length', `<select data-looper-field="bars">${opt(0, l.bars, 'Free')}${Array.from({ length: 16 }, (_, k) => opt(k + 1, l.bars, `${k + 1} bar${k ? 's' : ''}`)).join('')}</select>`],
       ['Quantize', `<select data-looper-field="quantize">${opt(-1, l.quantize, 'Off')}${DIVISIONS.map((d, i) => opt(i, l.quantize, d)).join('')}</select>`],
-      ['Auto Overdub', sw('autoOverdub', l.autoOverdub)],
+      // Record After Routes and Global Looper sit side by side. With Record After Routes on, the loop already records
+      // everything the FoxWizard sends, so Global Looper has nothing left to add and is greyed instead of hidden.
       ['Record After Routes', sw('recordAfter', !l.recordInputs)],
+      ['Global Looper', sw('loopUnrouted', l.loopUnrouted, !l.recordInputs), !l.recordInputs ? 'Not used while Record After Routes is on, the loop records everything the FoxWizard sends.' : ''],
+      ['Auto Overdub', sw('autoOverdub', l.autoOverdub)],
       ['Hold Clears', sw('holdClears', l.holdClears)],
-      ['Global Looper', sw('loopUnrouted', l.loopUnrouted)],
       ['Record CCs', sw('recordCcs', !!l.recordCcs)],
       ['Restart on Clock Start', sw('restartOnStart', !!l.restartOnStart)]
-    ].map(([title, control]) => `<div class="looper-cell"><p class="looper-cell-title">${title}</p><div class="looper-cell-control">${control}</div></div>`).join('')}</div>` : ''}`;
+    ].map(([title, control, offReason]) => `<div class="looper-cell${offReason ? ' looper-cell-off' : ''}" ${offReason ? `title="${offReason}"` : ''}><p class="looper-cell-title">${title}</p><div class="looper-cell-control">${control}</div></div>`).join('')}</div>` : ''}`;
 }
 
 looperRow.addEventListener('change', (e) => {
@@ -1878,8 +1880,8 @@ function launchpadSectionHtml(route, index) {
       <div class="arp-fields">
         <div class="arp-field"><label>Octave</label><select data-field="lpOctave" ${qAttrs}>${opt(0, octave, '0')}${opt(1, octave, '-1')}${opt(2, octave, '-2')}</select></div>
         ${quad.enabled ? `<div class="arp-field"><label>Quadrant</label><select data-lp-quad-field="block" ${qAttrs}>${QUAD_BLOCK_LABELS.map((l, i2) => opt(i2, quad.block, l)).join('')}</select></div>
-        <div class="arp-field"><label>Channel</label><select data-lp-quad-field="channel" ${qAttrs}>${Array.from({ length: 16 }, (_, c) => opt(c, quad.channel, c + 1)).join('')}</select></div>
-        <div class="arp-field"><label>Start Note</label><select data-lp-quad-field="startNote" ${qAttrs}>${noteSelectOptions(quad.startNote)}</select></div>` : ''}
+        <div class="arp-field"><label>Quadrant Channel</label><select data-lp-quad-field="channel" ${qAttrs}>${Array.from({ length: 16 }, (_, c) => opt(c, quad.channel, c + 1)).join('')}</select></div>
+        <div class="arp-field"><label>Quadrant Start Note</label><select data-lp-quad-field="startNote" ${qAttrs}>${noteSelectOptions(quad.startNote)}</select></div>` : ''}
       </div>` : switchHtml(index, 'launchpad', on, 'Launchpad')}
       ${on ? `<div class="lp-buttons-header">
         <p class="note-hint">Buttons light to show what they're doing. Button light color is a raw Launchpad velocity, used while the button is on. 0 keeps the usual colors.</p>

@@ -272,7 +272,7 @@ light up with whatever notes play back to them, in each channel's color.
 | Setting | What it does |
 |---|---|
 | Octave | 0, -1 or -2 |
-| Break Off a Quad | one 4x4 Quadrant plays on its own Channel from its own Start Note, as if it were a separate controller. Defaults: Upper Right, channel 10, note 36. |
+| Break Off a Quad | one 4x4 block of pads plays as if it were a separate controller. Quadrant picks the block, Quadrant Channel is the channel it plays on, and Quadrant Start Note is its first note. Defaults: Upper Right, channel 10, note 36. |
 | Top 1-8, Side 1-8 | each button runs an action, with an optional light color (a raw Launchpad velocity, 0 for the usual channel color). Reset to Defaults restores the factory set. |
 
 Each button lights to show what its action is doing, in a color from a fixed set, or the button's own
@@ -306,10 +306,10 @@ use Note/CC to Feature and select Looper, or set a Looper Button trigger
 |---|---|
 | Length | Free (the first take sets it) or 1-16 bars |
 | Quantize | Off, or snap recorded notes to a division |
-| Auto Overdub | goes straight into overdub after the first take |
 | Record After Routes | on: records what the routes send. Off: records the notes coming in, and plays them back through the routes. |
+| Global Looper | also records notes no route matches. It only works when Record After Routes is off. When Record After Routes is on, the loop already records everything the FoxWizard sends, so this switch is grey. |
+| Auto Overdub | goes straight into overdub after the first take |
 | Hold Clears | on: hold clears, double press stops. Off: the other way round. |
-| Global Looper | also records notes no route matches |
 | Record CCs | records CCs too, not just notes |
 | Restart on Clock Start | when the FoxWizard follows a clock and that clock sends a Start message, the loop plays again from its top. Off: the loop keeps playing and stays in time with the clock. See Loop Lock. |
 
