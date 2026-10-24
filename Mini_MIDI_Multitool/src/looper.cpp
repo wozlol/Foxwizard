@@ -4,9 +4,57 @@
 
 namespace fw {
 
+// The loop's time from the wall's, at the rate set by setTimeWarp. The rate only ever changes the speed from now on, so
+// the loop's time is continuous.
+uint64_t Looper::warpTime(uint64_t realUs) const {
+  if (warpRateQ24_ == kWarpUnity && warpRealBase_ == warpLoopBase_) return realUs;
+  uint64_t delta = realUs > warpRealBase_ ? realUs - warpRealBase_ : 0;
+  uint64_t loop = warpLoopBase_;
+  while (delta > (1u << 20)) { // in pieces, so the product fits in 64 bits
+    loop += (static_cast<uint64_t>(1u << 20) * warpRateQ24_) >> 24;
+    delta -= (1u << 20);
+  }
+  return loop + ((delta * warpRateQ24_) >> 24);
+}
+
+void Looper::setTimeWarp(uint64_t realNowUs, uint32_t rateQ24) {
+  if (rateQ24 < kWarpUnity / 2) rateQ24 = kWarpUnity / 2;       // half to double speed at most
+  if (rateQ24 > kWarpUnity * 2) rateQ24 = kWarpUnity * 2;
+  warpLoopBase_ = warpTime(realNowUs);
+  warpRealBase_ = realNowUs;
+  warpRateQ24_ = rateQ24;
+}
+
+void Looper::restartTrackAtTop(uint64_t realNowUs, ReleaseFn release, void *context) {
+  if (!playing_) return;
+  for (uint8_t track = 0; track < kLoopTrackCount; ++track) {
+    LoopTrackState &state = tracks_[track];
+    if (state.count == 0 || state.lengthUs == 0) continue;
+    if (release) release(context, track);
+    state.cycleStartUs = warpTime(realNowUs);
+    state.playCursor = state.head;
+  }
+}
+
+bool Looper::unOverdub(uint64_t nowUs) { return unOverdubV(warpTime(nowUs)); }
+bool Looper::beginArmedRecording(uint64_t nowUs) { return beginArmedRecordingV(warpTime(nowUs)); }
+bool Looper::capture(uint64_t nowUs, const LoopMidiEvent &input) { return captureV(warpTime(nowUs), input); }
+bool Looper::finishRecording(uint64_t nowUs) { return finishRecordingV(warpTime(nowUs)); }
+void Looper::start(uint64_t nowUs) { startV(warpTime(nowUs)); }
+void Looper::pause(uint64_t nowUs, ReleaseFn release, void *context) { pauseV(warpTime(nowUs), release, context); }
+void Looper::resume(uint64_t nowUs) { resumeV(warpTime(nowUs)); }
+bool Looper::resizeTrack(uint8_t trackIndex, uint32_t lengthUs, uint64_t nowUs, ReleaseFn release, void *context) {
+  return resizeTrackV(trackIndex, lengthUs, warpTime(nowUs), release, context);
+}
+void Looper::tick(uint64_t nowUs, EmitFn emit, ReleaseFn release, void *context, uint16_t maxEvents) {
+  tickV(warpTime(nowUs), emit, release, context, maxEvents);
+}
+
 Looper::Looper() { reset(); }
 
 void Looper::reset() {
+  warpRealBase_ = warpLoopBase_ = 0;
+  warpRateQ24_ = kWarpUnity;
   for (uint16_t i = 0; i < kLoopEventPoolSize; ++i) {
     slots_[i] = EventSlot{};
     slots_[i].next = (i + 1U < kLoopEventPoolSize) ? i + 1U : kNoLoopEvent;
@@ -158,8 +206,8 @@ void Looper::startOverdubLayer() {
   currentLayer_ = id;
 }
 
-bool Looper::unOverdub(uint64_t nowUs) {
-  if (recording_ && overdubbing_) finishRecording(nowUs); // the pass so far is the newest layer
+bool Looper::unOverdubV(uint64_t nowUs) {
+  if (recording_ && overdubbing_) finishRecordingV(nowUs); // the pass so far is the newest layer
   for (int8_t i = static_cast<int8_t>(layerCount_) - 1; i >= 0; --i) {
     const uint8_t layer = layers_[i];
     if (layerHidden(layer)) continue;
@@ -261,7 +309,7 @@ void Looper::armRecord(uint8_t track, uint32_t fixedLengthUs, bool overdub) {
   if (overdub) tracks_[track].generation = ++generationCounter_;
 }
 
-bool Looper::beginArmedRecording(uint64_t nowUs) {
+bool Looper::beginArmedRecordingV(uint64_t nowUs) {
   if (!recordingArmed_) return false;
   recordingArmed_ = false;
   recording_ = true;
@@ -284,12 +332,12 @@ bool Looper::beginArmedRecording(uint64_t nowUs) {
   return true;
 }
 
-bool Looper::capture(uint64_t nowUs, const LoopMidiEvent &input) {
+bool Looper::captureV(uint64_t nowUs, const LoopMidiEvent &input) {
   const uint8_t type = input.status & 0xF0;
   const bool noteOn = type == 0x90 && input.data2 > 0;
   if (recordingArmed_) {
     if (!noteOn) return false;
-    beginArmedRecording(nowUs);
+    beginArmedRecordingV(nowUs);
   }
   if (!recording_) return false;
 
@@ -406,7 +454,7 @@ void Looper::closeHeldRecordingNotes(uint32_t boundaryUs) {
   }
 }
 
-bool Looper::finishRecording(uint64_t nowUs) {
+bool Looper::finishRecordingV(uint64_t nowUs) {
   if (!recording_ && !recordingArmed_) return false;
   if (recordingArmed_) {
     recordingArmed_ = false;
@@ -509,7 +557,7 @@ void Looper::resetPlaybackCursors(uint64_t nowUs) {
   }
 }
 
-void Looper::start(uint64_t nowUs) {
+void Looper::startV(uint64_t nowUs) {
   if (!hasAnyData()) return;
   playing_ = true;
   paused_ = false;
@@ -517,7 +565,7 @@ void Looper::start(uint64_t nowUs) {
   resetPlaybackCursors(nowUs);
 }
 
-void Looper::pause(uint64_t nowUs, ReleaseFn release, void *context) {
+void Looper::pauseV(uint64_t nowUs, ReleaseFn release, void *context) {
   if (!playing_) return;
   if (release) {
     for (uint8_t track = 0; track < kLoopTrackCount; ++track) release(context, track);
@@ -531,10 +579,10 @@ void Looper::pause(uint64_t nowUs, ReleaseFn release, void *context) {
   paused_ = true;
 }
 
-void Looper::resume(uint64_t nowUs) {
+void Looper::resumeV(uint64_t nowUs) {
   if (playing_ || !hasAnyData()) return;
   if (!paused_) {
-    start(nowUs);
+    startV(nowUs);
     return;
   }
   playing_ = true;
@@ -564,7 +612,7 @@ void Looper::stop(ReleaseFn release, void *context) {
   }
 }
 
-bool Looper::resizeTrack(uint8_t trackIndex, uint32_t lengthUs,
+bool Looper::resizeTrackV(uint8_t trackIndex, uint32_t lengthUs,
                                   uint64_t nowUs, ReleaseFn release,
                                   void *context) {
   if (trackIndex >= kLoopTrackCount || lengthUs == 0) return false;
@@ -659,7 +707,7 @@ bool Looper::pendingHoldWholeLoop(uint8_t channel, uint8_t note, uint16_t tag, u
   const uint32_t length = tracks_[recordingTrack_].lengthUs;
   if (!recording_ || !overdubbing_ || length == 0) return false;
   for (const PendingHold &h : holds_) {
-    if (h.used && h.channel == channel && h.note == note && h.tag == tag) return static_cast<uint32_t>(nowUs) - h.startUs >= length;
+    if (h.used && h.channel == channel && h.note == note && h.tag == tag) return static_cast<uint32_t>(warpTime(nowUs)) - h.startUs >= length;
   }
   return false;
 }
@@ -714,12 +762,12 @@ void Looper::collectHeldNotes(uint8_t track, HeldNoteFn fn, void *context) const
   }
 }
 
-void Looper::tick(uint64_t nowUs, EmitFn emit, ReleaseFn release,
+void Looper::tickV(uint64_t nowUs, EmitFn emit, ReleaseFn release,
                            void *context, uint16_t maxEvents) {
   if (recording_ && !overdubbing_ && recordFixedLengthUs_ > 0 &&
       nowUs - recordStartUs_ >= recordFixedLengthUs_) {
-    finishRecording(recordStartUs_ + recordFixedLengthUs_);
-    if (!playing_) start(recordStartUs_ + recordFixedLengthUs_);
+    finishRecordingV(recordStartUs_ + recordFixedLengthUs_);
+    if (!playing_) startV(recordStartUs_ + recordFixedLengthUs_);
   }
   if (!playing_) return;
   uint16_t processed = 0;
@@ -916,7 +964,7 @@ void Looper::finishImport(uint8_t track, uint64_t boundaryUs) {
   if (track >= kLoopTrackCount || !importing_[track]) return;
   importing_[track] = false;
   tracks_[track].playCursor = tracks_[track].head;
-  tracks_[track].cycleStartUs = boundaryUs;
+  tracks_[track].cycleStartUs = warpTime(boundaryUs);
   captureTrackPhase(track);
 }
 

@@ -311,6 +311,25 @@ use Note/CC to Feature and select Looper, or set a Looper Button trigger
 | Hold Clears | on: hold clears, double press stops. Off: the other way round. |
 | Global Looper | also records notes no route matches |
 | Record CCs | records CCs too, not just notes |
+| Restart Loop on Start | when the FoxWizard follows a clock and that clock sends Start, the loop plays again from its top. Off: the loop keeps playing and stays in time with the clock. See Loop Lock. |
+
+### Loop Lock
+
+Loop Lock keeps the loop in time with a clock from outside. It works when Clock is set to Follow a port, and
+when Clock is set to Auto while a clock is coming in. It has no setting of its own.
+
+- **The loop lasts a whole number of beats.** The FoxWizard makes the loop a little faster or slower, so that
+  it fits the tempo of the clock. The loop stays at the same place in the beat, so it does not drift.
+- **A loop recorded at another tempo** plays at the tempo of the clock. Its notes keep their places inside
+  the loop. Set Length to a number of bars for the best result. A Free loop is held to the nearest whole beat.
+- **In Auto, when the clock goes away,** the loop keeps its last speed and stays in time with the FoxWizard's
+  own clock. When the clock comes back, it follows the clock again.
+- **A Start from the clock** sets the beat count to 0. The loop keeps playing and keeps its place, unless
+  Restart Loop on Start is on. Then the loop plays again from its top, so the loop and the clock start together.
+- **Loop Lock stops** when you clear or stop the loop, or when Clock is set to master.
+
+While no clock is coming in, the FoxWizard and the other device each keep their own time. They can move apart
+by a few milliseconds each minute. Only a clock between them stops that.
 
 The loop is saved to flash a few seconds after things go quiet, and comes
 back at power on.

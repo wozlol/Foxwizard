@@ -60,6 +60,7 @@
 #include "src/echo_engine.h"
 #include "src/rolling_history.h"
 #include "src/looper.h"
+#include "src/loop_lock.h"
 
 // ============================================================================================
 // Constants
@@ -97,7 +98,7 @@ constexpr uint8_t SYSEX_MFR_ID = 0x7D;   // reserved for non-commercial/educatio
 constexpr uint8_t SYSEX_DEVICE_ID = 0x4D; // 'M'
 constexpr uint8_t PROTOCOL_VERSION = 4; // 2: 45-byte routes with port masks, GET_STATUS. 3: clock settings, LEARN. 4: 53-byte routes with feature fields, feature blocks
 constexpr uint8_t FW_VERSION_MAJOR = 1;
-constexpr uint8_t FW_VERSION_MINOR = 92;
+constexpr uint8_t FW_VERSION_MINOR = 93;
 constexpr uint8_t FW_CHUNK_BYTES = 128;          // firmware bytes per FW_DATA message, 147 once packed
 constexpr uint32_t FW_REBOOT_DELAY_MS = 300;     // lets the FW_END ACK reach the host before rebooting
 const char DEVICE_NAME[] = "FoxWizard Mini MIDI Multitool"; // long name sent in the SysEx IDENTITY_REPLY
@@ -604,7 +605,8 @@ struct LooperSettings {
   uint8_t triggerChannel;
   uint8_t triggerNumber;
   uint8_t recordCcs; // 1.55: 1 records CCs too (input side or output side, same as notes)
-  uint8_t spare[38];
+  uint8_t restartOnStart; // 1.93: 1 plays the loop again from its top when the clock it follows sends Start
+  uint8_t spare[37];
 };
 #pragma pack(pop)
 LooperSettings looperSettings;
@@ -2818,6 +2820,7 @@ bool beforeRouteTap(uint16_t i, bool on, uint8_t note, uint8_t velocity) {
 constexpr uint32_t LOOP_DOUBLE_TAP_MS = 1000; // ARPnMIDI's window
 constexpr uint32_t LOOP_HOLD_MS = 500;
 fw::Looper looper;
+fw::LoopLockDriver loopLockDriver;
 // 1.77: while a loop is recording, armed or playing the arps keep one beat grid. A new phrase doesn't
 // plant a new one, which is what put a loop and an arp out of step after any gap between notes (ARPnMIDI's
 // loopLocksArpClock). The grid is planted by the first arp to start in a take, and again at the top of
@@ -3635,6 +3638,15 @@ void looperButtonPress() {
   looperTap();
 }
 
+// Loop Lock (1.93): while the clock is followed, the loop is kept at one place in its beat, and carried on by the
+// FoxWizard's own count when the clock goes quiet in Auto. Beats are the time signature's bottom number.
+void serviceLoopLock() {
+  const bool follows = globalClockActive() && (clockFollowPort() != 0 || clockAuto());
+  const uint8_t unit = globalSettings.beatUnit ? globalSettings.beatUnit : 4;
+  loopLockDriver.service(time_us_64(), clockEngine, looper, follows, looperSettings.restartOnStart != 0, 384.0 / unit,
+                         looperRelease, nullptr);
+}
+
 void serviceLooper() {
   serviceLoopStorage();
   if (!looperMode()) {
@@ -3651,6 +3663,7 @@ void serviceLooper() {
   const bool wasRecording = looper.recording() && !looper.overdubbing();
   if (looper.recording()) looperFlushPressure(false);
   looper.tick(time_us_64(), looperEmit, looperRelease, nullptr);
+  serviceLoopLock();
   if (wasRecording && !looper.recording()) { // a Measures take finished by itself and plays
     looperHomeLengthUs = looper.track(0).lengthUs;
     looperAdoptTempo();

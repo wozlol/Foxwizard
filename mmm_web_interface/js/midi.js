@@ -162,13 +162,13 @@ export function bytesToEcho(b) {
 // Looper (the button's Looper mode), firmware 1.27. 48 bytes: bars (0 Free, 1-16), quantize (0 off, else
 // division + 1), auto overdub (1.29), record inputs (0 outputs, 1 inputs), double tap clears (1.29, 0 =
 // holding the button clears and a double tap stops, 1 the other way), play/arm trigger (3), stop/clear
-// trigger (3), 37 spare.
+// trigger (3), 37 spare. 1.93 takes the first spare for Restart Loop on Start.
 export function defaultLooper() {
-  return { bars: 0, quantize: -1, autoOverdub: false, recordInputs: false, holdClears: true, loopUnrouted: true, trigger: noTrigger(), recordCcs: false };
+  return { bars: 0, quantize: -1, autoOverdub: false, recordInputs: false, holdClears: true, loopUnrouted: true, trigger: noTrigger(), recordCcs: false, restartOnStart: false };
 }
 export function looperToBytes(l) {
   return [l.bars, l.quantize + 1, l.autoOverdub ? 1 : 0, l.recordInputs ? 1 : 0, l.holdClears ? 0 : 1,
-    l.loopUnrouted ? 0 : 1, ...triggerToBytes(l.trigger), l.recordCcs ? 1 : 0, ...new Array(38).fill(0)];
+    l.loopUnrouted ? 0 : 1, ...triggerToBytes(l.trigger), l.recordCcs ? 1 : 0, l.restartOnStart ? 1 : 0, ...new Array(37).fill(0)];
 }
 export function bytesToLooper(b) {
   return {
@@ -179,7 +179,8 @@ export function bytesToLooper(b) {
     holdClears: b[4] !== 1,
     loopUnrouted: b[5] !== 1,
     trigger: bytesToTrigger(b, 6), // 1.49: the looper's own one-button trigger
-    recordCcs: b[9] === 1 // 1.55
+    recordCcs: b[9] === 1, // 1.55
+    restartOnStart: b[10] === 1 // 1.93
   };
 }
 

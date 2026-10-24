@@ -54,6 +54,7 @@ TransportEvent ClockEngine::receiveRealtime(uint8_t status, uint64_t nowUs) {
         sourceStopped_ = false;
         leading_ = false;
         graceUntilUs_ = nowUs + kMinimumExternalTimeoutUs;
+        ++startCount_;
         start(nowUs);
       }
       return TransportEvent::Start;
@@ -95,7 +96,38 @@ void ClockEngine::receiveClock(uint64_t nowUs) {
   leading_ = false;                               // Auto: the external clock is back and drives the count
   if (config_.followExternal && running_) {
     internalPulse_ += kInternalPulsesPerMidiClock;
+    // A sample of the count every 250 ms, for a tempo that jitter doesn't move.
+    if (tempoSampleCount_ == 0 || nowUs - tempoSamples_[tempoSampleCount_ - 1].timeUs >= 250000ULL) {
+      if (tempoSampleCount_ == kTempoSamples) {
+        for (uint8_t i = 1; i < kTempoSamples; ++i) tempoSamples_[i - 1] = tempoSamples_[i];
+        --tempoSampleCount_;
+      }
+      tempoSamples_[tempoSampleCount_++] = TempoSample{nowUs, internalPulse_};
+    }
   }
+}
+
+double ClockEngine::measuredPulseUs() const {
+  if (tempoSampleCount_ < 2) return 0.0;
+  const TempoSample &a = tempoSamples_[0];
+  const TempoSample &b = tempoSamples_[tempoSampleCount_ - 1];
+  if (b.timeUs - a.timeUs < 1000000ULL || b.count <= a.count) return 0.0;
+  return static_cast<double>(b.timeUs - a.timeUs) / static_cast<double>(b.count - a.count);
+}
+
+double ClockEngine::pulsePosition(uint64_t nowUs) const {
+  double fraction = 0.0;
+  if (config_.followExternal && !leading_) {
+    if (filteredExternalIntervalUs_ != 0 && haveExternalClock_ && nowUs > lastExternalClockUs_) {
+      fraction = static_cast<double>(nowUs - lastExternalClockUs_) / static_cast<double>(filteredExternalIntervalUs_);
+    }
+  } else if (nextInternalClockUs_ != 0 && nextInternalClockUs_ > nowUs) {
+    const uint64_t interval = midiClockIntervalUs();
+    if (interval) fraction = 1.0 - static_cast<double>(nextInternalClockUs_ - nowUs) / static_cast<double>(interval);
+  }
+  if (fraction < 0.0) fraction = 0.0;
+  if (fraction > 1.0) fraction = 1.0;
+  return static_cast<double>(internalPulse_) + fraction * kInternalPulsesPerMidiClock;
 }
 
 bool ClockEngine::followingLive(uint64_t nowUs) {
@@ -105,10 +137,22 @@ bool ClockEngine::followingLive(uint64_t nowUs) {
   if (!live && !leading_) {
     // The source went quiet or stopped: carry on from this count with its own clock, at the tempo it had.
     leading_ = true;
-    leadBpm_ = filteredExternalIntervalUs_ != 0
-        ? 60000000.0f / (static_cast<float>(filteredExternalIntervalUs_) * kMidiClockPpqn)
-        : static_cast<float>(config_.manualBpm);
-    nextInternalClockUs_ = nowUs + midiClockIntervalUs();
+    const double longPulseUs = measuredPulseUs();
+    leadBpm_ = longPulseUs > 0.0
+        ? static_cast<float>(60000000.0 / (longPulseUs * kInternalPpqn))
+        : (filteredExternalIntervalUs_ != 0
+               ? 60000000.0f / (static_cast<float>(filteredExternalIntervalUs_) * kMidiClockPpqn)
+               : static_cast<float>(config_.manualBpm));
+    const uint64_t interval = midiClockIntervalUs();
+    if (!sourceStopped_ && haveExternalClock_ && interval != 0 && nowUs > lastExternalClockUs_) {
+      // The clock went quiet some time ago, a quarter of a second or more passes before it's noticed. The beats in
+      // between are counted, as if it had carried on, and the next one is due where it would have been.
+      const uint64_t missed = (nowUs - lastExternalClockUs_) / interval;
+      internalPulse_ += static_cast<uint32_t>(missed) * kInternalPulsesPerMidiClock;
+      nextInternalClockUs_ = lastExternalClockUs_ + (missed + 1) * interval;
+    } else {
+      nextInternalClockUs_ = nowUs + interval;
+    }
   } else if (live && leading_) {
     leading_ = false;
   }
@@ -127,7 +171,10 @@ bool ClockEngine::takeInternalClock(uint64_t nowUs) {
 
   // Bound catch-up work after a stall. Musical scheduling may report the stall,
   // but it must not flood the MIDI output with an unbounded clock burst.
-  if (nowUs - nextInternalClockUs_ > interval * 4ULL) {
+  // Only a real stall counts: the next tick is behind now by more than four intervals. (This was an unsigned subtraction
+  // that wrapped whenever the next tick was still ahead, so every tick re-anchored to the moment the main loop got
+  // to it, and the clock ran slow by the loop's delay on every tick.)
+  if (nowUs > nextInternalClockUs_ && nowUs - nextInternalClockUs_ > interval * 4ULL) {
     nextInternalClockUs_ = nowUs + interval;
   }
   return true;
@@ -192,6 +239,8 @@ uint64_t ClockEngine::externalTimeoutUs() const {
 }
 
 void ClockEngine::resetPhase(uint64_t nowUs) {
+  ++phaseResets_;
+  tempoSampleCount_ = 0;
   phaseOriginUs_ = nowUs;
   internalPulse_ = 0;
   nextInternalClockUs_ = nowUs + midiClockIntervalUs();

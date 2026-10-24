@@ -87,6 +87,15 @@ class Looper {
   void tick(uint64_t nowUs, EmitFn emit, ReleaseFn release, void *context,
             uint16_t maxEvents = 96);
   bool playing() const { return playing_; }
+  // FoxWizard 1.93, Loop Lock: the loop keeps its own time, which can run a little faster or slower than the clock on
+  // the wall, so it can stay with an outside clock. Everything that takes a time takes the wall's. rateQ24 is how
+  // fast the loop's time runs, 1 << 24 the same as the wall. Changing it never makes the loop's time jump or go back.
+  static constexpr uint32_t kWarpUnity = 1u << 24;
+  void setTimeWarp(uint64_t realNowUs, uint32_t rateQ24);
+  uint64_t virtualNow(uint64_t realNowUs) const { return warpTime(realNowUs); }
+  uint32_t timeWarpRate() const { return warpRateQ24_; }
+  // Plays the loop again from its top, right now.
+  void restartTrackAtTop(uint64_t realNowUs, ReleaseFn release, void *context);
   // FoxWizard 1.90: true while the release callback runs because the loop came round to its top, not because it
   // stopped or was cleared, so a note that goes on across the top can be left sounding.
   bool releasingAtWrap() const { return releasingAtWrap_; }
@@ -171,6 +180,16 @@ class Looper {
   };
   static_assert(sizeof(EventSlot) == 12, "a loop event slot is 12 bytes");
 
+  uint64_t warpTime(uint64_t realUs) const;
+  bool unOverdubV(uint64_t nowUs);
+  bool beginArmedRecordingV(uint64_t nowUs);
+  bool captureV(uint64_t nowUs, const LoopMidiEvent &event);
+  bool finishRecordingV(uint64_t nowUs);
+  void startV(uint64_t nowUs);
+  void pauseV(uint64_t nowUs, ReleaseFn release, void *context);
+  void resumeV(uint64_t nowUs);
+  bool resizeTrackV(uint8_t track, uint32_t lengthUs, uint64_t nowUs, ReleaseFn release, void *context);
+  void tickV(uint64_t nowUs, EmitFn emit, ReleaseFn release, void *context, uint16_t maxEvents);
   uint16_t allocateSlot();
   void freeSlot(uint16_t slot);
   bool insertEvent(uint8_t track, const LoopMidiEvent &event);
@@ -223,6 +242,9 @@ class Looper {
   bool recording_ = false;
   bool overdubbing_ = false;
   bool releasingAtWrap_ = false;
+  uint64_t warpRealBase_ = 0;   // the wall time and the loop time at the last change of rate
+  uint64_t warpLoopBase_ = 0;
+  uint32_t warpRateQ24_ = kWarpUnity;
   // The track's own event count at the instant this pass actually started
   // recording, so finishRecording can tell whether THIS pass added anything.
   // A plain count-is-nonzero check is right for a replacement, which always

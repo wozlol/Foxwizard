@@ -8,7 +8,7 @@ import { DATA_TYPE_BITS, PORTS, PORT_TRS, PORT_USB, FEATURE, SCALES, LAYOUTS, de
 
 
 const MODE_NAMES = ['usbAdaptor', 'router'];
-const BUTTON_ACTION_NAMES = ['panic', 'pitchUp', 'pitchDown', 'mod', 'ccMomentary', 'ccToggle', 'octaveUp', 'octaveDown', 'noteMomentary', 'noteToggle', 'tapTempo'];
+const BUTTON_ACTION_NAMES = ['panic', 'pitchUp', 'pitchDown', 'mod', 'ccMomentary', 'ccToggle', 'octaveUp', 'octaveDown', 'noteMomentary', 'noteToggle', 'tapTempo', 'looper'];
 
 // buttonParamA means something different per action (ramp speed, cc number, or note number) — use
 // a matching attribute name in the XML rather than a generic one so a hand-edited file reads right.
@@ -122,6 +122,7 @@ function looperFromXml(el) {
   lp.loopUnrouted = el.getAttribute('loopUnrouted') !== 'false';
   lp.trigger = triggerFromXml(el);
   lp.recordCcs = el.getAttribute('recordCcs') === 'true';
+  lp.restartOnStart = el.getAttribute('restartOnStart') === 'true';
   return lp;
 }
 
@@ -236,7 +237,7 @@ export function serializePreset(state) {
   squaresToXml(lines, stt.squares, '    ', STUTTER_DIVISIONS);
   lines.push('  </stutter>');
   const lp = state.looper || defaultLooper();
-  lines.push(`  <looper length="${lp.bars ? lp.bars : 'free'}" quantize="${lp.quantize >= 0 ? DIVISIONS[lp.quantize] : 'off'}" autoOverdub="${lp.autoOverdub}" records="${lp.recordInputs ? 'inputs' : 'outputs'}" holdClears="${lp.holdClears}" loopUnrouted="${lp.loopUnrouted !== false}" recordCcs="${!!lp.recordCcs}"${triggerAttrs(lp.trigger)}>`);
+  lines.push(`  <looper length="${lp.bars ? lp.bars : 'free'}" quantize="${lp.quantize >= 0 ? DIVISIONS[lp.quantize] : 'off'}" autoOverdub="${lp.autoOverdub}" records="${lp.recordInputs ? 'inputs' : 'outputs'}" holdClears="${lp.holdClears}" loopUnrouted="${lp.loopUnrouted !== false}" recordCcs="${!!lp.recordCcs}" restartOnStart="${!!lp.restartOnStart}"${triggerAttrs(lp.trigger)}>`);
   lines.push('  </looper>');
   const pl = state.plock || defaultPlock();
   lines.push(`  <parameterLock delay="${pl.delay ? DIVISIONS[pl.delay - 1] : 'none'}" glide="${!!pl.glide}"/>`);

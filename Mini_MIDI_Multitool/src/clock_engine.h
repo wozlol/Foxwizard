@@ -53,6 +53,13 @@ class ClockEngine {
   // leads with its own clock because the external one is quiet or stopped.
   bool followingLive(uint64_t nowUs);
 
+  // Where the count is now in pulses, with a fraction between one clock byte and the next.
+  double pulsePosition(uint64_t nowUs) const;
+  // The tempo as wall microseconds in one pulse, from the count over the last few seconds, which jitter doesn't move
+  // the way it does bpm(). 0 until there is a second or more of clock to go on.
+  double measuredPulseUs() const;
+  uint32_t startCount() const { return startCount_; }       // Start messages taken from the source
+  uint32_t phaseResetCount() const { return phaseResets_; } // times the count started over, for any reason
   float bpm() const;
   uint32_t internalPulse() const { return internalPulse_; }
   uint32_t barPulse() const;
@@ -77,6 +84,12 @@ class ClockEngine {
   uint64_t filteredExternalIntervalUs_ = 0;
   uint64_t nextInternalClockUs_ = 0;
   uint32_t internalPulse_ = 0;
+  uint32_t startCount_ = 0;
+  uint32_t phaseResets_ = 0;
+  struct TempoSample { uint64_t timeUs; uint32_t count; };
+  static constexpr uint8_t kTempoSamples = 16;
+  TempoSample tempoSamples_[kTempoSamples]{};  // one every 250 ms of followed clock, oldest first
+  uint8_t tempoSampleCount_ = 0;
 };
 
 }  // namespace fw
