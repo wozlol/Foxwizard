@@ -307,7 +307,7 @@ use Note/CC to Feature and select Looper, or set a Looper Button trigger
 | Length | Free (the first take sets it) or 1-16 bars |
 | Quantize | Off, or snap recorded notes to a division |
 | Record After Routes | on: records what the routes send. Off: records the notes coming in, and plays them back through the routes. |
-| Global Looper | also records notes no route matches. It only works when Record After Routes is off. When Record After Routes is on, the loop already records everything the FoxWizard sends, so this switch is grey. |
+| Record Unrouted Notes | also records notes that no route matches. It only works when Record After Routes is off. When Record After Routes is on, the loop already records everything the FoxWizard sends, so this switch is grey. |
 | Auto Overdub | goes straight into overdub after the first take |
 | Hold Clears | on: hold clears, double press stops. Off: the other way round. |
 | Record CCs | records CCs too, not just notes |

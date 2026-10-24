@@ -929,10 +929,10 @@ function renderLooperRow() {
     ${mapped ? `<div class="looper-settings">${[
       ['Length', `<select data-looper-field="bars">${opt(0, l.bars, 'Free')}${Array.from({ length: 16 }, (_, k) => opt(k + 1, l.bars, `${k + 1} bar${k ? 's' : ''}`)).join('')}</select>`],
       ['Quantize', `<select data-looper-field="quantize">${opt(-1, l.quantize, 'Off')}${DIVISIONS.map((d, i) => opt(i, l.quantize, d)).join('')}</select>`],
-      // Record After Routes and Global Looper sit side by side. With Record After Routes on, the loop already records
-      // everything the FoxWizard sends, so Global Looper has nothing left to add and is greyed instead of hidden.
+      // Record After Routes and Record Unrouted Notes sit side by side. With Record After Routes on, the loop already records
+      // everything the FoxWizard sends, so Record Unrouted Notes has nothing left to add and is greyed instead of hidden.
       ['Record After Routes', sw('recordAfter', !l.recordInputs)],
-      ['Global Looper', sw('loopUnrouted', l.loopUnrouted, !l.recordInputs), !l.recordInputs ? 'Not used while Record After Routes is on, the loop records everything the FoxWizard sends.' : ''],
+      ['Record Unrouted Notes', sw('loopUnrouted', l.loopUnrouted, !l.recordInputs), !l.recordInputs ? 'Not used while Record After Routes is on, the loop records everything the FoxWizard sends.' : ''],
       ['Auto Overdub', sw('autoOverdub', l.autoOverdub)],
       ['Hold Clears', sw('holdClears', l.holdClears)],
       ['Record CCs', sw('recordCcs', !!l.recordCcs)],
