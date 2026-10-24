@@ -53,7 +53,7 @@ The route struct is 41 bytes → five groups of 7 + one group of 6 → packed to
 | 0x02   | IDENTITY_REPLY        | dev→host  | protocolVersion, fwMajor, fwMinor, maxRoutes(2), name (ASCII, remainder of message) |
 | 0x10   | GET_GLOBAL            | host→dev  | (none)                                                         |
 | 0x13   | GET_STATUS            | host→dev  | (none). Protocol 2 |
-| 0x14   | STATUS_DATA           | dev→host  | sidecarPresent (0/1), hostPortMask (bit n = USB Host n+1 has a USB MIDI device, 7 bits from 1.74), sidecarDrops (saturates at 127), restartReason (0 none, 1 hang, 2 USB Host port stalled, 3 USB data sequence error, 4 USB buffer armed twice, 5 USB device stalled), restartPort (1-4, for reason 2), restartCount (recovery restarts since the sidecar powered up, saturates at 127). Protocol 2. Protocol 3 adds bpm(2) and clockStatus (0 clock unused, 1 master, 2 following, 3 following with no clock arriving). Firmware 1.44 adds hasTrs (1 = a TRS board is added on top of the bare sidecar module, so TRS 2-6 exist). 1.71 adds hubKnown, hubJacks, hubCount and hostWaiting (devices with no free slot), 1.74 the host brain's firmware version, 1.83 how hard the main loop has worked since the last status, then reset: longest pass in microseconds (2 bytes, low 7 bits first), loops stopped at the link input limit (0-127), loops input was held back because an output queue was filling (0-127), and the fullest the link, TRS and USB queues got as 0-127 of their size. 1.87 adds four counts, 0-127 each, since the last status: a Note On for a key already down, a Note Off for a key not down, the loop's Note Offs that nothing of the loop's was holding, and the loop's Note Ons for a note it was still holding |
+| 0x14   | STATUS_DATA           | dev→host  | sidecarPresent (0/1), hostPortMask (bit n = USB Host n+1 has a USB MIDI device, 7 bits from 1.74), sidecarDrops (saturates at 127), restartReason (0 none, 1 hang, 2 USB Host port stalled, 3 USB data sequence error, 4 USB buffer armed twice, 5 USB device stalled), restartPort (1-4, for reason 2), restartCount (recovery restarts since the sidecar powered up, saturates at 127). Protocol 2. Protocol 3 adds bpm(2) and clockStatus (0 clock unused, 1 master, 2 following, 3 following with no clock arriving, 4 Auto leading with its own clock, from 1.92). Firmware 1.44 adds hasTrs (1 = a TRS board is added on top of the bare sidecar module, so TRS 2-6 exist). 1.71 adds hubKnown, hubJacks, hubCount and hostWaiting (devices with no free slot), 1.74 the host brain's firmware version, 1.83 how hard the main loop has worked since the last status, then reset: longest pass in microseconds (2 bytes, low 7 bits first), loops stopped at the link input limit (0-127), loops input was held back because an output queue was filling (0-127), and the fullest the link, TRS and USB queues got as 0-127 of their size. 1.87 adds four counts, 0-127 each, since the last status: a Note On for a key already down, a Note Off for a key not down, the loop's Note Offs that nothing of the loop's was holding, and the loop's Note Ons for a note it was still holding |
 | 0x15   | LEARN                 | host→dev  | (none). Protocol 3. The next Note On or CC from any input is consumed and answered with LEARN_DATA. Gives up after 10 s |
 | 0x16   | LEARN_DATA            | dev→host  | type (1 note, 2 CC), channel (0-15), number, port bit (0 TRS/DIN … 6 TRS 2) |
 | 0x17   | GET_FEATURE           | host→dev  | type. Protocol 4 |
@@ -124,7 +124,7 @@ leaves the clock settings alone.
 
 | byte | field | notes |
 |------|-------|-------|
-| 6 | clockSource | 0 the FoxWizard is master, 1-14 follow port bit 0-13 (TRS/DIN, USB Device, USB Host 1-4, TRS 2, then from 12 USB Host 5-7). 8-11 are outputs only and do nothing |
+| 6 | clockSource | 0 the FoxWizard is master, 1-14 follow port bit 0-13 (TRS/DIN, USB Device, USB Host 1-4, TRS 2, then from 12 USB Host 5-7). 8-11 are outputs only and do nothing. 15 Auto (1.92): follows the clock of the first port to send one while that clock arrives, leads with its own at the tempo it had while none does |
 | 7-8 | bpm | two 7-bit bytes, low first, 20-300 |
 | 9 | beatsPerBar | time signature top, 1-16 |
 | 10 | beatUnit | time signature bottom: 2, 4, 8, 16 |
@@ -277,7 +277,7 @@ stopped loop stops and clears (undoable). Stop: the loop stops, kept, so a tap p
 
 Stop/clear (a mapped Looper action) works as ARPnMIDI's: it ends a take, stops, and the next press
 clears, or brings back a cleared loop. A Free take sets the BPM, taking the loop as one bar, unless
-following another clock. Auto Overdub (1.29) turns overdub on as a new take starts playing, until a
+following another clock (Auto does while it leads). Auto Overdub (1.29) turns overdub on as a new take starts playing, until a
 tap turns it off. Panic stops the loop without clearing it. Arming never discards a cleared loop's
 undo, only the first note of a new take does. A take that starts while notes are already sounding on the side
 being recorded (a held bass note, a chord already down) begins with them (1.30). A take or overdub

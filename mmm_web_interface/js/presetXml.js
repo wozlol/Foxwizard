@@ -198,7 +198,7 @@ export function serializePreset(state) {
   lines.push(`  <mode>${MODE_NAMES[g.mode] || 'usbAdaptor'}</mode>`);
   lines.push(`  <ledBrightness>${g.ledBrightnessStep * 10}</ledBrightness>`);
   const clockPort = PORTS.find((p) => p.bit + 1 === g.clockSource);
-  lines.push(`  <clock source="${clockPort ? clockPort.key : 'master'}" bpm="${g.bpm}" timeSignature="${g.beatsPerBar}/${g.beatUnit}" sendClock="${!!g.clockOut}" tap="${['none', 'note', 'cc'][g.tapType] || 'none'}" tapChannel="${g.tapChannel > 15 ? 'any' : g.tapChannel + 1}" tapNumber="${g.tapNumber}"/>`);
+  lines.push(`  <clock source="${g.clockSource === 15 ? 'auto' : (clockPort ? clockPort.key : 'master')}" bpm="${g.bpm}" timeSignature="${g.beatsPerBar}/${g.beatUnit}" sendClock="${!!g.clockOut}" tap="${['none', 'note', 'cc'][g.tapType] || 'none'}" tapChannel="${g.tapChannel > 15 ? 'any' : g.tapChannel + 1}" tapNumber="${g.tapNumber}"/>`);
   const valueAttr = buttonValueAttrName(g.buttonAction);
   lines.push(`  <button action="${BUTTON_ACTION_NAMES[g.buttonAction] || 'panic'}"${valueAttr ? ` ${valueAttr}="${g.buttonParamA}"` : ''} channel="${g.buttonParamB === 16 ? 'all' : g.buttonParamB + 1}" toggle="${!!g.buttonToggleMomentary}"/>`);
   lines.push('  <routes>');
@@ -298,7 +298,7 @@ export function parsePreset(xmlText) {
     const [beats, unit] = (clockEl.getAttribute('timeSignature') || '4/4').split('/').map((n) => parseInt(n, 10));
     const tapCh = clockEl.getAttribute('tapChannel') || 'any';
     Object.assign(clock, {
-      clockSource: port ? port.bit + 1 : 0,
+      clockSource: src === 'auto' ? 15 : (port ? port.bit + 1 : 0),
       bpm: Math.min(300, Math.max(20, parseInt(clockEl.getAttribute('bpm') || '120', 10) || 120)),
       beatsPerBar: Math.min(16, Math.max(1, beats || 4)),
       beatUnit: [2, 4, 8, 16].includes(unit) ? unit : 4,

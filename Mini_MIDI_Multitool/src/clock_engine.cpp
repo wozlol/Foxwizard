@@ -29,10 +29,18 @@ void ClockEngine::begin(const ClockConfig &config, uint64_t nowUs) {
 }
 
 void ClockEngine::setConfig(const ClockConfig &config, uint64_t nowUs) {
-  const bool timingSourceChanged = config.followExternal != config_.followExternal;
+  const bool timingSourceChanged = config.followExternal != config_.followExternal || config.autoLead != config_.autoLead;
   const bool tempoChanged = clampBpm(config.manualBpm) != config_.manualBpm;
   config_ = config;
   config_.manualBpm = clampBpm(config_.manualBpm);
+  if (timingSourceChanged) {
+    leading_ = false;
+    sourceStopped_ = false;
+    leadBpm_ = 0;
+  } else if (tempoChanged && leading_) {
+    leadBpm_ = config_.manualBpm; // a tempo set by hand while Auto leads is the tempo it leads at
+    filteredExternalIntervalUs_ = 0;
+  }
   if (timingSourceChanged || tempoChanged) resetPhase(nowUs);
 }
 
@@ -42,13 +50,29 @@ TransportEvent ClockEngine::receiveRealtime(uint8_t status, uint64_t nowUs) {
       receiveClock(nowUs);
       return TransportEvent::None;
     case kMidiStartStatus:
-      if (config_.followExternal) start(nowUs);
+      if (config_.followExternal) {
+        sourceStopped_ = false;
+        leading_ = false;
+        graceUntilUs_ = nowUs + kMinimumExternalTimeoutUs;
+        start(nowUs);
+      }
       return TransportEvent::Start;
     case kMidiContinueStatus:
-      if (config_.followExternal) resume(nowUs);
+      if (config_.followExternal) {
+        if (config_.autoLead) {
+          sourceStopped_ = false;
+          leading_ = false;
+          graceUntilUs_ = nowUs + kMinimumExternalTimeoutUs;
+        } else {
+          resume(nowUs);
+        }
+      }
       return TransportEvent::Continue;
     case kMidiStopStatus:
-      if (config_.followExternal) stop();
+      if (config_.followExternal) {
+        if (config_.autoLead) sourceStopped_ = true; // Auto carries on with its own clock
+        else stop();
+      }
       return TransportEvent::Stop;
     default:
       return TransportEvent::None;
@@ -67,13 +91,33 @@ void ClockEngine::receiveClock(uint64_t nowUs) {
   }
   lastExternalClockUs_ = nowUs;
   haveExternalClock_ = true;
+  if (config_.autoLead && sourceStopped_) return; // stopped: the source's clock bytes don't count
+  leading_ = false;                               // Auto: the external clock is back and drives the count
   if (config_.followExternal && running_) {
     internalPulse_ += kInternalPulsesPerMidiClock;
   }
 }
 
+bool ClockEngine::followingLive(uint64_t nowUs) {
+  if (!config_.followExternal) return false;
+  if (!config_.autoLead) return true;
+  const bool live = externalClockPresent(nowUs) && !sourceStopped_;
+  if (!live && !leading_) {
+    // The source went quiet or stopped: carry on from this count with its own clock, at the tempo it had.
+    leading_ = true;
+    leadBpm_ = filteredExternalIntervalUs_ != 0
+        ? 60000000.0f / (static_cast<float>(filteredExternalIntervalUs_) * kMidiClockPpqn)
+        : static_cast<float>(config_.manualBpm);
+    nextInternalClockUs_ = nowUs + midiClockIntervalUs();
+  } else if (live && leading_) {
+    leading_ = false;
+  }
+  return !leading_;
+}
+
 bool ClockEngine::takeInternalClock(uint64_t nowUs) {
-  if (!config_.sendClock || config_.followExternal || !running_) return false;
+  if (!config_.sendClock || !running_) return false;
+  if (config_.followExternal && followingLive(nowUs)) return false;
   if (nextInternalClockUs_ == 0) nextInternalClockUs_ = nowUs;
   if (nowUs < nextInternalClockUs_) return false;
 
@@ -106,16 +150,19 @@ void ClockEngine::stop() {
 }
 
 bool ClockEngine::externalClockPresent(uint64_t nowUs) const {
+  if (nowUs < graceUntilUs_) return true;
   return haveExternalClock_ && nowUs >= lastExternalClockUs_ &&
          (nowUs - lastExternalClockUs_) <= externalTimeoutUs();
 }
 
 bool ClockEngine::synchronizedAdvanceAllowed(uint64_t nowUs) const {
   if (!running_) return false;
+  if (config_.autoLead) return true; // Auto always has a clock, the external one or its own
   return !config_.followExternal || externalClockPresent(nowUs);
 }
 
 float ClockEngine::bpm() const {
+  if (leading_ && leadBpm_ > 0) return leadBpm_;
   if (config_.followExternal && filteredExternalIntervalUs_ != 0) {
     return 60000000.0f /
            (static_cast<float>(filteredExternalIntervalUs_) * kMidiClockPpqn);
@@ -135,7 +182,8 @@ uint32_t ClockEngine::lastExternalClockAgeMs(uint64_t nowUs) const {
 }
 
 uint64_t ClockEngine::midiClockIntervalUs() const {
-  return quarterNoteUs(static_cast<float>(config_.manualBpm)) / kMidiClockPpqn;
+  const float bpm = leading_ && leadBpm_ > 0 ? leadBpm_ : static_cast<float>(config_.manualBpm);
+  return quarterNoteUs(bpm) / kMidiClockPpqn;
 }
 
 uint64_t ClockEngine::externalTimeoutUs() const {

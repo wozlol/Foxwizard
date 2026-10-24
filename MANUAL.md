@@ -109,14 +109,43 @@ Tap Tempo).
 | Setting | Options |
 |---|---|
 | BPM | 20-300, while the FoxWizard is master |
-| Clock | FoxWizard is master, or Follow a port. Following ignores clock from every other port. |
-| Send Clock to every port | master only |
+| Clock | FoxWizard is master, Auto, or Follow a port. Following a port ignores clock from every other port. |
+| Send Clock to every port | master, and Auto while it uses its own clock |
 | Time Signature | 1-16 beats over 2, 4, 8 or 16 |
 | Tap Tempo Trigger | a Note or CC, with Learn |
 
 A loop recorded at Free length sets the tempo from its length.
 
+### Clock: Auto
+
+In Auto, the FoxWizard uses a clock from outside when one comes in. When no clock comes in, it uses its own
+clock. This is the same Auto that other devices have.
+
+| The FoxWizard is | When |
+|---|---|
+| following | a clock is coming in. It follows the first port that sends a clock. It ignores the clock bytes from other ports while that clock is coming in. |
+| master | no clock is coming in. It runs its own clock. It starts at the BPM setting. If it was following before, it keeps the tempo of that clock. |
+
+The FoxWizard decides that a clock is gone when it receives no clock byte for half a second. At a very slow tempo
+it waits a little longer. When a clock comes in again, the FoxWizard follows it again. It needs no setting
+change.
+
+The FoxWizard adds these things to standard Auto:
+
+- **The beat count does not stop.** The FoxWizard counts the beat all the time. When it changes between
+  following and master, the count goes on from where it was. The arps and the looper keep their time.
+- **Start restarts the count.** A Start message from the clock it follows sets the count to 0, so the beats
+  line up with that device.
+- **Stop does not stop the FoxWizard.** When the clock it follows sends Stop, the FoxWizard becomes master and
+  goes on. The clock bytes that arrive after Stop are not counted. Start or Continue from that device makes
+  the FoxWizard follow it again.
+- **Send Clock works when it is master.** If Send Clock to every port is on, the FoxWizard sends its own clock
+  whenever it is master in Auto.
+- **A Free loop sets the tempo only when it is master.** Tap Tempo works only when it is master too.
+
 ### Arps on a followed clock
+
+This section is about following a clock, in Follow a port and in Auto while the FoxWizard is following.
 
 With Clock set to Follow a port, the FoxWizard counts that port's MIDI Clock bytes. Each byte is 4 pulses, 96
 pulses to a quarter note. A division is a whole number of pulses (1/16 is 24, six clock bytes) and its grid
@@ -133,6 +162,7 @@ lines are the multiples of that number, counted from 0.
   count began.
 
 As master, a phrase that starts with no other arp running restarts the count, so its first step plays at once.
+This is also true in Auto while the FoxWizard is master.
 
 ## Divisions
 

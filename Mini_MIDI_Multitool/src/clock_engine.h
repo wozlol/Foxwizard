@@ -18,6 +18,9 @@ enum class TransportEvent : uint8_t {
 
 struct ClockConfig {
   bool followExternal = false;
+  // FoxWizard 1.92, Auto: follows external clock while it arrives, and leads with its own, at the tempo the
+  // external clock had, while it doesn't. Needs followExternal.
+  bool autoLead = false;
   bool sendClock = false;
   uint8_t beatsPerBar = 4;
   uint8_t beatUnit = 4;
@@ -46,6 +49,9 @@ class ClockEngine {
   bool clockOutEnabled() const { return config_.sendClock; }
   bool externalClockPresent(uint64_t nowUs) const;
   bool synchronizedAdvanceAllowed(uint64_t nowUs) const;
+  // True when the clock being followed is the one driving the count. False for a master, and for Auto while it
+  // leads with its own clock because the external one is quiet or stopped.
+  bool followingLive(uint64_t nowUs);
 
   float bpm() const;
   uint32_t internalPulse() const { return internalPulse_; }
@@ -60,6 +66,10 @@ class ClockEngine {
   void resetPhase(uint64_t nowUs);
 
   ClockConfig config_{};
+  bool leading_ = false;        // Auto: running its own clock because the external one is quiet or stopped
+  bool sourceStopped_ = false;  // Auto: the source sent Stop, its clock bytes don't count until it sends Start or Continue
+  float leadBpm_ = 0;           // the tempo Auto leads at, the external tempo as it went quiet
+  uint64_t graceUntilUs_ = 0;   // after a Start or Continue the source counts as present, its first clock byte is due
   bool running_ = true;
   bool haveExternalClock_ = false;
   uint64_t phaseOriginUs_ = 0;

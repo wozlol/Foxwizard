@@ -968,9 +968,12 @@ function clockRowActive() {
     state.routes.some((r) => r.arpSlot || (r.features & (FEATURE.ECHO | FEATURE.STUTTER)));
 }
 
+const CLOCK_SOURCE_AUTO = 15; // Clock: follow the clock of any port while one arrives, lead with its own while none does (1.92)
+
 function clockSourceOptions(g) {
   const ports = PORTS.filter((p) => p.input && (!p.sidecar || sidecarPortShown(p, false) || g.clockSource === p.bit + 1));
-  return [`<option value="0" ${g.clockSource === 0 ? 'selected' : ''}>FoxWizard is master</option>`]
+  return [`<option value="0" ${g.clockSource === 0 ? 'selected' : ''}>FoxWizard is master</option>`,
+    `<option value="${CLOCK_SOURCE_AUTO}" ${g.clockSource === CLOCK_SOURCE_AUTO ? 'selected' : ''}>Auto</option>`]
     .concat(ports.map((p) => `<option value="${p.bit + 1}" ${g.clockSource === p.bit + 1 ? 'selected' : ''}>Follow ${p.label}</option>`))
     .join('');
 }
@@ -997,6 +1000,8 @@ function clockReadoutText() {
   if (!device.connected) return '';
   const { bpm, status } = clockReadout;
   const port = PORTS.find((p) => p.bit + 1 === state.global.clockSource);
+  if (state.global.clockSource === CLOCK_SOURCE_AUTO && status === 4) return `${bpm} BPM · Auto, leading with its own clock${perfText()}`;
+  if (state.global.clockSource === CLOCK_SOURCE_AUTO && status === 2) return `${bpm} BPM · Auto, following the clock that arrives${perfText()}`;
   if (status === 1) return `${bpm} BPM · Master${perfText()}`;
   if (status === 2) return `${bpm} BPM · Following ${port ? port.label : ''}${perfText()}`;
   if (status === 3) return `No clock from ${port ? port.label : 'that port'}${perfText()}`;
@@ -1016,7 +1021,8 @@ function renderClockRow() {
       </div>`;
     return;
   }
-  const master = g.clockSource === 0;
+  const auto = g.clockSource === CLOCK_SOURCE_AUTO;
+  const master = g.clockSource === 0 || auto; // the FoxWizard's own tempo and clock out matter here
   const opt = (v, cur, label) => `<option value="${v}" ${cur === v ? 'selected' : ''}>${label}</option>`;
   let beats = '';
   for (let n = 1; n <= 16; n++) beats += opt(n, g.beatsPerBar, n);
@@ -1034,11 +1040,12 @@ function renderClockRow() {
     </div>
     <div class="settings-grid">
       <div class="mini-box">${miniBoxMain('BPM', `<input type="number" min="20" max="300" value="${g.bpm}" data-clock-field="bpm" ${master ? '' : 'disabled'}>`)}
-        ${master ? '' : '<p class="note-hint">Set by the clock it follows.</p>'}</div>
+        ${auto ? '<p class="note-hint">Used while no clock arrives. A clock that arrives sets it.</p>' : (master ? '' : '<p class="note-hint">Set by the clock it follows.</p>')}</div>
       <div class="mini-box">${miniBoxMain('Clock', `<select data-clock-field="clockSource">${clockSourceOptions(g)}</select>`)}
         ${master
           ? `<label class="switch switch-red clock-send"><input type="checkbox" data-clock-field="clockOut" ${g.clockOut ? 'checked' : ''}><span class="switch-track"><span class="switch-thumb"></span></span><span class="switch-label">Send Clock to every port</span></label>`
-          : '<p class="note-hint">Clock from every other port is ignored.</p>'}</div>
+          : '<p class="note-hint">Clock from every other port is ignored.</p>'}
+        ${auto ? '<p class="note-hint">Follows the first port that sends a clock. Runs its own clock while none does.</p>' : ''}</div>
       <div class="mini-box">${miniBoxMain('Time Signature', `<div class="time-sig">
           <select data-clock-field="beatsPerBar">${beats}</select><span>/</span><select data-clock-field="beatUnit">${units}</select>
         </div>`)}</div>
@@ -1054,7 +1061,7 @@ function renderClockRow() {
 // device is taken, so a BPM typed here and not saved yet isn't overwritten.
 let lastDeviceBpm = null;
 function updateClockReadout(status) {
-  if (status.clockStatus === 1 && status.bpm) {
+  if ((status.clockStatus === 1 || status.clockStatus === 4) && status.bpm) {
     if (lastDeviceBpm !== null && status.bpm !== lastDeviceBpm && status.bpm !== state.global.bpm) {
       state.global.bpm = status.bpm;
       const input = clockRow.querySelector('[data-clock-field="bpm"]');

@@ -97,7 +97,7 @@ constexpr uint8_t SYSEX_MFR_ID = 0x7D;   // reserved for non-commercial/educatio
 constexpr uint8_t SYSEX_DEVICE_ID = 0x4D; // 'M'
 constexpr uint8_t PROTOCOL_VERSION = 4; // 2: 45-byte routes with port masks, GET_STATUS. 3: clock settings, LEARN. 4: 53-byte routes with feature fields, feature blocks
 constexpr uint8_t FW_VERSION_MAJOR = 1;
-constexpr uint8_t FW_VERSION_MINOR = 91;
+constexpr uint8_t FW_VERSION_MINOR = 92;
 constexpr uint8_t FW_CHUNK_BYTES = 128;          // firmware bytes per FW_DATA message, 147 once packed
 constexpr uint32_t FW_REBOOT_DELAY_MS = 300;     // lets the FW_END ACK reach the host before rebooting
 const char DEVICE_NAME[] = "FoxWizard Mini MIDI Multitool"; // long name sent in the SysEx IDENTITY_REPLY
@@ -241,7 +241,7 @@ struct GlobalSettings {
   uint8_t ledBrightnessStep;
   // Global clock (protocol 3). Zero means the default in every field, see effectiveBpm() and friends,
   // so saves from before these fields existed load as defaults.
-  uint8_t clockSource;  // 0 = the FoxWizard is master, 1-14 = follow port bit 0-13 (TRS/DIN ... USB Host 7)
+  uint8_t clockSource;  // 0 = the FoxWizard is master, 1-14 = follow port bit 0-13 (TRS/DIN ... USB Host 7), 15 = Auto (1.92)
   uint16_t bpm;         // 20-300, 0 = 120
   uint8_t beatsPerBar;  // time signature top, 0 = 4
   uint8_t beatUnit;     // time signature bottom (2, 4, 8, 16), 0 = 4
@@ -1792,14 +1792,24 @@ uint16_t effectiveBpm() {
   return bpm < 20 ? 20 : (bpm > 300 ? 300 : bpm);
 }
 
+constexpr uint8_t CLOCK_SOURCE_AUTO = 15;
+
 uint16_t clockFollowPort() {
   const uint8_t src = globalSettings.clockSource;
   return (src >= 1 && src <= 14) ? (uint16_t)(1u << (src - 1)) : 0; // 1.74: up to USB Host 7, bit 13
 }
 
+// Auto (1.92): follows the clock of whichever port sends one, and leads with its own while none does.
+bool clockAuto() { return globalSettings.clockSource == CLOCK_SOURCE_AUTO; }
+uint16_t clockAutoSource = 0; // the port Auto is following, the first to send a clock, kept until it goes quiet
+
+// Whether the FoxWizard's own clock is the one in charge: a master, or Auto while no external clock drives it.
+bool clockLeads() { return !clockEngine.followingLive(time_us_64()); }
+
 fw::ClockConfig clockConfig() {
   fw::ClockConfig c;
-  c.followExternal = globalClockActive() && clockFollowPort() != 0;
+  c.followExternal = globalClockActive() && (clockFollowPort() != 0 || clockAuto());
+  c.autoLead = clockAuto();
   // As master the engine always counts pulses while the clock is in use, the arps step on them.
   // MIDI clock only goes out with Send Clock on, see serviceClock().
   c.sendClock = globalClockActive();
@@ -1813,9 +1823,11 @@ void applyClockConfig() {
   clockEngine.setConfig(clockConfig(), time_us_64());
 }
 
-// For GET_STATUS: 0 clock not in use, 1 master, 2 following with clock arriving, 3 following, no clock.
+// For GET_STATUS: 0 clock not in use, 1 master, 2 following with clock arriving, 3 following, no clock,
+// 4 Auto leading with its own clock (1.92).
 uint8_t clockStatus() {
   if (!globalClockActive()) return 0;
+  if (clockAuto()) return clockEngine.followingLive(time_us_64()) ? 2 : 4;
   if (!clockFollowPort()) return 1;
   return clockEngine.externalClockPresent(time_us_64()) ? 2 : 3;
 }
@@ -1825,6 +1837,16 @@ uint8_t clockStatus() {
 bool acceptClockMessage(uint8_t inputDevice, uint8_t status) {
   if (status != 0xF8 && status != 0xFA && status != 0xFB && status != 0xFC) return true;
   if (!globalClockActive()) return true;
+  if (clockAuto()) {
+    // Any port can be the source. The first to send holds it until its clock has gone quiet, then the next to
+    // send takes over. The others' clock bytes are dropped, their transport still routes.
+    const uint64_t now = time_us_64();
+    const uint16_t port = sourcePort(inputDevice);
+    if (!clockAutoSource || !clockEngine.externalClockPresent(now)) clockAutoSource = port;
+    const bool fromAutoSource = port == clockAutoSource;
+    if (fromAutoSource) clockEngine.receiveRealtime(status, now);
+    return status != 0xF8 || fromAutoSource;
+  }
   const uint16_t follow = clockFollowPort();
   const bool fromSource = follow && sourcePort(inputDevice) == follow;
   if (fromSource) clockEngine.receiveRealtime(status, time_us_64());
@@ -1854,7 +1876,7 @@ uint32_t tapMedianMs() {
 }
 
 void tapTempo() {
-  if (clockFollowPort()) return; // following another clock, its tempo wins
+  if (!clockLeads()) return; // following another clock, its tempo wins
   const uint32_t now = millis();
   if (tapCount && now - tapTimesMs[tapCount - 1] < TAP_MIN_MS) return; // a double-fire
   if (tapCount && now - tapTimesMs[tapCount - 1] > TAP_RESET_MS) tapCount = 0;
@@ -3451,7 +3473,7 @@ void looperArm() {
 
 // A Free take sets the tempo, taking the loop as one bar. Following another clock, that clock wins.
 void looperAdoptTempo() {
-  if (looperSettings.bars || clockFollowPort()) return;
+  if (looperSettings.bars || !clockLeads()) return;
   const uint32_t len = looper.track(0).lengthUs;
   if (!len) return;
   const uint8_t beats = globalSettings.beatsPerBar ? globalSettings.beatsPerBar : 4;
@@ -4668,7 +4690,7 @@ void serviceArps() {
   if (looper.playing() && !loopWasPlaying) { // a loop started from its top: that's the grid's one
     bool anyRunning = false;
     for (uint8_t s = 0; s < ARP_SLOTS; ++s) anyRunning = anyRunning || arps[s].running;
-    if (!anyRunning && !clockFollowPort()) clockEngine.start(now);
+    if (!anyRunning && clockLeads()) clockEngine.start(now);
     loopGridPlanted = true;
   }
   loopWasPlaying = looper.playing();
@@ -4696,7 +4718,7 @@ void serviceArps() {
       const uint16_t div = fw::divisionPulses(arpCurrentDivision(s));
       // A fresh start restarts the master grid. Joining a running arp, or following another clock,
       // lines up with that grid's next step instead.
-      if (!otherArpRunning(s) && !clockFollowPort() && !(loopActive && loopGridPlanted)) clockEngine.start(now);
+      if (!otherArpRunning(s) && clockLeads() && !(loopActive && loopGridPlanted)) clockEngine.start(now);
       if (loopActive) loopGridPlanted = true;
       const uint32_t pulse = clockEngine.internalPulse();
       r.nextStepPulse = ((pulse + div - 1) / div) * div;
