@@ -99,7 +99,7 @@ constexpr uint8_t SYSEX_MFR_ID = 0x7D;   // reserved for non-commercial/educatio
 constexpr uint8_t SYSEX_DEVICE_ID = 0x4D; // 'M'
 constexpr uint8_t PROTOCOL_VERSION = 5; // 2: 45-byte routes with port masks, GET_STATUS. 3: clock settings, LEARN. 4: 53-byte routes with feature fields, feature blocks. 5: presets
 constexpr uint8_t FW_VERSION_MAJOR = 1;
-constexpr uint8_t FW_VERSION_MINOR = 102;
+constexpr uint8_t FW_VERSION_MINOR = 103;
 constexpr uint8_t FW_CHUNK_BYTES = 128;          // firmware bytes per FW_DATA message, 147 once packed
 constexpr uint32_t FW_REBOOT_DELAY_MS = 300;     // lets the FW_END ACK reach the host before rebooting
 const char DEVICE_NAME[] = "FoxWizard Mini MIDI Multitool"; // long name sent in the SysEx IDENTITY_REPLY
@@ -4063,7 +4063,7 @@ void presetLoadSlot(uint8_t slot) {
 }
 
 void presetSwap(uint8_t slot) {
-  panicSilence();
+  presetSilence();
   presetEnsureActiveFile(); // the first change away from a slot that was never saved to a file
   presetLoadSlot(slot);
   presetActive = slot;
@@ -5721,6 +5721,9 @@ void handleSysexCommand(uint8_t sourcePort, const uint8_t *cmdBuf, uint8_t cmdLe
       appendReply(perfStrayOff > 127 ? 127 : perfStrayOff);
       appendReply(perfLoopOrphanOff > 127 ? 127 : perfLoopOrphanOff);
       appendReply(perfLoopRepeatOn > 127 ? 127 : perfLoopRepeatOn);
+      // 1.103: the preset in use and how many there are, so Patchling sees a change made on the unit.
+      appendReply(presetActive);
+      appendReply(presetSlots);
       perfLoopMaxUs = perfLinkLimitHits = perfInputHeldBack = perfLinkHigh = perfTrsHigh = perfUsbHigh = 0;
       perfRepeatOn = perfStrayOff = perfLoopOrphanOff = perfLoopRepeatOn = 0;
       sendReply(sourcePort);
@@ -6331,8 +6334,8 @@ uint8_t resolveButtonChannel() {
   return (globalSettings.buttonParamB > 15) ? 0 : globalSettings.buttonParamB; // "All" collapses to ch1 for single-channel messages
 }
 
-// Everything panic does except the confirmation flashes, which hold the main loop. A preset change uses it alone.
-void panicSilence() {
+// What panic stops inside the FoxWizard: every held note, arp, echo, stutter and the loop.
+void panicStopEngines() {
   memset(noteOwners, 0, sizeof(noteOwners)); // nothing is held by anyone now
   arpPanic(); // otherwise a held arp keeps stepping right after
   echoStop();
@@ -6340,6 +6343,29 @@ void panicSilence() {
   stutterStop();
   looper.cancelRecording();
   looperStop(); // the loop stays, a tap plays it again
+}
+
+// A preset change (1.103) stops the same things, then sends Reset All Controllers, All Notes Off and All Sound Off only
+// where notes have sounded, to the channels of each port that had one. Panic's burst to every channel of every port would
+// hit every device each time a preset is picked.
+void presetSilence() {
+  panicStopEngines();
+  const uint16_t available = availablePorts();
+  for (uint8_t channel = 0; channel < 16; ++channel) {
+    uint16_t mask = 0;
+    for (uint8_t b = 0; b < PORT_COUNT; ++b) if (notedChannels[b] & (1u << channel)) mask |= 1u << b;
+    mask &= available;
+    if (!mask) continue;
+    sendToOutputs(mask, 0xB0, channel, 121, 0, 3);
+    sendToOutputs(mask, 0xB0, channel, 123, 0, 3);
+    sendToOutputs(mask, 0xB0, channel, 120, 0, 3);
+  }
+  memset(notedChannels, 0, sizeof(notedChannels));
+}
+
+// Everything panic does except the confirmation flashes, which hold the main loop.
+void panicSilence() {
+  panicStopEngines();
   // Deliberately NOT sending an individual Note Off for every note on every channel here — that's
   // 16 x 128 x 2 ports = 4096+ messages, which over a 31250-baud DIN line takes close to 2 seconds
   // of real transmit time and makes "panic" feel broken instead of instant. CC 120 (All Sound Off)

@@ -336,8 +336,9 @@ async function autosave() {
   if (state.routes.length > routeLimit()) return; // the Save button explains this one
   autosaving = true;
   autosaveAgain = false;
-  dirty = false; // a change made during the save marks it dirty again
   try {
+    if (!(await unitStillOnPreset())) return; // the editor now shows what the unit runs, nothing is sent
+    dirty = false; // a change made during the save marks it dirty again
     await device.saveAll(state.global, state.routes, { noteMap: state.noteMap, ccMap: state.ccMap, lpActions: state.lpActions, scale: state.scale, arps: state.arps, echo: state.echo, stutter: state.stutter, looper: state.looper, plock: state.plock });
     if (!dirty) clearDirty();
     refreshPresets().then(paintPresetRow).catch(() => {});
@@ -403,6 +404,37 @@ function paintPresetRow() {
     b.classList.toggle('empty', !((state.presets.used >> i) & 1));
     b.setAttribute('aria-pressed', String(i === state.presets.active));
   });
+}
+
+// The unit can switch preset by itself: the front button, or a mapped Note, CC or Launchpad button. The editor would then
+// still show the old preset, and saving it would write that over the new one. So the status poll and every save check which
+// slot is live first, and the editor loads what the unit runs.
+async function adoptUnitPreset() {
+  clearTimeout(autosaveTimer);
+  const from = state.presets.active;
+  const hadChanges = dirty;
+  dirty = false;
+  await loadFromDevice(true);
+  if (hadChanges) toast(`The unit switched to preset ${state.presets.active + 1}, so the unsaved changes to preset ${from + 1} were not saved.`, 'warn');
+}
+
+// True when the unit still runs the preset the editor shows. If not, the editor is reloaded and false comes back.
+async function unitStillOnPreset() {
+  if (!presetsSupported() || state.presets.slots < 2) return true;
+  try {
+    const p = await device.getPresets();
+    if (p.active === state.presets.active && p.slots === state.presets.slots) return true;
+  } catch (err) {
+    return true; // can't tell, the save goes ahead
+  }
+  await adoptUnitPreset();
+  return false;
+}
+
+function checkUnitPreset(status) {
+  if (!presetsSupported() || status.presetActive === undefined || presetSwitching || autosaving || updateInProgress) return;
+  if (status.presetActive === state.presets.active && status.presetSlots === state.presets.slots) return;
+  adoptUnitPreset();
 }
 
 async function settleAutosave() {
@@ -692,6 +724,7 @@ async function refreshSidecarStatus() {
     toast(`${hostHub.waiting} USB device${hostHub.waiting > 1 ? 's' : ''} plugged in with no free USB Host port. ${hostHub.waiting > 1 ? 'They start' : 'It starts'} working when a port frees up.`, 'warn');
   }
   lastHostStatus = status;
+  checkUnitPreset(status);
   if (status.sidecar) {
     if (hostRestartCount !== null && status.restartCount > hostRestartCount) {
       // USB driver resets (data sequence 3, device change 4) recover on their own: a brief yellow note.
@@ -894,8 +927,7 @@ function renderGlobalCard() {
   const presetForced = presetButtonForced();
   const presetSlotsBox = presetsSupported() ? `
       <div class="mini-box">
-        ${miniBoxMain('Preset Slots', `<select data-preset-slots>${Array.from({ length: 16 }, (_, i) => `<option value="${i + 1}" ${state.presets.slots === i + 1 ? 'selected' : ''}>${i + 1}</option>`).join('')}</select>`)}
-        <p class="note-hint">With 2 or more, each preset gets a button above. The Preset Button Action, or a Note, CC or Launchpad button set to Preset, switches on the unit.</p>
+        ${miniBoxMain('Number of Preset Slots Total', `<select data-preset-slots>${Array.from({ length: 16 }, (_, i) => `<option value="${i + 1}" ${state.presets.slots === i + 1 ? 'selected' : ''}>${i + 1}</option>`).join('')}</select>`)}
       </div>` : '';
 
   const brightnessPct = g.ledBrightnessStep * 10;
@@ -2885,6 +2917,7 @@ async function saveToDevice() {
     toast(`The FoxWizard holds up to ${routeLimit()} routes. Delete ${state.routes.length - routeLimit()} before saving.`, 'error');
     return false;
   }
+  if (!(await unitStillOnPreset())) return false;
   showOverlay('Sending settings to device…');
   try {
     await device.saveAll(state.global, state.routes, { noteMap: state.noteMap, ccMap: state.ccMap, lpActions: state.lpActions, scale: state.scale, arps: state.arps, echo: state.echo, stutter: state.stutter, looper: state.looper, plock: state.plock }, (done, total) => setOverlayProgress(done, total));

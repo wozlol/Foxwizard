@@ -696,7 +696,9 @@ export class DeviceLink extends EventTarget {
         // 1.87: counts of a Note On for a key already down, a Note Off for a key not down, and the loop's own
         // orphan Note Offs and repeated Note Ons.
         repeatOn: reply[22] ?? 0, strayOff: reply[23] ?? 0, loopOrphanOff: reply[24] ?? 0, loopRepeatOn: reply[25] ?? 0
-      } : null
+      } : null,
+      // 1.103: the preset in use and how many there are, undefined from older firmware
+      presetActive: reply[26], presetSlots: reply[27]
     };
   }
 
