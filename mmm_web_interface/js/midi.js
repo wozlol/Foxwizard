@@ -31,6 +31,10 @@ export const CMD = {
   CLEAR_PLOCKS: 0x34,
   GET_HOST_REPORT: 0x35,
   HOST_REPORT_DATA: 0x36,
+  GET_PRESETS: 0x37,
+  PRESET_DATA: 0x38,
+  SET_PRESET_SLOTS: 0x39,
+  SELECT_PRESET: 0x3A,
   COMMIT: 0x31,
   FACTORY_RESET: 0x32,
   FW_BEGIN: 0x40,
@@ -274,6 +278,7 @@ export function bytesToScale(b) {
 }
 
 const DEFAULT_TIMEOUT_MS = 1500;
+const PRESET_SELECT_TIMEOUT_MS = 4000; // the first change away from a slot also writes its file
 
 // Firmware update over SysEx (FW_BEGIN/FW_DATA/FW_END). Must match FW_CHUNK_BYTES in the firmware.
 export const FW_CHUNK_BYTES = 128;
@@ -726,6 +731,21 @@ export class DeviceLink extends EventTarget {
 
   async previewBrightness(step) {
     return this._sendMutating(CMD.PREVIEW_BRIGHTNESS, [step], step);
+  }
+
+  /** 1.101 (protocol 5): { slots 1-16, active 0-15, used a bit per slot that holds a saved preset }. */
+  async getPresets() {
+    const r = await this._sendAndWait([CMD.GET_PRESETS], CMD.PRESET_DATA, DEFAULT_TIMEOUT_MS);
+    return { slots: r[0], active: r[1], used: r[2] | (r[3] << 7) | (r[4] << 14) };
+  }
+
+  async setPresetSlots(count) {
+    return this._sendMutating(CMD.SET_PRESET_SLOTS, [count], count, PRESET_SELECT_TIMEOUT_MS);
+  }
+
+  /** The unit silences everything, loads the slot and flashes its number. Answers once the slot is live. */
+  async selectPreset(slot) {
+    return this._sendMutating(CMD.SELECT_PRESET, [slot], undefined, PRESET_SELECT_TIMEOUT_MS);
   }
 
   async commit() {

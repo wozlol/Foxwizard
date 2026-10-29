@@ -97,9 +97,9 @@ constexpr uint32_t BRIGHTNESS_PREVIEW_HOLD_MS = 400;
 
 constexpr uint8_t SYSEX_MFR_ID = 0x7D;   // reserved for non-commercial/educational use
 constexpr uint8_t SYSEX_DEVICE_ID = 0x4D; // 'M'
-constexpr uint8_t PROTOCOL_VERSION = 4; // 2: 45-byte routes with port masks, GET_STATUS. 3: clock settings, LEARN. 4: 53-byte routes with feature fields, feature blocks
+constexpr uint8_t PROTOCOL_VERSION = 5; // 2: 45-byte routes with port masks, GET_STATUS. 3: clock settings, LEARN. 4: 53-byte routes with feature fields, feature blocks. 5: presets
 constexpr uint8_t FW_VERSION_MAJOR = 1;
-constexpr uint8_t FW_VERSION_MINOR = 100;
+constexpr uint8_t FW_VERSION_MINOR = 101;
 constexpr uint8_t FW_CHUNK_BYTES = 128;          // firmware bytes per FW_DATA message, 147 once packed
 constexpr uint32_t FW_REBOOT_DELAY_MS = 300;     // lets the FW_END ACK reach the host before rebooting
 const char DEVICE_NAME[] = "FoxWizard Mini MIDI Multitool"; // long name sent in the SysEx IDENTITY_REPLY
@@ -140,6 +140,10 @@ enum SysexCmd : uint8_t {
   CMD_CLEAR_PLOCKS = 0x34, // 1.59: forget every Per-Note Parameter Lock, no payload, no reply
   CMD_GET_HOST_REPORT = 0x35, // 1.63: payload page 0 to 2 (0 or 1 before 1.74)
   CMD_HOST_REPORT_DATA = 0x36, // page, 1 when the whole report has arrived, then pack7 of that page's 120 bytes
+  CMD_GET_PRESETS = 0x37, // 1.101
+  CMD_PRESET_DATA = 0x38, // slot count, active slot (0-15), slots in use as a 16-bit mask in 7-bit bytes, low first
+  CMD_SET_PRESET_SLOTS = 0x39, // payload: the slot count, 1-16
+  CMD_SELECT_PRESET = 0x3A, // payload: the slot, 0-15. Silences everything, loads it, acknowledged once it is live
   CMD_COMMIT = 0x31,
   CMD_FACTORY_RESET = 0x32,
   CMD_FW_BEGIN = 0x40,
@@ -182,7 +186,8 @@ enum : uint8_t {
   BTN_NOTE_MOMENTARY = 8,
   BTN_NOTE_TOGGLE = 9,
   BTN_TAP_TEMPO = 10,
-  BTN_LOOPER = 11
+  BTN_LOOPER = 11,
+  BTN_PRESET = 12 // 1.101: the next preset
 };
 enum MsgKind : uint8_t {
   MK_NOTE = 0,
@@ -434,7 +439,8 @@ enum : uint8_t {
   ACT_LIVE_CHANNEL_STEP, ACT_ARP_DIV_STEP, ACT_STUTTER_LENGTH, ACT_QUAD_TOGGLE, ACT_ECHO_TOGGLE,
   ACT_NOTE_TOGGLE, ACT_PITCH_RAMP, ACT_MOD_RAMP, ACT_CC_RAMP, // 1.48
   ACT_PANIC, ACT_OCTAVE, // 1.49
-  ACT_PLOCK_CLEAR, ACT_COUNT // 1.59
+  ACT_PLOCK_CLEAR, // 1.59
+  ACT_PRESET, ACT_COUNT // 1.101: a 0 next, 1 previous, 2-17 slot 1-16
 };
 enum : uint8_t {
   TRANSPORT_PLAY = 0, TRANSPORT_STOP, TRANSPORT_CONTINUE, TRANSPORT_PAUSE, TRANSPORT_RECORD,
@@ -631,6 +637,16 @@ uint8_t liveProgram[MAX_ROUTES];
 bool looperEmitting = false;   // a loop event is going out: not captured again
 bool loopTagsAreInputs = false; // how the loop in memory was recorded, whatever the switch says now
 uint32_t lastMusicMs = 0;       // last note in or out, a loop save waits for quiet
+// Presets (1.101), see the Presets section. Not part of any preset: the slot count and the active slot.
+constexpr uint8_t PRESET_SLOTS_MAX = 16;
+uint8_t presetSlots = 1;        // 1-16
+uint8_t presetActive = 0;       // 0-15, the slot the live settings came from
+uint16_t presetFileMask = 0;    // bit n set when slot n has a file
+uint8_t presetRequest = 0xFF;   // a slot waiting for the top of the main loop, 0xFF none
+uint8_t presetAckPort = 0xFF;   // the port to tell once a requested slot is live, 0xFF none
+bool presetDeviceDirty = false; // the slot count or active slot changed, written once it is quiet
+uint32_t presetDeviceDirtyMs = 0;
+size_t eepromImageLen = 0;      // the settings image in the EEPROM buffer is this long
 fw::RollingHistory stutterHistory;
 fw::HistoryRepeater stutterRepeater;
 uint16_t stutterRouteIdx = 0xFFFF;
@@ -1240,16 +1256,33 @@ void eepromWriteBytes(size_t addr, const void *src, size_t len) {
   for (size_t i = 0; i < len; ++i) EEPROM.write(addr + i, s[i]);
 }
 
-void loadFromFlash() {
-  EEPROM.begin(EEPROM_SIZE);
+// Where a settings image is read from: the EEPROM, or a preset file while one is open (1.101).
+File *cfgFile = nullptr;
+size_t cfgLimit = EEPROM_SIZE; // the bytes in the image being read
+size_t cfgEnd = 0;             // where the image just read ended
+
+void cfgReadBytes(size_t addr, void *dst, size_t len) {
+  if (!cfgFile) { eepromReadBytes(addr, dst, len); return; }
+  memset(dst, 0, len); // a short read leaves zeros, like a save from an older firmware
+  if (cfgFile->seek(addr)) cfgFile->read((uint8_t *)dst, len);
+}
+
+uint8_t cfgByte(size_t addr) {
+  uint8_t b = 0;
+  cfgReadBytes(addr, &b, 1);
+  return b;
+}
+
+// Reads the image at the current source into the live settings. One that can't be read gives the factory defaults.
+void parseSettings() {
   uint32_t magic = 0;
-  eepromReadBytes(0, &magic, sizeof(magic));
+  cfgReadBytes(0, &magic, sizeof(magic));
   size_t addr = 4;
   uint8_t globalBytes = 6;
   uint8_t routeBytes = 41;
   if (magic == EEPROM_MAGIC_V2) {
-    globalBytes = EEPROM.read(4);
-    routeBytes = EEPROM.read(5);
+    globalBytes = cfgByte(4);
+    routeBytes = cfgByte(5);
     addr = 6;
   } else if (magic != EEPROM_MAGIC_V1) {
     setFactoryDefaults();
@@ -1261,22 +1294,30 @@ void loadFromFlash() {
   }
 
   memset(&globalSettings, 0, sizeof(globalSettings));
-  eepromReadBytes(addr, &globalSettings, min((size_t)globalBytes, sizeof(GlobalSettings)));
+  cfgReadBytes(addr, &globalSettings, min((size_t)globalBytes, sizeof(GlobalSettings)));
   addr += globalBytes;
 
   uint16_t storedCount = 0;
-  eepromReadBytes(addr, &storedCount, sizeof(storedCount));
+  cfgReadBytes(addr, &storedCount, sizeof(storedCount));
   addr += sizeof(storedCount);
-  uint16_t fits = (addr < EEPROM_SIZE) ? (uint16_t)((EEPROM_SIZE - addr) / routeBytes) : 0;
+  uint16_t fits = (addr < cfgLimit) ? (uint16_t)((cfgLimit - addr) / routeBytes) : 0;
   routeCount = min(storedCount, min(MAX_ROUTES, fits));
   for (uint16_t i = 0; i < routeCount; ++i) {
     memset(&routes[i], 0, sizeof(RouteData));
-    eepromReadBytes(addr, &routes[i], min((size_t)routeBytes, sizeof(RouteData)));
+    cfgReadBytes(addr, &routes[i], min((size_t)routeBytes, sizeof(RouteData)));
     addr += routeBytes;
   }
   loadFeatureBlocks(addr);
   recomputeAnyAftertouchMapRoutes();
   resetAllRouteNoteTracks();
+}
+
+void loadFromFlash() {
+  EEPROM.begin(EEPROM_SIZE);
+  cfgFile = nullptr;
+  cfgLimit = EEPROM_SIZE;
+  parseSettings();
+  eepromImageLen = cfgEnd;
 }
 
 // Feature blocks follow the routes: "FX" then (type, size, data) records, ending with type 0. A save
@@ -1329,17 +1370,20 @@ void resetFeatureBlocks() {
 
 void loadFeatureBlocks(size_t addr) {
   resetFeatureBlocks();
-  if (addr + 3 > EEPROM_SIZE || EEPROM.read(addr) != FEATURE_MARKER[0] || EEPROM.read(addr + 1) != FEATURE_MARKER[1]) return;
+  cfgEnd = addr;
+  if (addr + 3 > cfgLimit || cfgByte(addr) != FEATURE_MARKER[0] || cfgByte(addr + 1) != FEATURE_MARKER[1]) return;
   addr += 2;
-  while (addr + 2 <= EEPROM_SIZE) {
-    const uint8_t type = EEPROM.read(addr);
-    const uint8_t stored = EEPROM.read(addr + 1);
-    if (type == 0 || addr + 2 + stored > EEPROM_SIZE) return;
+  while (addr + 2 <= cfgLimit) {
+    const uint8_t type = cfgByte(addr);
+    const uint8_t stored = cfgByte(addr + 1);
+    if (type == 0) { cfgEnd = addr + 1; return; }
+    if (addr + 2 + stored > cfgLimit) { cfgEnd = cfgLimit; return; }
     uint8_t size;
     uint8_t *data = featureBlockData(type, size);
-    if (data) eepromReadBytes(addr + 2, data, min(size, stored));
+    if (data) cfgReadBytes(addr + 2, data, min(size, stored));
     addr += 2 + stored;
   }
+  cfgEnd = cfgLimit;
 }
 
 size_t saveFeatureBlocks(size_t addr) {
@@ -1358,7 +1402,8 @@ size_t saveFeatureBlocks(size_t addr) {
   return addr;
 }
 
-void saveToFlash() {
+// Builds the settings image in the EEPROM buffer, nothing reaches flash yet. Returns how long it is.
+size_t serializeSettings() {
   size_t addr = 0;
   const uint32_t magic = EEPROM_MAGIC_V2;
   eepromWriteBytes(addr, &magic, sizeof(magic));
@@ -1373,8 +1418,15 @@ void saveToFlash() {
     eepromWriteBytes(addr, &routes[i], sizeof(RouteData));
     addr += sizeof(RouteData);
   }
-  saveFeatureBlocks(addr);
+  eepromImageLen = saveFeatureBlocks(addr);
+  return eepromImageLen;
+}
+
+void saveToFlash() {
+  const size_t len = serializeSettings();
+  rp2040.wdt_reset();
   pauseHostForFlash(); // the host brain holds its MIDI while flash is written, like a loop save
+  presetSaveActive(len); // with several presets, the slot in use is saved to its file as well
   EEPROM.commit();
   resumeHostAfterFlash();
 }
@@ -1483,12 +1535,21 @@ bool ledFlashLit = false;
 uint32_t ledFlashAtMs = 0;
 constexpr uint32_t LED_COUNT_ON_MS = 70;
 constexpr uint32_t LED_COUNT_OFF_MS = 110;
+uint32_t ledFlashOnMs = LED_COUNT_ON_MS;
+uint32_t ledFlashOffMs = LED_COUNT_OFF_MS;
 
-void flashAllLedsCount(uint8_t count) {
+// The same count at a speed of its own: the preset number (1.101) is slower than the loop's bars.
+void flashAllLedsCountTimed(uint8_t count, uint32_t onMs, uint32_t offMs) {
   ledFlashLeft = count;
   ledFlashLit = false;
+  ledFlashOnMs = onMs;
+  ledFlashOffMs = offMs;
   ledFlashAtMs = millis() + 150; // a short gap first, so the count reads as its own thing
   setAllLedLevels(0, 0, 0);
+}
+
+void flashAllLedsCount(uint8_t count) {
+  flashAllLedsCountTimed(count, LED_COUNT_ON_MS, LED_COUNT_OFF_MS);
 }
 
 void serviceLeds() {
@@ -1496,7 +1557,7 @@ void serviceLeds() {
     if ((int32_t)(millis() - ledFlashAtMs) < 0) return;
     ledFlashLit = !ledFlashLit;
     if (!ledFlashLit) --ledFlashLeft;
-    ledFlashAtMs = millis() + (ledFlashLit ? LED_COUNT_ON_MS : LED_COUNT_OFF_MS);
+    ledFlashAtMs = millis() + (ledFlashLit ? ledFlashOnMs : ledFlashOffMs);
     setAllLedLevels(ledFlashLit ? ledOut.maxLevel : 0, ledFlashLit ? ledUsb.maxLevel : 0, ledFlashLit ? ledIn.maxLevel : 0);
     if (!ledFlashLeft) {
       ledOut.currentLevel = ledUsb.currentLevel = ledIn.currentLevel = 0;
@@ -3353,6 +3414,7 @@ uint8_t lpStatus(uint8_t b) {
     case ACT_OCTAVE: on = route != 0xFFFF && liveOctave[route] == (act.a ? 1 : -1); color = LP_ORANGE; break;
     case ACT_QUAD_TOGGLE: on = route != 0xFFFF && (routes[route].launchpadQuad & 0x01) && !quadToggleOff[route]; break;
     case ACT_NOTE_TOGGLE: case ACT_CC_TOGGLE: on = lpToggle[b]; break;
+    case ACT_PRESET: on = act.a >= 2 && act.a - 2 == presetActive; break; // a slot's button lights while it is the live one
     case ACT_LOOPER: {
       const uint8_t state = looperState();
       switch (act.a) {
@@ -3878,6 +3940,216 @@ void serviceLoopStorage() {
 }
 
 // ============================================================================================
+// Presets (1.101). Up to 16 setups on the unit, one live at a time. A slot is the settings image that saveToFlash()
+// builds, kept as a file. The EEPROM keeps the last saved one as before, so a unit that never uses presets, or whose
+// filesystem was formatted, behaves as it always did. The slot count and the active slot are not part of any preset,
+// they live in their own small file. The LED brightness and the front button being Preset stay with the unit too.
+// Changing slot silences everything, reads the file into the live settings and flashes the slot number, all at once.
+// The loop is not a preset: it stays, stopped.
+// ============================================================================================
+constexpr uint32_t PRESET_FLASH_ON_MS = 140;  // the slot number on the lights, slower than the loop's bar count
+constexpr uint32_t PRESET_FLASH_OFF_MS = 220;
+constexpr uint32_t PRESET_DEVICE_QUIET_MS = 2000;
+const char *const PRESET_DEVICE_FILE = "/device.fw";
+const char *const PRESET_TMP_FILE = "/preset.tmp";
+
+void resetButtonRuntimeState(); // defined with the front button, further down
+
+void presetPath(uint8_t slot, char *out) {
+  snprintf(out, 16, "/preset%02u.fw", (unsigned)slot + 1);
+}
+
+bool presetWriteFile(uint8_t slot, const uint8_t *image, size_t len) {
+  if (!loopFsReady || slot >= PRESET_SLOTS_MAX || len == 0 || len > EEPROM_SIZE) return false;
+  char path[16];
+  presetPath(slot, path);
+  File file = LittleFS.open(PRESET_TMP_FILE, "w");
+  if (!file) return false;
+  bool ok = file.write(image, len) == len;
+  file.close();
+  ok = ok && LittleFS.rename(PRESET_TMP_FILE, path); // replaces the old file in one step
+  if (!ok) { LittleFS.remove(PRESET_TMP_FILE); return false; }
+  presetFileMask |= (uint16_t)(1u << slot);
+  return true;
+}
+
+// Called by saveToFlash() with the image just built. Once a slot has a file it is kept up to date, even with one slot.
+void presetSaveActive(size_t len) {
+  if (presetSlots > 1 || (presetFileMask & (1u << presetActive))) presetWriteFile(presetActive, EEPROM.getConstDataPtr(), len);
+}
+
+// The slot in use has no file yet, so what is saved lives only in the EEPROM. Before it is replaced, the file is made.
+void presetEnsureActiveFile() {
+  if (presetSlots < 2 || !loopFsReady || (presetFileMask & (1u << presetActive)) || eepromImageLen == 0) return;
+  rp2040.wdt_reset();
+  pauseHostForFlash();
+  presetWriteFile(presetActive, EEPROM.getConstDataPtr(), eepromImageLen);
+  resumeHostAfterFlash();
+}
+
+bool presetWriteDevice() {
+  if (!loopFsReady) return false;
+  uint8_t b[8] = {'F', 'P', 'D', 'V', presetSlots, presetActive, 0, 0};
+  File file = LittleFS.open(PRESET_TMP_FILE, "w");
+  if (!file) return false;
+  bool ok = file.write(b, sizeof(b)) == sizeof(b);
+  file.close();
+  ok = ok && LittleFS.rename(PRESET_TMP_FILE, PRESET_DEVICE_FILE);
+  if (!ok) LittleFS.remove(PRESET_TMP_FILE);
+  return ok;
+}
+
+// Every preset file and the device file go, the unit has one slot again. A factory reset.
+void presetWipe() {
+  if (loopFsReady) {
+    char path[16];
+    for (uint8_t slot = 0; slot < PRESET_SLOTS_MAX; ++slot) {
+      presetPath(slot, path);
+      if (LittleFS.exists(path)) LittleFS.remove(path);
+    }
+    if (LittleFS.exists(PRESET_DEVICE_FILE)) LittleFS.remove(PRESET_DEVICE_FILE);
+  }
+  presetSlots = 1;
+  presetActive = 0;
+  presetFileMask = 0;
+  presetRequest = 0xFF;
+  presetDeviceDirty = false;
+}
+
+// Note to Feature, CC to Feature or a Launchpad button set to Preset.
+bool presetMapped() {
+  for (uint8_t k = 0; k < MAP_ENTRIES; ++k) {
+    if (noteMap[k].sourcePlusOne && noteMap[k].action.type == ACT_PRESET) return true;
+    if (ccMap[k].sourcePlusOne && ccMap[k].action.type == ACT_PRESET) return true;
+  }
+  for (uint8_t k = 0; k < LAUNCHPAD_BUTTONS; ++k) if (lpActions[k].type == ACT_PRESET) return true;
+  return false;
+}
+
+// With several presets, a mapping to Preset makes the front button Preset too: a preset without the mapping can then
+// always be left.
+void presetEnforceButton() {
+  if (presetSlots > 1 && globalSettings.buttonAction != BTN_PRESET && presetMapped()) {
+    globalSettings.buttonAction = BTN_PRESET;
+    resetButtonRuntimeState();
+  }
+}
+
+// Reads a slot into the live settings. No file is an empty slot, the factory defaults. What belongs to the unit stays.
+void presetLoadSlot(uint8_t slot) {
+  const uint8_t brightness = globalSettings.ledBrightnessStep;
+  const bool buttonPreset = globalSettings.buttonAction == BTN_PRESET;
+  File file;
+  if (loopFsReady && (presetFileMask & (1u << slot))) {
+    char path[16];
+    presetPath(slot, path);
+    file = LittleFS.open(path, "r");
+  }
+  if (file) {
+    cfgFile = &file;
+    cfgLimit = file.size();
+    parseSettings();
+    cfgFile = nullptr;
+    cfgLimit = EEPROM_SIZE;
+    file.close();
+  } else {
+    setFactoryDefaults();
+  }
+  globalSettings.ledBrightnessStep = brightness;
+  if (buttonPreset && presetSlots > 1) globalSettings.buttonAction = BTN_PRESET;
+  presetEnforceButton();
+  resetButtonRuntimeState();
+  applyClockConfig();
+}
+
+void presetSwap(uint8_t slot) {
+  panicSilence();
+  presetEnsureActiveFile(); // the first change away from a slot that was never saved to a file
+  presetLoadSlot(slot);
+  presetActive = slot;
+  presetDeviceDirty = true; // the active slot is written once it is quiet, a flash write would hold the clock
+  presetDeviceDirtyMs = millis();
+}
+
+// a: 0 next, 1 previous, 2-17 slot 1-16. From the front button, a mapped note, CC or Launchpad button, or Patchling
+// (ackPort, which is told once the slot is live). The change happens at the top of the next main loop pass, not in the
+// middle of handling a message that may be walking the routes.
+void presetRequestAction(uint8_t a, uint8_t ackPort) {
+  uint8_t target = presetActive;
+  if (a == 0) target = (presetActive + 1) % presetSlots;
+  else if (a == 1) target = (presetActive + presetSlots - 1) % presetSlots;
+  else if (a >= 2 && a - 2 < presetSlots) target = a - 2;
+  else {
+    if (ackPort != 0xFF) sendAck(ackPort, CMD_SELECT_PRESET, ACK_ERR_BAD_INDEX, 0, 0);
+    return;
+  }
+  presetRequest = target;
+  if (ackPort != 0xFF) presetAckPort = ackPort;
+}
+
+void presetSetSlots(uint8_t count) {
+  const bool grew = presetSlots < 2 && count > 1;
+  presetSlots = count;
+  if (grew) presetEnsureActiveFile();
+  presetWriteDevice();
+  presetEnforceButton();
+  if (presetActive >= count) presetRequestAction(2 + count - 1, 0xFF); // that slot is gone, the last one takes over
+}
+
+void servicePresets() {
+  if (presetRequest != 0xFF) {
+    const uint8_t slot = presetRequest;
+    presetRequest = 0xFF;
+    if (slot != presetActive && slot < presetSlots) presetSwap(slot);
+    flashAllLedsCountTimed(presetActive + 1, PRESET_FLASH_ON_MS, PRESET_FLASH_OFF_MS); // already there: just say which
+    if (presetAckPort != 0xFF) {
+      sendAck(presetAckPort, CMD_SELECT_PRESET, ACK_OK, presetActive, presetSlots);
+      presetAckPort = 0xFF;
+    }
+  }
+  if (presetDeviceDirty && loopFsReady) {
+    const uint32_t now = millis();
+    if (!looper.recording() && !looper.playing() && now - presetDeviceDirtyMs >= PRESET_DEVICE_QUIET_MS && now - lastMusicMs >= PRESET_DEVICE_QUIET_MS) {
+      rp2040.wdt_reset();
+      pauseHostForFlash();
+      presetWriteDevice();
+      resumeHostAfterFlash();
+      presetDeviceDirty = false;
+    }
+  }
+}
+
+// At power on, after the filesystem is up: which files exist, the slot count and the slot in use, and its file loaded.
+void presetBegin(bool factoryReset) {
+  presetSlots = 1;
+  presetActive = 0;
+  presetFileMask = 0;
+  presetRequest = 0xFF;
+  presetAckPort = 0xFF;
+  presetDeviceDirty = false;
+  if (!loopFsReady) return;
+  if (factoryReset) presetWipe();
+  char path[16];
+  for (uint8_t slot = 0; slot < PRESET_SLOTS_MAX; ++slot) {
+    presetPath(slot, path);
+    if (LittleFS.exists(path)) presetFileMask |= (uint16_t)(1u << slot);
+  }
+  File file = LittleFS.open(PRESET_DEVICE_FILE, "r");
+  if (file) {
+    uint8_t b[8] = {0};
+    if (file.read(b, sizeof(b)) == sizeof(b) && memcmp(b, "FPDV", 4) == 0 && b[4] >= 1 && b[4] <= PRESET_SLOTS_MAX) {
+      presetSlots = b[4];
+      presetActive = b[5] < b[4] ? b[5] : 0;
+    }
+    file.close();
+  }
+  // The EEPROM holds the last slot saved. If that is not the slot in use, or the slot in use was never saved, its own file
+  // (or the factory defaults for an empty slot) is what comes up.
+  if (presetSlots > 1) presetLoadSlot(presetActive);
+  presetEnforceButton();
+}
+
+// ============================================================================================
 // Per-Note Parameter Lock (1.59). The locks live in their own file, saved like the loop: once it's
 // quiet, the host brain paused for the write.
 // ============================================================================================
@@ -4306,6 +4578,9 @@ void runAction(uint16_t routeIndex, const MapAction &act, uint8_t phase, uint8_t
       break;
     case ACT_PLOCK_CLEAR:
       if (press) plockClearAll();
+      break;
+    case ACT_PRESET:
+      if (press) presetRequestAction(act.a, 0xFF);
       break;
     case ACT_OCTAVE: { // a: 0 down, 1 up. b: 0 momentary, 1 toggle, like the front button's
       const int8_t target = act.a ? 1 : -1;
@@ -5386,6 +5661,7 @@ void handleSysexCommand(uint8_t sourcePort, const uint8_t *cmdBuf, uint8_t cmdLe
       if (payload[0] == FEATURE_TYPE_NOTE_MAP) memset(noteMapToggle, 0, sizeof(noteMapToggle));
       if (payload[0] == FEATURE_TYPE_CC_MAP) { memset(ccMapToggle, 0, sizeof(ccMapToggle)); memset(ccMapHeld, 0, sizeof(ccMapHeld)); }
       if (payload[0] == FEATURE_TYPE_LP_ACTIONS) memset(lpToggle, 0, sizeof(lpToggle));
+      presetEnforceButton(); // a Preset mapping puts Preset on the front button
       sendAck(sourcePort, cmd, ACK_OK, checksum7(data, size), payload[0]);
       break;
     }
@@ -5508,6 +5784,7 @@ void handleSysexCommand(uint8_t sourcePort, const uint8_t *cmdBuf, uint8_t cmdLe
         globalSettings.tapChannel = payload[13];
         globalSettings.tapNumber = payload[14];
       }
+      presetEnforceButton();
       applyBrightnessToLeds();
       resetButtonRuntimeState();
       applyClockConfig();
@@ -5606,6 +5883,32 @@ void handleSysexCommand(uint8_t sourcePort, const uint8_t *cmdBuf, uint8_t cmdLe
       break;
     }
 
+    case CMD_GET_PRESETS: {
+      const uint16_t used = presetFileMask | (uint16_t)(1u << presetActive);
+      beginReply(CMD_PRESET_DATA);
+      appendReply(presetSlots);
+      appendReply(presetActive);
+      appendReply(used & 0x7F);
+      appendReply((used >> 7) & 0x7F);
+      appendReply((used >> 14) & 0x03);
+      sendReply(sourcePort);
+      break;
+    }
+
+    case CMD_SET_PRESET_SLOTS: {
+      if (payloadLen < 1 || payload[0] < 1 || payload[0] > PRESET_SLOTS_MAX) { sendAck(sourcePort, cmd, ACK_ERR_BAD_DATA, 0, 0); break; }
+      if (!loopFsReady) { sendAck(sourcePort, cmd, ACK_ERR_FULL, 0, 0); break; } // presets live in the filesystem
+      presetSetSlots(payload[0]);
+      sendAck(sourcePort, cmd, ACK_OK, presetSlots, presetActive);
+      break;
+    }
+
+    case CMD_SELECT_PRESET: {
+      if (payloadLen < 1 || payload[0] >= presetSlots) { sendAck(sourcePort, cmd, ACK_ERR_BAD_INDEX, 0, 0); break; }
+      presetRequestAction(2 + payload[0], sourcePort); // the swap happens at the top of the main loop, then it acknowledges
+      break;
+    }
+
     case CMD_COMMIT: {
       saveToFlash();
       sendAck(sourcePort, cmd, ACK_OK, 0, 0);
@@ -5613,6 +5916,7 @@ void handleSysexCommand(uint8_t sourcePort, const uint8_t *cmdBuf, uint8_t cmdLe
     }
 
     case CMD_FACTORY_RESET: {
+      presetWipe();
       setFactoryDefaults();
       applyBrightnessToLeds();
       resetButtonRuntimeState();
@@ -6027,7 +6331,8 @@ uint8_t resolveButtonChannel() {
   return (globalSettings.buttonParamB > 15) ? 0 : globalSettings.buttonParamB; // "All" collapses to ch1 for single-channel messages
 }
 
-void sendPanic() {
+// Everything panic does except the confirmation flashes, which hold the main loop. A preset change uses it alone.
+void panicSilence() {
   memset(noteOwners, 0, sizeof(noteOwners)); // nothing is held by anyone now
   arpPanic(); // otherwise a held arp keeps stepping right after
   echoStop();
@@ -6047,6 +6352,10 @@ void sendPanic() {
     sendToOutputs(availablePorts(), 0xB0, channel, 120, 0, 3); // All Sound Off
     serviceLeds();
   }
+}
+
+void sendPanic() {
+  panicSilence();
   drainTrsOut(); // panic goes out before the confirmation flashes
   allLedConfirmationFlashes();
 }
@@ -6256,6 +6565,7 @@ void onButtonPress() {
       break;
     case BTN_TAP_TEMPO: tapTempo(); break;
     case BTN_LOOPER: looperButtonPress(); break;
+    case BTN_PRESET: presetRequestAction(0, 0xFF); break;
   }
 }
 
@@ -6332,6 +6642,7 @@ void setup() {
   gpio_pull_up(PIN_LINK_RX); // holds the line idle with no host brain attached, so it reads nothing
 
   if (factoryResetRequested) {
+    EEPROM.begin(EEPROM_SIZE); // without it the writes below go nowhere, and the saved settings would survive the reset
     setFactoryDefaults();
     saveToFlash();
   } else {
@@ -6340,6 +6651,7 @@ void setup() {
   applyBrightnessToLeds();
   resetButtonRuntimeState();
   looperStorageBegin();
+  presetBegin(factoryResetRequested);
   routeNotesOffArmed = true;
 
   clockEngine.begin(clockConfig(), time_us_64());
@@ -6364,6 +6676,7 @@ void loop() {
   pumpHostIn();
   serviceStuckNoteGuard();
   serviceButton();
+  servicePresets(); // after every input of this pass, before anything that reads the routes
   serviceRamp();
   serviceLeds();
   serviceClock();

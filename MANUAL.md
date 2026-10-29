@@ -75,6 +75,7 @@ One action, set in Patchling with Button Action:
 | Octave Up, Octave Down | Momentary or Toggle, Channel |
 | Note Momentary, Note Toggle | Note, Channel |
 | Tap Tempo | |
+| Preset | each press switches to the next preset, see Presets |
 
 ## Routes
 
@@ -263,6 +264,7 @@ action list drives the Launchpad buttons.
 | LP Quad | turns Break Off a Quad off and on |
 | Looper | any looper action, see Looper |
 | Tap Tempo, Panic, Clear P-Locks | |
+| Preset | Next, Previous, or Slot 1 to 16, see Presets |
 
 ## Launchpad
 
@@ -411,6 +413,20 @@ Up to 16 overdub layers can be stepped back and forth. A layer removed
 with Layer Undo can still come back after newer overdubs. Removed layers
 aren't saved, so only the layers playing survive power off.
 
+## Presets
+
+The unit keeps up to 16 presets and runs one at a time. A preset is everything Patchling edits: routes, arps, Echo, Stutter, Looper settings, mappings, Launchpad buttons, Scale, clock and button settings. Set **Preset Slots** (1 to 16) next to Button Action.
+
+With 2 or more slots, Patchling shows a button per preset above Button Action. Clicking one switches the unit to that preset and loads it into Patchling. Slots with nothing saved yet start from the factory defaults and are dashed.
+
+On the unit, a preset switch is a Button Action of **Preset** (each press goes to the next slot and wraps) or a Note, CC or Launchpad button set to the **Preset** action (Next, Previous, or one slot by number). With several slots, any Preset mapping sets the front button to Preset too, so a preset without the mapping can always be left.
+
+A switch silences everything first, like Panic, and stops the loop (the loop itself stays). Then the preset is live and the lights flash the slot number, slower than the loop's bar count. Playing is not held up while they flash.
+
+Save to Device and Autosave save the preset in use. Changes you have not saved are dropped when you switch. Patchling asks first. Download Preset and Upload Preset work on the preset in use.
+
+The slot count, the slot in use, the lights brightness and the front button being Preset belong to the unit, not to a preset. The loop is the unit's, not a preset's. A Factory Reset deletes every preset.
+
 ## Configuring with Patchling
 
 1. Open the Patchling web app and connect the device over USB-C.
@@ -422,7 +438,7 @@ aren't saved, so only the layers playing survive power off.
 
 Nothing is sent to the device until it's saved.
 
-## Presets (files)
+## Preset Files
 
 - **Download Preset**: saves the current in-app state to an XML file.
 - **Upload Preset**: loads an XML file into the app. Save to Device
@@ -431,7 +447,7 @@ Nothing is sent to the device until it's saved.
 ## Factory Reset
 
 Hold the button down, then plug in the USB-C cable while still holding
-it. Resets Mode, button action, brightness, features and all routes to
+it. Resets Mode, button action, brightness, features, all routes and all presets to
 factory defaults, and writes that to flash.
 
 ## Firmware Update

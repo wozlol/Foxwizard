@@ -86,8 +86,8 @@ let nextUid = 1;
 function defaultGlobal() {
   return {
     mode: 0, buttonAction: 0, buttonParamA: 64, buttonParamB: 0, buttonToggleMomentary: 0, ledBrightnessStep: 10,
-    // Global clock, firmware 1.4 and later (protocol 3)
-    clockSource: 15, bpm: 120, beatsPerBar: 4, // 15 is Auto, the default from 1.98 beatUnit: 4, clockOut: 0, tapType: 0, tapChannel: 16, tapNumber: 0
+    // Global clock, firmware 1.4 and later (protocol 3). Source 15 is Auto, the default from 1.98.
+    clockSource: 15, bpm: 120, beatsPerBar: 4, beatUnit: 4, clockOut: 0, tapType: 0, tapChannel: 16, tapNumber: 0
   };
 }
 
@@ -139,7 +139,8 @@ const state = {
   echo: defaultEcho(),
   stutter: defaultStutter(),
   looper: defaultLooper(),
-  plock: defaultPlock() // Per-Note Parameter Lock's Delay and Glide, the locks themselves live on the device
+  plock: defaultPlock(), // Per-Note Parameter Lock's Delay and Glide, the locks themselves live on the device
+  presets: { slots: 1, active: 0, used: 0 } // 1.101: the unit's, not part of a preset. used has a bit per slot that holds a saved preset
 };
 
 const device = new DeviceLink();
@@ -306,6 +307,7 @@ const saveToDeviceBtn = document.getElementById('saveToDeviceBtn');
 function markDirty() {
   dirty = true;
   saveToDeviceBtn.classList.add('has-unsaved');
+  if (enforcePresetButton()) renderGlobalCard();
   scheduleAutosave();
 }
 
@@ -338,6 +340,7 @@ async function autosave() {
   try {
     await device.saveAll(state.global, state.routes, { noteMap: state.noteMap, ccMap: state.ccMap, lpActions: state.lpActions, scale: state.scale, arps: state.arps, echo: state.echo, stutter: state.stutter, looper: state.looper, plock: state.plock });
     if (!dirty) clearDirty();
+    refreshPresets().then(paintPresetRow).catch(() => {});
   } catch (err) {
     dirty = true;
     toast('Autosave failed, use Save to Device', 'error');
@@ -349,6 +352,105 @@ async function autosave() {
 function clearDirty() {
   dirty = false;
   saveToDeviceBtn.classList.remove('has-unsaved');
+}
+
+// ============================================================================================
+// Presets (firmware 1.101, protocol 5). The unit keeps up to 16 setups and runs one at a time. Which slot is live and how
+// many there are belong to the unit, not to a preset. A slot button makes the unit silence everything, load that slot and
+// flash its number, then the editor loads what the unit now runs. Saving, Autosave, Download and Upload work on the slot in use.
+// ============================================================================================
+let presetSwitching = false;
+
+function presetsSupported() { return device.connected && device.protocolVersion >= 5; }
+
+// A Note to Feature, CC to Feature or Launchpad button set to Preset.
+function presetMapped() {
+  return state.noteMap.some((e) => e.action?.type === ACT.PRESET) || state.ccMap.some((e) => e.action?.type === ACT.PRESET) ||
+    state.lpActions.some((a) => a?.type === ACT.PRESET);
+}
+
+// With several slots, a Preset mapping puts Preset on the front button, so any preset can always be left. The unit does the same.
+function presetButtonForced() { return presetsSupported() && state.presets.slots > 1 && presetMapped(); }
+
+function enforcePresetButton() {
+  if (!presetButtonForced() || state.global.buttonAction === 12) return false;
+  state.global.buttonAction = 12;
+  return true;
+}
+
+async function refreshPresets() {
+  state.presets = { slots: 1, active: 0, used: 0 };
+  if (!presetsSupported()) return;
+  try { state.presets = await device.getPresets(); } catch (err) { /* the buttons stay hidden */ }
+}
+
+function presetRowHtml() {
+  const p = state.presets;
+  if (!presetsSupported() || p.slots < 2) return '';
+  const buttons = Array.from({ length: p.slots }, (_, i) => {
+    const used = (p.used >> i) & 1;
+    const title = i === p.active ? `Preset ${i + 1} is live` : (used ? `Switch to preset ${i + 1}` : `Preset ${i + 1} is empty, switch to start it`);
+    return `<button type="button" class="btn preset-slot${i === p.active ? ' active' : ''}${used ? '' : ' empty'}" data-preset-slot="${i}" title="${title}" aria-pressed="${i === p.active}">${i + 1}</button>`;
+  }).join('');
+  return `<div class="preset-row"><span class="preset-row-label">Preset</span>${buttons}</div>`;
+}
+
+// After a save the slot in use holds a saved preset: restyle the buttons without redrawing the card under a field being edited.
+function paintPresetRow() {
+  globalCard.querySelectorAll('[data-preset-slot]').forEach((b) => {
+    const i = parseInt(b.dataset.presetSlot, 10);
+    b.classList.toggle('active', i === state.presets.active);
+    b.classList.toggle('empty', !((state.presets.used >> i) & 1));
+    b.setAttribute('aria-pressed', String(i === state.presets.active));
+  });
+}
+
+async function settleAutosave() {
+  clearTimeout(autosaveTimer);
+  for (let i = 0; i < 20 && autosaving; i++) await new Promise((r) => setTimeout(r, 150));
+  if (dirty) await autosave();
+}
+
+async function selectPreset(slot, dropChanges) {
+  if (!presetsSupported() || slot === state.presets.active || presetSwitching) return;
+  if (dirty && !dropChanges) {
+    if (autosaveSwitch.checked) await settleAutosave();
+    if (dirty) { askSwitchWithChanges(slot); return; }
+  }
+  presetSwitching = true;
+  try {
+    await device.selectPreset(slot);
+    await loadFromDevice(true);
+  } catch (err) {
+    toast('Could not switch preset', 'error');
+    await refreshPresets();
+    renderGlobalCard();
+  } finally {
+    presetSwitching = false;
+  }
+}
+
+function askSwitchWithChanges(slot) {
+  openDialog('Unsaved changes', `<p>Preset ${state.presets.active + 1} has changes that are not saved to the FoxWizard. Switching to preset ${slot + 1} drops them.</p>`, [
+    { label: 'Stay', kind: 'ghost' },
+    { label: 'Save, Then Switch', kind: 'primary', onClick: async () => { if (await saveToDevice()) selectPreset(slot, true); } },
+    { label: 'Switch Without Saving', kind: 'accent', onClick: () => selectPreset(slot, true) }
+  ]);
+}
+
+async function changePresetSlots(count) {
+  if (!presetsSupported() || count === state.presets.slots) return;
+  const was = state.presets.active;
+  try {
+    await device.setPresetSlots(count);
+    await refreshPresets();
+    if (state.presets.active !== was) { await loadFromDevice(true); return; } // the slot in use was cut, the unit moved to the last one
+    enforcePresetButton(); // the unit did the same when a mapping is set
+  } catch (err) {
+    toast('Could not change the number of presets', 'error');
+    await refreshPresets();
+  }
+  renderGlobalCard();
 }
 
 // ============================================================================================
@@ -713,6 +815,7 @@ const globalCard = document.getElementById('globalSettingsCard');
 const BUTTON_ACTIONS = [
   { value: 0, label: 'Panic (default)' },
   { value: 11, label: 'Looper', protocol: 4 },
+  { value: 12, label: 'Preset', protocol: 5 },
   { value: 1, label: 'Pitch Up' },
   { value: 2, label: 'Pitch Down' },
   { value: 3, label: 'Mod' },
@@ -788,6 +891,13 @@ function renderGlobalCard() {
     buttonExtraFields = '';
   }
 
+  const presetForced = presetButtonForced();
+  const presetSlotsBox = presetsSupported() ? `
+      <div class="mini-box">
+        ${miniBoxMain('Preset Slots', `<select data-preset-slots>${Array.from({ length: 16 }, (_, i) => `<option value="${i + 1}" ${state.presets.slots === i + 1 ? 'selected' : ''}>${i + 1}</option>`).join('')}</select>`)}
+        <p class="note-hint">With 2 or more, each preset gets a button above. The Preset Button Action, or a Note, CC or Launchpad button set to Preset, switches on the unit.</p>
+      </div>` : '';
+
   const brightnessPct = g.ledBrightnessStep * 10;
   const knobAngle = -150 + (g.ledBrightnessStep / 10) * 300;
   const allCollapsed = state.routes.length > 0 && state.routes.every((r) => r._collapsed);
@@ -818,13 +928,17 @@ function renderGlobalCard() {
         <p class="note-hint">Custom routes below override the main mode setting above.</p>
       </div>
 
+    ${presetRowHtml()}
+
     <div class="settings-grid">
       <div class="mini-box">
-        ${miniBoxMain('Button Action', `<select data-global-field="buttonAction">
+        ${miniBoxMain('Button Action', `<select data-global-field="buttonAction" ${presetForced ? 'disabled title="A Preset mapping sets this"' : ''}>
           ${availableButtonActions().map((a) => `<option value="${a.value}" ${g.buttonAction === a.value ? 'selected' : ''}>${a.label}</option>`).join('')}
         </select>`)}
+        ${presetForced ? '<p class="note-hint">Set by a Preset mapping.</p>' : ''}
       </div>
       ${buttonExtraFields}
+      ${presetSlotsBox}
       <div class="mini-box lights-box">
         <div class="lights-info">
           <p class="mini-box-label">Lights</p>
@@ -1444,7 +1558,12 @@ function wireKnob() {
   });
 }
 
+globalCard.addEventListener('click', (e) => {
+  const button = e.target.closest('[data-preset-slot]');
+  if (button) selectPreset(parseInt(button.dataset.presetSlot, 10));
+});
 globalCard.addEventListener('change', (e) => {
+  if (e.target.dataset.presetSlots !== undefined) { changePresetSlots(parseInt(e.target.value, 10)); return; }
   const field = e.target.dataset.globalField;
   if (!field) return;
   state.global[field] = parseInt(e.target.value, 10);
@@ -2747,6 +2866,7 @@ async function loadFromDevice(silent) {
     state.routes = routes.map((r) => ({
       _uid: nextUid++, _collapsed: false, _ccMapEnabled: r.ccMapStart !== r.ccStart, name: '', ...r
     }));
+    await refreshPresets();
     renderGlobalCard();
     renderRoutes();
     clearDirty(); // freshly pulled from the device, so local state now matches it exactly
@@ -2758,23 +2878,28 @@ async function loadFromDevice(silent) {
   }
 }
 
-saveToDeviceBtn.addEventListener('click', async () => {
-  if (!device.connected) { toast('Not connected to a device', 'error'); return; }
+// Returns whether it saved.
+async function saveToDevice() {
+  if (!device.connected) { toast('Not connected to a device', 'error'); return false; }
   if (state.routes.length > routeLimit()) {
     toast(`The FoxWizard holds up to ${routeLimit()} routes. Delete ${state.routes.length - routeLimit()} before saving.`, 'error');
-    return;
+    return false;
   }
   showOverlay('Sending settings to device…');
   try {
     await device.saveAll(state.global, state.routes, { noteMap: state.noteMap, ccMap: state.ccMap, lpActions: state.lpActions, scale: state.scale, arps: state.arps, echo: state.echo, stutter: state.stutter, looper: state.looper, plock: state.plock }, (done, total) => setOverlayProgress(done, total));
     clearDirty();
     toast('Saved to device', 'success');
+    refreshPresets().then(paintPresetRow).catch(() => {});
+    return true;
   } catch (err) {
     toast('Failed to save settings to device', 'error');
+    return false;
   } finally {
     hideOverlay();
   }
-});
+}
+saveToDeviceBtn.addEventListener('click', saveToDevice);
 
 // ============================================================================================
 // Install prompt (PWA)

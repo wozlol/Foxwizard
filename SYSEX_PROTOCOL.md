@@ -73,6 +73,10 @@ The route struct is 41 bytes → five groups of 7 + one group of 6 → packed to
 | 0x30   | PREVIEW_BRIGHTNESS    | host→dev  | step(1, 0–9) — temporary, not persisted, LEDs flash then fade   |
 | 0x31   | COMMIT                | host→dev  | (none) — writes current RAM state (global + all routes) to flash |
 | 0x32   | FACTORY_RESET         | host→dev  | (none) — software-triggered equivalent of the boot-time button hold |
+| 0x37   | GET_PRESETS           | host→dev  | (none). Protocol 5 |
+| 0x38   | PRESET_DATA           | dev→host  | slotCount (1-16), activeSlot (0-15), slots holding a saved preset as a 16-bit mask in three 7-bit bytes, low first |
+| 0x39   | SET_PRESET_SLOTS      | host→dev  | slotCount (1-16). ACK checksum is the slot count, extra is the active slot. ERR_FULL when the flash filesystem is not available |
+| 0x3A   | SELECT_PRESET         | host→dev  | slot (0-15). ACKs once the slot is live, checksum is the active slot, extra the slot count. ERR_BAD_INDEX past the slot count |
 | 0x40   | FW_BEGIN              | host→dev  | size(3) + md5 (32 lowercase hex ASCII characters). Firmware 1.2+ |
 | 0x41   | FW_DATA               | host→dev  | index(2) + pack7(up to 128 firmware bytes → up to 147 bytes). Firmware 1.2+ |
 | 0x42   | FW_END                | host→dev  | (none). Checks size and MD5, stages the install, ACKs, then reboots. Firmware 1.2+ |
@@ -359,6 +363,17 @@ for Patchling's piano. No reply.
 
 **GET_HOST_REPORT (0x35, 1.63):** payload: page (0 or 1). Reply HOST_REPORT_DATA (0x36): page, complete (1 when every piece of the report has arrived from the host brain), then pack7 of that page's 120 bytes. The 240-byte report is the host brain's record of its last recovery restart, layout in `foxwizard_link.h`. All zero until a host brain with firmware 3 or later restarts.
 
+## Presets (protocol 5, firmware 1.101)
+
+A slot is a copy of the saved settings image (the `FOX2` layout below) in the flash filesystem, `/preset01.fw` to `/preset16.fw`. The slot count and the active slot are in `/device.fw` and are not part of any preset. The EEPROM keeps the last saved image as before, so a unit with one slot works exactly as in earlier firmware.
+
+- COMMIT writes the EEPROM and, with more than one slot, the active slot's file. Once a slot has a file it is kept up to date.
+- SELECT_PRESET, the front button (button action 12) and the mapper action Preset (type 25, a: 0 next, 1 previous, 2-17 slot 1-16) all queue a change that runs at the top of the next main loop pass. It silences everything as Panic does without the blocking flashes, stops the loop without clearing it, reads the file into RAM, and flashes the slot number (140 ms on, 220 ms off). A slot without a file loads the factory defaults.
+- Kept across a change: slot count, active slot, LED brightness, and button action 12.
+- With more than one slot, a mapping to Preset in Note to Feature, CC to Feature or the Launchpad table sets button action 12. SET_GLOBAL and SET_FEATURE apply this too.
+- The active slot is written to `/device.fw` once the unit has been quiet for 2 s, since a flash write holds the clock. At power on the unit loads the file of the active slot.
+- FACTORY_RESET and the boot-time button hold delete every slot file and `/device.fw`.
+
 ## Terminology: Poly Aftertouch vs. Channel Pressure
 
 MIDI has two unrelated messages both colloquially called "aftertouch," and this protocol (and the
@@ -543,7 +558,7 @@ without touching sub-switches, range values, or the Output-side switches.
 | byte | field                  | notes |
 |------|------------------------|-------|
 | 0    | mode                   | 0=USB Adaptor Mode, 1=Router Mode |
-| 1    | buttonAction           | 0=panic, 1=pitchUp, 2=pitchDown, 3=mod, 4=ccMomentary, 5=ccToggle, 6=octaveUp, 7=octaveDown, 8=noteMomentary, 9=noteToggle |
+| 1    | buttonAction           | 0=panic, 1=pitchUp, 2=pitchDown, 3=mod, 4=ccMomentary, 5=ccToggle, 6=octaveUp, 7=octaveDown, 8=noteMomentary, 9=noteToggle, 10=tapTempo, 11=looper, 12=preset |
 | 2    | buttonParamA           | pitch/mod: ramp speed (0-127). 127 is an instant jump to the target value; 0 is the slowest ramp, taking 4.0s to sweep the full range, squared in between (seconds = 4.0 * ((127 - value) / 127)^2 — more resolution near the fast end). cc momentary/toggle: cc number. note momentary/toggle: note number (0-127). octave up/down: unused (0) |
 | 3    | buttonParamB           | channel, 0-15 = ch1-16, 16 = All. unused (0) for panic |
 | 4    | buttonToggleMomentary  | octave up/down only: 0=momentary, 1=toggle. unused elsewhere |

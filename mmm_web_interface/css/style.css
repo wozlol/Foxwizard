@@ -468,6 +468,11 @@ button.connection-pill.connecting { cursor: default; transform: none; }
   gap: 8px;
   margin-bottom: 14px;
 }
+.preset-row { display: flex; flex-wrap: wrap; align-items: center; gap: 6px; margin: 4px 0 14px; }
+.preset-row-label { font-family: 'Russo One', sans-serif; font-size: 0.95rem; color: var(--text-dim); margin-right: 6px; }
+.preset-slot { min-width: 40px; justify-content: center; padding: 8px 10px; }
+.preset-slot.empty { color: var(--text-faint); border-style: dashed; }
+.preset-slot.active { background: var(--accent-strong); border-color: var(--accent-strong); border-style: solid; color: white; }
 .main-mode-heading {
   font-family: 'Russo One', sans-serif;
   font-size: 1.6rem;

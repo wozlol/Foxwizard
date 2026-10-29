@@ -7,7 +7,8 @@ export const ACT = {
   LIVE_CHANNEL_STEP: 13, ARP_DIV_STEP: 14, STUTTER_LENGTH: 15, QUAD_TOGGLE: 16, ECHO_TOGGLE: 17, // 1.48
   NOTE_TOGGLE: 18, PITCH_RAMP: 19, MOD_RAMP: 20, CC_RAMP: 21, // 1.48, button-mode parity
   PANIC: 22, OCTAVE: 23, // 1.49, button-mode parity
-  PLOCK_CLEAR: 24 // 1.59
+  PLOCK_CLEAR: 24, // 1.59
+  PRESET: 25 // 1.101
 };
 
 export const ACTION_TYPES = [
@@ -35,8 +36,12 @@ export const ACTION_TYPES = [
   { v: ACT.CC_RAMP, l: 'CC Ramp' },
   { v: ACT.PANIC, l: 'Panic' },
   { v: ACT.OCTAVE, l: 'Octave Up/Down' },
-  { v: ACT.PLOCK_CLEAR, l: 'Clear P-Locks' }
+  { v: ACT.PLOCK_CLEAR, l: 'Clear P-Locks' },
+  { v: ACT.PRESET, l: 'Preset' }
 ];
+
+// The Preset action (1.101): the next or previous slot, or one slot by number. Values are what the firmware reads.
+export const PRESET_ACTIONS = ['Next', 'Previous', ...Array.from({ length: 16 }, (_, i) => `Slot ${i + 1}`)];
 
 // Sent as MMC, and as MIDI Start, Stop or Continue where MIDI has one.
 export const TRANSPORTS = ['Play', 'Stop', 'Continue', 'Pause', 'Record', 'Record Exit', 'Rewind', 'Fast Forward', 'Return to Start'];
@@ -74,7 +79,7 @@ export function actionToBytes(act) {
 }
 
 export function bytesToAction(b, o) {
-  const type = b[o] <= ACT.PLOCK_CLEAR ? b[o] : ACT.NONE;
+  const type = b[o] <= ACT.PRESET ? b[o] : ACT.NONE;
   return { type, a: (b[o + 1] || 0) & 0x7F, b: (b[o + 2] || 0) & 0x7F, c: (b[o + 3] || 0) & 0x7F };
 }
 
@@ -181,6 +186,9 @@ export function actionEditorHtml(act, attrs, noteSelectOptions, showColor, divis
       break;
     case ACT.LOOPER:
       fields = field('a', `<select>${LOOPER_ACTIONS.map((l, i) => opt(i, act.a, l)).join('')}</select>`);
+      break;
+    case ACT.PRESET:
+      fields = field('a', `<select>${PRESET_ACTIONS.map((l, i) => opt(i, act.a, l)).join('')}</select>`);
       break;
     case ACT.LIVE_CHANNEL_STEP:
     case ACT.ARP_DIV_STEP:

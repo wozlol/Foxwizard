@@ -23,7 +23,7 @@ Tasks:
 - [ ] Test an update over MIDI from the old layout to the new one (kit: `~/Desktop/FoxWizard-layout-test/`), then one new layout to new layout with a relabeled 1.101 test build. Keep this release free of other changes.
 - [ ] The sidecar is a separate board with its own flash and is not part of this.
 
-## Next: Preset mode (plan only so far)
+## Preset mode (1.101 built, hardware test next, kit: `~/Desktop/FoxWizard-preset-test/`)
 
 Decisions so far:
 - A new front button action, **Preset**, cycles through the preset slots. A new mappable action, **Preset**, works from Notes, CCs and Launchpad buttons.
@@ -40,14 +40,14 @@ Space (checked in the code):
 - RAM now: 45 KB free of 262 KB (82% used). MIDI 2.0 should fit. Keep the looper event slot at 12 bytes (narrow the tag for 16-bit velocity) so it does not take 24 KB more. Re-measure at each MIDI 2.0 step and keep at least 20 KB free.
 
 Tasks, in order:
-1. [ ] **Decide what is per preset and what belongs to the device.** The device keeps: Preset Slots, the active slot, LED brightness, and the front button being Preset. Recommended: the loop stays global and stops on a swap (panic already stops it without clearing it). Empty slots start as a copy of the factory defaults.
-2. [ ] **Storage layer.** Slot files `preset01` to `preset16` in the filesystem. The current EEPROM image keeps holding the active preset, so power-on loads as fast as now and old units keep their settings. The first run makes slot 1 from the EEPROM image. A save writes both the EEPROM and the slot file. Test the file format round trip on the Mac with the real structs.
-3. [ ] **Swap engine.** A silent panic (release every held note, stop arps, echo, stutter, looper without clearing, reset note tracking, Launchpad ports re-learn), load, apply (clock config, routes, features, plocks), mirror to EEPROM. The existing panic flashes the lights and waits. The swap must not. Reuse the non-blocking count flash with the slower timing.
-4. [ ] **Triggers.** The Preset front button action and the Preset Slots setting. The Preset mappable action (next, previous, and slot 1 to 16 directly), including Launchpad buttons and their lights. The forced front button rule.
-5. [ ] **Protocol.** Commands for: get and set the slot count, select a slot (does the swap), save the active preset to a slot, read slot info (used or empty). Update `SYSEX_PROTOCOL.md` and bump the protocol version.
-6. [ ] **Patchling.** The slot buttons in the master button area, live editing of the active slot, per-slot Save, Download, Upload, Autosave setting, the Preset Slots setting in the main button area, the greyed front button when mapped.
-7. [ ] **Hardware tests.** Swap while a loop plays, with arps rolling, with a note held on each device, with the JamJum flooding aftertouch. Nothing sticks, nothing doubles, the swap is instant, the flash does not delay the next note.
-8. [ ] **Manual.** A Presets section, with the rules above in plain words.
+1. [x] **Decide what is per preset and what belongs to the device.** The device keeps: Preset Slots, the active slot, LED brightness, and the front button being Preset. Recommended: the loop stays global and stops on a swap (panic already stops it without clearing it). Empty slots start as a copy of the factory defaults.
+2. [x] **Storage layer.** Slot files `preset01` to `preset16` in the filesystem. The current EEPROM image keeps holding the active preset, so power-on loads as fast as now and old units keep their settings. The first run makes slot 1 from the EEPROM image. A save writes both the EEPROM and the slot file. Test the file format round trip on the Mac with the real structs.
+3. [x] **Swap engine.** A silent panic (release every held note, stop arps, echo, stutter, looper without clearing, reset note tracking, Launchpad ports re-learn), load, apply (clock config, routes, features, plocks), mirror to EEPROM. The existing panic flashes the lights and waits. The swap must not. Reuse the non-blocking count flash with the slower timing.
+4. [x] **Triggers.** The Preset front button action and the Preset Slots setting. The Preset mappable action (next, previous, and slot 1 to 16 directly), including Launchpad buttons and their lights. The forced front button rule.
+5. [x] **Protocol.** Commands for: get and set the slot count, select a slot (does the swap), save the active preset to a slot, read slot info (used or empty). Update `SYSEX_PROTOCOL.md` and bump the protocol version.
+6. [x] **Patchling.** The slot buttons in the master button area, live editing of the active slot, per-slot Save, Download, Upload, Autosave setting, the Preset Slots setting in the main button area, the greyed front button when mapped.
+7. [ ] **Hardware tests (next).** Swap while a loop plays, with arps rolling, with a note held on each device, with the JamJum flooding aftertouch. Nothing sticks, nothing doubles, the swap is instant, the flash does not delay the next note.
+8. [x] **Manual.** A Presets section, with the rules above in plain words.
 9. [ ] Later: slot names, copy and clear a slot, a Launchpad light for the active slot.
 
 ## Next: MIDI 2.0 (see `MIDI_2_PLAN.md` and the memory note)
