@@ -109,7 +109,7 @@ Tap Tempo).
 | Setting | Options |
 |---|---|
 | BPM | 20-300, while the FoxWizard is master |
-| Clock | FoxWizard is master, Auto, or Follow a port. Following a port ignores clock from every other port. |
+| Clock | FoxWizard is master, Auto (the default), or Follow a port. Following a port ignores clock from every other port. |
 | Send Clock to every port | master, and Auto while it uses its own clock |
 | Time Signature | 1-16 beats over 2, 4, 8 or 16 |
 | Tap Tempo Trigger | a Note or CC, with Learn |
@@ -119,7 +119,8 @@ A loop recorded at Free length sets the tempo from its length.
 ### Clock: Auto
 
 In Auto, the FoxWizard uses a clock from outside when one comes in. When no clock comes in, it uses its own
-clock. This is the same Auto that other devices have.
+clock. This is the same Auto that other devices have. Auto is the default. A preset saved with an earlier
+setting keeps that setting.
 
 | The FoxWizard is | When |
 |---|---|

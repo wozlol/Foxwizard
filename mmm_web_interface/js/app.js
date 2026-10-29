@@ -87,7 +87,7 @@ function defaultGlobal() {
   return {
     mode: 0, buttonAction: 0, buttonParamA: 64, buttonParamB: 0, buttonToggleMomentary: 0, ledBrightnessStep: 10,
     // Global clock, firmware 1.4 and later (protocol 3)
-    clockSource: 0, bpm: 120, beatsPerBar: 4, beatUnit: 4, clockOut: 0, tapType: 0, tapChannel: 16, tapNumber: 0
+    clockSource: 15, bpm: 120, beatsPerBar: 4, // 15 is Auto, the default from 1.98 beatUnit: 4, clockOut: 0, tapType: 0, tapChannel: 16, tapNumber: 0
   };
 }
 

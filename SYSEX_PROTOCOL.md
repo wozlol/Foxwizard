@@ -124,7 +124,7 @@ leaves the clock settings alone.
 
 | byte | field | notes |
 |------|-------|-------|
-| 6 | clockSource | 0 the FoxWizard is master, 1-14 follow port bit 0-13 (TRS/DIN, USB Device, USB Host 1-4, TRS 2, then from 12 USB Host 5-7). 8-11 are outputs only and do nothing. 15 Auto (1.92): follows the clock of the first port to send one while that clock arrives, leads with its own at the tempo it had while none does |
+| 6 | clockSource | 0 the FoxWizard is master, 1-14 follow port bit 0-13 (TRS/DIN, USB Device, USB Host 1-4, TRS 2, then from 12 USB Host 5-7). 8-11 are outputs only and do nothing. 15 Auto (1.92, the factory setting from 1.98): follows the clock of the first port to send one while that clock arrives, leads with its own at the tempo it had while none does |
 | 7-8 | bpm | two 7-bit bytes, low first, 20-300 |
 | 9 | beatsPerBar | time signature top, 1-16 |
 | 10 | beatUnit | time signature bottom: 2, 4, 8, 16 |

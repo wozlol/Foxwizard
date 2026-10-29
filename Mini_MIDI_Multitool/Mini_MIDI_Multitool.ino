@@ -78,6 +78,7 @@ constexpr uint8_t PIN_BUTTON = 5;
 constexpr uint32_t DIN_BAUD = 31250;
 constexpr uint8_t PIN_LINK_TX = 26;
 constexpr uint8_t PIN_LINK_RX = 27;
+constexpr uint8_t CLOCK_SOURCE_AUTO = 15;       // Clock: Auto (1.92), the factory setting from 1.98
 constexpr size_t LINK_RX_BUFFER = 8192;        // filled by the PIO receive interrupt
 constexpr uint16_t LINK_RX_PAUSE_AT = 2048;     // ask the host brain to pause above this many waiting bytes
 constexpr uint16_t LINK_RX_RESUME_AT = 1024;    // and to resume below this
@@ -98,7 +99,7 @@ constexpr uint8_t SYSEX_MFR_ID = 0x7D;   // reserved for non-commercial/educatio
 constexpr uint8_t SYSEX_DEVICE_ID = 0x4D; // 'M'
 constexpr uint8_t PROTOCOL_VERSION = 4; // 2: 45-byte routes with port masks, GET_STATUS. 3: clock settings, LEARN. 4: 53-byte routes with feature fields, feature blocks
 constexpr uint8_t FW_VERSION_MAJOR = 1;
-constexpr uint8_t FW_VERSION_MINOR = 97;
+constexpr uint8_t FW_VERSION_MINOR = 98;
 constexpr uint8_t FW_CHUNK_BYTES = 128;          // firmware bytes per FW_DATA message, 147 once packed
 constexpr uint32_t FW_REBOOT_DELAY_MS = 300;     // lets the FW_END ACK reach the host before rebooting
 const char DEVICE_NAME[] = "FoxWizard Mini MIDI Multitool"; // long name sent in the SysEx IDENTITY_REPLY
@@ -1198,7 +1199,7 @@ void setFactoryDefaults() {
   globalSettings.buttonParamB = 0;
   globalSettings.buttonToggleMomentary = 0;
   globalSettings.ledBrightnessStep = 10; // 100% (scale is 0..10, step 0 = fully off)
-  globalSettings.clockSource = 0;
+  globalSettings.clockSource = CLOCK_SOURCE_AUTO; // 1.98: Auto. A save from before keeps its own setting, 0 is master
   globalSettings.bpm = 120;
   globalSettings.beatsPerBar = 4;
   globalSettings.beatUnit = 4;
@@ -1793,8 +1794,6 @@ uint16_t effectiveBpm() {
   if (bpm == 0) return 120;
   return bpm < 20 ? 20 : (bpm > 300 ? 300 : bpm);
 }
-
-constexpr uint8_t CLOCK_SOURCE_AUTO = 15;
 
 uint16_t clockFollowPort() {
   const uint8_t src = globalSettings.clockSource;
