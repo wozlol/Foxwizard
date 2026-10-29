@@ -99,7 +99,7 @@ constexpr uint8_t SYSEX_MFR_ID = 0x7D;   // reserved for non-commercial/educatio
 constexpr uint8_t SYSEX_DEVICE_ID = 0x4D; // 'M'
 constexpr uint8_t PROTOCOL_VERSION = 5; // 2: 45-byte routes with port masks, GET_STATUS. 3: clock settings, LEARN. 4: 53-byte routes with feature fields, feature blocks. 5: presets
 constexpr uint8_t FW_VERSION_MAJOR = 1;
-constexpr uint8_t FW_VERSION_MINOR = 104;
+constexpr uint8_t FW_VERSION_MINOR = 105;
 constexpr uint8_t FW_CHUNK_BYTES = 128;          // firmware bytes per FW_DATA message, 147 once packed
 constexpr uint32_t FW_REBOOT_DELAY_MS = 300;     // lets the FW_END ACK reach the host before rebooting
 const char DEVICE_NAME[] = "FoxWizard Mini MIDI Multitool"; // long name sent in the SysEx IDENTITY_REPLY
@@ -367,10 +367,11 @@ uint8_t hostReport[HOST_REPORT_BYTES];   // 1.63: the host brain's report from i
 uint8_t hostReportGot[(HOST_REPORT_BYTES / 2 + 7) / 8]; // which 2-byte pieces have arrived
 constexpr uint8_t HOST_REPORT_PAGE = 120; // bytes of the report in each reply
 
-// Stuck-note guard. Notes held from USB Host and TRS 2 inputs, by original channel and note: 0 = not
-// held, 1-4 = the USB Host port, 0x80 = TRS 2. If the host brain restarts or disappears, their Note
-// Offs never arrive, so the main brain releases them itself, through the same routes.
-uint8_t sidecarHeld[16][128];
+// Stuck-note guard. Every key held on an input, by the channel and note it arrived with, before any Launchpad translation:
+// 0 = not held, 1-7 = the USB Host port, 0x80 = TRS 2, 0x81 = USB Device, 0x82 = TRS/DIN. If the host brain restarts or
+// disappears, the Note Offs of its inputs never arrive, so the main brain releases them itself, through the same routes. A
+// preset change (1.105) releases them all, so every route, arp and feature sends the Note Offs it owes, as for a real release.
+uint8_t inputHeld[16][128];
 // 1.77: which notes the user is holding right now (bit 0), so the loop letting go of a note you're
 // still holding doesn't drop it. The loop's own holds are what loopSounding says it's playing (1.78),
 // so a flag can't be left set with nothing to clear it.
@@ -5176,6 +5177,10 @@ void processIncomingEvent(uint8_t inputDevice, uint8_t statusHi, uint8_t channel
 
   bool isNoteOn = (kind == MK_NOTE) && (statusHi == 0x90 && data2 > 0);
   if (kind == MK_NOTE) lastMusicMs = millis();
+  if (kind == MK_NOTE && !looperEmitting) {
+    inputHeld[channel & 15][data1 & 127] = !isNoteOn ? 0 :
+      (inputDevice == DEV_HOST ? currentHostPort : inputDevice == DEV_TRS2 ? 0x80 : inputDevice == DEV_USB ? 0x81 : 0x82);
+  }
 
   // A Launchpad's grid and side buttons are translated here, at the input edge, before Learn, the
   // Octave buttons, the looper or any route sees them: everything downstream gets real drum pad
@@ -5217,9 +5222,6 @@ void processIncomingEvent(uint8_t inputDevice, uint8_t statusHi, uint8_t channel
   }
 
   if (captureLearnOrTap(inputDevice, kind, isNoteOn, channel, data1, data2)) return;
-  if (kind == MK_NOTE && !looperEmitting && (inputDevice == DEV_HOST || inputDevice == DEV_TRS2)) {
-    sidecarHeld[channel][data1] = !isNoteOn ? 0 : (inputDevice == DEV_HOST ? currentHostPort : 0x80);
-  }
 
   // Octave Up/Down (front button): substitute the shifted note number before anything else sees
   // it, so route matching/aftertouch tracking/dispatch all agree on the same (possibly transposed)
@@ -6155,22 +6157,29 @@ void pumpUsbIn() {
 
 // Host brain frames: ports 1-4 are hub ports, 5 is its DIN IN, 15 is control. All parsing is
 // bounded per loop and reads only what the PIO receive interrupt has already buffered.
-// Releases every note still held from the host brain's inputs, as if its Note Off had arrived. With
-// onlyPort (1-7), just the notes from that USB Host slot.
-void releaseSidecarNotes(uint8_t onlyPort = 0) {
+// Releases every key still held, as if its Note Off had arrived on the input it came in on. With includeMain false, just
+// the host brain's inputs, and with onlyPort (1-7) just that USB Host slot.
+void releaseHeldNotes(uint8_t onlyPort, bool includeMain) {
   for (uint8_t ch = 0; ch < 16; ++ch) {
     for (uint8_t note = 0; note < 128; ++note) {
-      const uint8_t held = sidecarHeld[ch][note];
-      if (!held || (onlyPort && held != onlyPort)) continue;
-      uint8_t device = DEV_TRS2;
-      if (held != 0x80) {
+      const uint8_t held = inputHeld[ch][note];
+      if (!held) continue;
+      if (held > 0x80 && !includeMain) continue;
+      if (onlyPort && held != onlyPort) continue;
+      uint8_t device = held == 0x82 ? DEV_TRS : held == 0x81 ? DEV_USB : DEV_TRS2;
+      if (held < 0x80) {
         device = DEV_HOST;
         currentHostPort = held;
       }
-      processIncomingEvent(device, 0x80, ch, note, 0, 3); // clears sidecarHeld itself
-      sidecarHeld[ch][note] = 0;
+      processIncomingEvent(device, 0x80, ch, note, 0, 3); // clears inputHeld itself
+      inputHeld[ch][note] = 0;
     }
   }
+}
+
+// The host brain's inputs only. With onlyPort (1-7), just that USB Host slot.
+void releaseSidecarNotes(uint8_t onlyPort = 0) {
+  releaseHeldNotes(onlyPort, false);
 }
 
 // After the host brain restarts or comes back, its outputs may have missed Note Offs while it was
@@ -6345,12 +6354,14 @@ void panicStopEngines() {
   looperStop(); // the loop stays, a tap plays it again
 }
 
-// A preset change (1.103) stops the same things, then sends Reset All Controllers, All Notes Off and All Sound Off to where
+// A preset change (1.103) first releases every held key through the routes as they are, then stops the same things as panic,
+// then sends Reset All Controllers, All Notes Off and All Sound Off to where
 // the routes send, not to every channel of every port as Panic does, which would hit every device each time a preset is
 // picked. For each port: the channels of every enabled route that outputs to it (with a Live Ch override and the Break Off a
 // Quad channel), and any channel a note has been sent on, which covers input no route took. The panic goes straight to those
 // destinations, not in at the input: a route would filter or remap a CC, and a panic must not be.
 void presetSilence() {
+  releaseHeldNotes(0, true); // first the keys held right now, in at the input: each route, arp and feature sends its own Note Offs
   panicStopEngines();
   const uint16_t available = availablePorts() & ~launchpadPorts; // a Launchpad's lights are not notes
   uint16_t channelsOn[PORT_COUNT];
