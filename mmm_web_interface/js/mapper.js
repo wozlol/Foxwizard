@@ -8,7 +8,7 @@ export const ACT = {
   NOTE_TOGGLE: 18, PITCH_RAMP: 19, MOD_RAMP: 20, CC_RAMP: 21, // 1.48, button-mode parity
   PANIC: 22, OCTAVE: 23, // 1.49, button-mode parity
   PLOCK_CLEAR: 24, // 1.59
-  PRESET: 25 // 1.101
+  PRESET: 25 // 1.102
 };
 
 export const ACTION_TYPES = [
@@ -40,7 +40,7 @@ export const ACTION_TYPES = [
   { v: ACT.PRESET, l: 'Preset' }
 ];
 
-// The Preset action (1.101): the next or previous slot, or one slot by number. Values are what the firmware reads.
+// The Preset action (1.102): the next or previous slot, or one slot by number. Values are what the firmware reads.
 export const PRESET_ACTIONS = ['Next', 'Previous', ...Array.from({ length: 16 }, (_, i) => `Slot ${i + 1}`)];
 
 // Sent as MMC, and as MIDI Start, Stop or Continue where MIDI has one.

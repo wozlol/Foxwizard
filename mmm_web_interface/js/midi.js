@@ -733,7 +733,7 @@ export class DeviceLink extends EventTarget {
     return this._sendMutating(CMD.PREVIEW_BRIGHTNESS, [step], step);
   }
 
-  /** 1.101 (protocol 5): { slots 1-16, active 0-15, used a bit per slot that holds a saved preset }. */
+  /** 1.102 (protocol 5): { slots 1-16, active 0-15, used a bit per slot that holds a saved preset }. */
   async getPresets() {
     const r = await this._sendAndWait([CMD.GET_PRESETS], CMD.PRESET_DATA, DEFAULT_TIMEOUT_MS);
     return { slots: r[0], active: r[1], used: r[2] | (r[3] << 7) | (r[4] << 14) };

@@ -20,10 +20,10 @@ Tasks:
 - [x] Switch the main brain to `Flash Size = 2MB (Sketch: 1MB, FS: 1MB)` (`flash=2097152_1048576`), as 1.100. Checked in the core: the EEPROM area starts at 0x101FF000 in both layouts, and the OTA bootloader in each image carries its own filesystem address, so an update over MIDI crosses layouts.
 - [ ] First boot on the new layout: the filesystem is formatted once (the saved loop and plocks are lost once, nothing else). Say so in the release notes.
 - [x] Update `build_firmware.sh`, the Host Edition README (Arduino settings table), `SYSEX_PROTOCOL.md`, and the comment at the top of the sketch.
-- [ ] Test an update over MIDI from the old layout to the new one (kit: `~/Desktop/FoxWizard-layout-test/`), then one new layout to new layout with a relabeled 1.101 test build. Keep this release free of other changes.
+- [ ] Test an update over MIDI from the old layout to the new one (kit: `~/Desktop/FoxWizard-layout-test/`), then one new layout to new layout with a relabeled 1.102 test build. Keep this release free of other changes.
 - [ ] The sidecar is a separate board with its own flash and is not part of this.
 
-## Preset mode (1.101 built, hardware test next, kit: `~/Desktop/FoxWizard-preset-test/`)
+## Preset mode (1.102 built, hardware test next, kit: `~/Desktop/FoxWizard-preset-test/`)
 
 Decisions so far:
 - A new front button action, **Preset**, cycles through the preset slots. A new mappable action, **Preset**, works from Notes, CCs and Launchpad buttons.

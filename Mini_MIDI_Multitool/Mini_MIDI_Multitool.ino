@@ -99,7 +99,7 @@ constexpr uint8_t SYSEX_MFR_ID = 0x7D;   // reserved for non-commercial/educatio
 constexpr uint8_t SYSEX_DEVICE_ID = 0x4D; // 'M'
 constexpr uint8_t PROTOCOL_VERSION = 5; // 2: 45-byte routes with port masks, GET_STATUS. 3: clock settings, LEARN. 4: 53-byte routes with feature fields, feature blocks. 5: presets
 constexpr uint8_t FW_VERSION_MAJOR = 1;
-constexpr uint8_t FW_VERSION_MINOR = 101;
+constexpr uint8_t FW_VERSION_MINOR = 102;
 constexpr uint8_t FW_CHUNK_BYTES = 128;          // firmware bytes per FW_DATA message, 147 once packed
 constexpr uint32_t FW_REBOOT_DELAY_MS = 300;     // lets the FW_END ACK reach the host before rebooting
 const char DEVICE_NAME[] = "FoxWizard Mini MIDI Multitool"; // long name sent in the SysEx IDENTITY_REPLY
@@ -140,7 +140,7 @@ enum SysexCmd : uint8_t {
   CMD_CLEAR_PLOCKS = 0x34, // 1.59: forget every Per-Note Parameter Lock, no payload, no reply
   CMD_GET_HOST_REPORT = 0x35, // 1.63: payload page 0 to 2 (0 or 1 before 1.74)
   CMD_HOST_REPORT_DATA = 0x36, // page, 1 when the whole report has arrived, then pack7 of that page's 120 bytes
-  CMD_GET_PRESETS = 0x37, // 1.101
+  CMD_GET_PRESETS = 0x37, // 1.102
   CMD_PRESET_DATA = 0x38, // slot count, active slot (0-15), slots in use as a 16-bit mask in 7-bit bytes, low first
   CMD_SET_PRESET_SLOTS = 0x39, // payload: the slot count, 1-16
   CMD_SELECT_PRESET = 0x3A, // payload: the slot, 0-15. Silences everything, loads it, acknowledged once it is live
@@ -187,7 +187,7 @@ enum : uint8_t {
   BTN_NOTE_TOGGLE = 9,
   BTN_TAP_TEMPO = 10,
   BTN_LOOPER = 11,
-  BTN_PRESET = 12 // 1.101: the next preset
+  BTN_PRESET = 12 // 1.102: the next preset
 };
 enum MsgKind : uint8_t {
   MK_NOTE = 0,
@@ -440,7 +440,7 @@ enum : uint8_t {
   ACT_NOTE_TOGGLE, ACT_PITCH_RAMP, ACT_MOD_RAMP, ACT_CC_RAMP, // 1.48
   ACT_PANIC, ACT_OCTAVE, // 1.49
   ACT_PLOCK_CLEAR, // 1.59
-  ACT_PRESET, ACT_COUNT // 1.101: a 0 next, 1 previous, 2-17 slot 1-16
+  ACT_PRESET, ACT_COUNT // 1.102: a 0 next, 1 previous, 2-17 slot 1-16
 };
 enum : uint8_t {
   TRANSPORT_PLAY = 0, TRANSPORT_STOP, TRANSPORT_CONTINUE, TRANSPORT_PAUSE, TRANSPORT_RECORD,
@@ -637,7 +637,7 @@ uint8_t liveProgram[MAX_ROUTES];
 bool looperEmitting = false;   // a loop event is going out: not captured again
 bool loopTagsAreInputs = false; // how the loop in memory was recorded, whatever the switch says now
 uint32_t lastMusicMs = 0;       // last note in or out, a loop save waits for quiet
-// Presets (1.101), see the Presets section. Not part of any preset: the slot count and the active slot.
+// Presets (1.102), see the Presets section. Not part of any preset: the slot count and the active slot.
 constexpr uint8_t PRESET_SLOTS_MAX = 16;
 uint8_t presetSlots = 1;        // 1-16
 uint8_t presetActive = 0;       // 0-15, the slot the live settings came from
@@ -1256,7 +1256,7 @@ void eepromWriteBytes(size_t addr, const void *src, size_t len) {
   for (size_t i = 0; i < len; ++i) EEPROM.write(addr + i, s[i]);
 }
 
-// Where a settings image is read from: the EEPROM, or a preset file while one is open (1.101).
+// Where a settings image is read from: the EEPROM, or a preset file while one is open (1.102).
 File *cfgFile = nullptr;
 size_t cfgLimit = EEPROM_SIZE; // the bytes in the image being read
 size_t cfgEnd = 0;             // where the image just read ended
@@ -1538,7 +1538,7 @@ constexpr uint32_t LED_COUNT_OFF_MS = 110;
 uint32_t ledFlashOnMs = LED_COUNT_ON_MS;
 uint32_t ledFlashOffMs = LED_COUNT_OFF_MS;
 
-// The same count at a speed of its own: the preset number (1.101) is slower than the loop's bars.
+// The same count at a speed of its own: the preset number (1.102) is slower than the loop's bars.
 void flashAllLedsCountTimed(uint8_t count, uint32_t onMs, uint32_t offMs) {
   ledFlashLeft = count;
   ledFlashLit = false;
@@ -3940,7 +3940,7 @@ void serviceLoopStorage() {
 }
 
 // ============================================================================================
-// Presets (1.101). Up to 16 setups on the unit, one live at a time. A slot is the settings image that saveToFlash()
+// Presets (1.102). Up to 16 setups on the unit, one live at a time. A slot is the settings image that saveToFlash()
 // builds, kept as a file. The EEPROM keeps the last saved one as before, so a unit that never uses presets, or whose
 // filesystem was formatted, behaves as it always did. The slot count and the active slot are not part of any preset,
 // they live in their own small file. The LED brightness and the front button being Preset stay with the unit too.

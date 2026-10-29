@@ -117,6 +117,18 @@ final class Link {
 }
 
 extension Link {
+  // IDENTITY_REQUEST: protocol, firmware major and minor.
+  func identity(timeout: Double = 0.8) -> (protocolVersion: Int, major: Int, minor: Int)? {
+    _ = drain()
+    send([0xF0, 0x7D, 0x4D, 0x01, 0xF7])
+    let until = Date().addingTimeInterval(timeout)
+    while Date() < until {
+      for r in drain() where r.bytes.count > 8 && r.bytes[0] == 0xF0 && r.bytes[3] == 0x02 { return (Int(r.bytes[4]), Int(r.bytes[5]), Int(r.bytes[6])) }
+      Thread.sleep(forTimeInterval: 0.01)
+    }
+    return nil
+  }
+
   // The Send Clock switch from GET_GLOBAL, nil when there is no reply.
   func sendClockOn(timeout: Double = 0.6) -> Bool? {
     _ = drain()
@@ -371,6 +383,12 @@ switch command {
 case "list":
   print("MIDI sources:"); for i in 0..<MIDIGetNumberOfSources() { print("  ", endpointName(MIDIGetSource(i))) }
   print("MIDI destinations:"); for i in 0..<MIDIGetNumberOfDestinations() { print("  ", endpointName(MIDIGetDestination(i))) }
+case "version":
+  guard let (source, destination) = findEndpoints(matching: portName), let link = Link(source: source, destination: destination) else {
+    print("No MIDI port with \"\(portName)\" in its name. Try: clock_check list"); exit(2)
+  }
+  if let id = link.identity() { print("FoxWizard main brain: firmware \(id.major).\(id.minor), protocol \(id.protocolVersion)") } else { print("No answer") ; exit(1) }
+  if let st = link.status() { print("Sidecar: \(st.host ? "present, firmware \(st.fw)" : "not present")") }
 case "selftest":
   var selftestFailed = false
   defer { }
@@ -408,5 +426,5 @@ case "out", "in", "all":
   }
   exit(summary())
 default:
-  print("clock_check list | all | out [seconds] | in [bpm] [seconds] | selftest   (--port NAME, --expect BPM)")
+  print("clock_check list | version | all | out [seconds] | in [bpm] [seconds] | selftest   (--port NAME, --expect BPM)")
 }

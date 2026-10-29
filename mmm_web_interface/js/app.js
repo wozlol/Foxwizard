@@ -140,7 +140,7 @@ const state = {
   stutter: defaultStutter(),
   looper: defaultLooper(),
   plock: defaultPlock(), // Per-Note Parameter Lock's Delay and Glide, the locks themselves live on the device
-  presets: { slots: 1, active: 0, used: 0 } // 1.101: the unit's, not part of a preset. used has a bit per slot that holds a saved preset
+  presets: { slots: 1, active: 0, used: 0 } // 1.102: the unit's, not part of a preset. used has a bit per slot that holds a saved preset
 };
 
 const device = new DeviceLink();
@@ -355,7 +355,7 @@ function clearDirty() {
 }
 
 // ============================================================================================
-// Presets (firmware 1.101, protocol 5). The unit keeps up to 16 setups and runs one at a time. Which slot is live and how
+// Presets (firmware 1.102, protocol 5). The unit keeps up to 16 setups and runs one at a time. Which slot is live and how
 // many there are belong to the unit, not to a preset. A slot button makes the unit silence everything, load that slot and
 // flash its number, then the editor loads what the unit now runs. Saving, Autosave, Download and Upload work on the slot in use.
 // ============================================================================================
