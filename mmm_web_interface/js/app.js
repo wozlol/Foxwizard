@@ -1,5 +1,5 @@
 import { ACT, MAP_ENTRIES, defaultAction, defaultLpActions, actionEditorHtml, applyActionField, usesLooper, usesLiveChannel } from './mapper.js';
-import { DeviceLink, DATA_TYPE_BITS, ROUTE_NAME_MAX_LEN, PORTS, PORT_TRS, PORT_USB, SIDECAR_INPUT_PORTS, SIDECAR_OUTPUT_PORTS, SIDECAR_TRS_PORTS, FEATURE, SCALES, LAYOUTS, defaultScale, ARP_SLOTS, ARP_MODES, ARP_MODE_ORDER, ARP_SQUARES, DIVISIONS, defaultArp, defaultEcho, defaultStutter, defaultLooper, defaultLpQuad, noTrigger, STUTTER_RUNOUTS, snapRunout, defaultPlock } from './midi.js';
+import { DeviceLink, DATA_TYPE_BITS, ROUTE_NAME_MAX_LEN, PORTS, PORT_TRS, PORT_USB, SIDECAR_INPUT_PORTS, SIDECAR_OUTPUT_PORTS, SIDECAR_TRS_PORTS, FEATURE, SCALES, LAYOUTS, routeChannelOrder, defaultScale, ARP_SLOTS, ARP_MODES, ARP_MODE_ORDER, ARP_SQUARES, DIVISIONS, defaultArp, defaultEcho, defaultStutter, defaultLooper, defaultLpQuad, noTrigger, STUTTER_RUNOUTS, snapRunout, defaultPlock } from './midi.js';
 import { serializePreset, parsePreset, downloadPreset, readPresetFile, channelsToRangeString } from './presetXml.js';
 import { attachDragReorder } from './dragReorder.js';
 import { parseHostReport, hostReportSummary, hostReportText } from './hostReport.js';
@@ -116,6 +116,8 @@ function defaultRoute() {
     monoRetrig: false,
     roundRobin: false,
     roundRobinRandom: false,
+    roundRobinPriority: false, // 1.108
+    outChOrder: [], // UI and the order block: the output channels in the order they were added, see routeChannelOrder
     commonEnabled: true,
     realtimeEnabled: true,
     clockEnabled: true,
@@ -339,7 +341,8 @@ async function autosave() {
   try {
     if (!(await unitStillOnPreset())) return; // the editor now shows what the unit runs, nothing is sent
     dirty = false; // a change made during the save marks it dirty again
-    await device.saveAll(state.global, state.routes, { noteMap: state.noteMap, ccMap: state.ccMap, lpActions: state.lpActions, scale: state.scale, arps: state.arps, echo: state.echo, stutter: state.stutter, looper: state.looper, plock: state.plock });
+    const saved = await device.saveAll(state.global, state.routes, { noteMap: state.noteMap, ccMap: state.ccMap, lpActions: state.lpActions, scale: state.scale, arps: state.arps, echo: state.echo, stutter: state.stutter, looper: state.looper, plock: state.plock });
+    if (saved?.rrOrderDropped) toast(`${saved.rrOrderDropped} Priority order${saved.rrOrderDropped > 1 ? 's' : ''} did not fit and play lowest channel first`, 'warn');
     if (!dirty) clearDirty();
     refreshPresets().then(paintPresetRow).catch(() => {});
   } catch (err) {
@@ -1724,13 +1727,35 @@ function selectOptions(options, selected) {
   return options.map((o) => `<option value="${o.v}" ${o.v === selected ? 'selected' : ''}>${o.l}</option>`).join('');
 }
 
+// Round Robin Priority (1.108): the firmware has to be new enough, and each selected output channel shows its rank in the corner.
+function priorityRobinSupported() { return !device.connected || device.protocolVersion >= 6; }
+
+function rankOf(route, c) { return routeChannelOrder(route).indexOf(c) + 1; }
+
+function showsRank(route) { return !!(route?.roundRobin && route.roundRobinPriority); }
+
+// Redraws the rank numbers on a route's output channels without redrawing the card, which would move the click that made the change.
+function paintRankBadges(index) {
+  const route = state.routes[index];
+  const order = routeChannelOrder(route);
+  routesContainer.querySelectorAll(`input[data-field="outputChannels"][data-route-index="${index}"]`).forEach((input) => {
+    const chip = input.closest('.channel-chip');
+    chip.querySelector('.chip-rank')?.remove();
+    const rank = order.indexOf(parseInt(input.dataset.bit, 10)) + 1;
+    if (showsRank(route) && input.checked && rank > 0) chip.insertAdjacentHTML('beforeend', `<span class="chip-rank">${rank}</span>`);
+  });
+}
+
 function channelGrid(index, field, mask) {
+  const route = field === 'outputChannels' ? state.routes[index] : null;
+  const order = showsRank(route) ? routeChannelOrder(route) : null;
   let html = '<div class="channel-grid">';
   for (let c = 0; c < 16; c++) {
     const checked = mask & (1 << c) ? 'checked' : '';
+    const rank = order && (mask & (1 << c)) ? `<span class="chip-rank">${order.indexOf(c) + 1}</span>` : '';
     html += `<div class="channel-chip">
       <input type="checkbox" id="ch-${field}-${index}-${c}" data-route-index="${index}" data-field="${field}" data-bit="${c}" ${checked}>
-      <label for="ch-${field}-${index}-${c}">${c + 1}</label>
+      <label for="ch-${field}-${index}-${c}">${c + 1}</label>${rank}
     </div>`;
   }
   html += '</div>';
@@ -1791,7 +1816,7 @@ function routeSummary(route) {
     ? `, Velocity ${route.velocityScale}%` : '';
   const monoRobin = [];
   if (route.monoRetrig) monoRobin.push('Mono');
-  if (route.roundRobin) monoRobin.push(route.roundRobinRandom ? 'Rand Robin' : 'Round Robin');
+  if (route.roundRobin) monoRobin.push(route.roundRobinPriority ? 'Priority Robin' : (route.roundRobinRandom ? 'Rand Robin' : 'Round Robin'));
   const monoRobinText = monoRobin.length ? `, ${monoRobin.join(', ')}` : '';
   return `${portsShort(route.inPorts)} ${inCh} → ${portsShort(route.outPorts)} ${outCh} · ${typesText}${transposeText}${velocityText}${monoRobinText}`;
 }
@@ -2488,8 +2513,9 @@ function toggleRowsHtml(route, index) {
               <div class="round-robin-row">
                 ${switchHtml(index, 'roundRobin', !!route.roundRobin, 'Round Robin')}
                 ${route.roundRobin ? switchHtml(index, 'roundRobinRandom', !!route.roundRobinRandom, 'Rand', 'cc-map-row-indent') : ''}
+                ${route.roundRobin && priorityRobinSupported() ? switchHtml(index, 'roundRobinPriority', !!route.roundRobinPriority, 'Priority', 'cc-map-row-indent') : ''}
               </div>
-              ${route.roundRobin ? `<p class="note-hint">Mono to Poly. ${route.roundRobinRandom ? 'Picks a random selected channel for each new note.' : 'Cycles each new note to a different selected channel.'}</p>` : ''}
+              ${route.roundRobin ? `<p class="note-hint">Mono to Poly. ${route.roundRobinPriority ? 'Each new note takes the first free selected channel, numbered in the order you added them. When all are down the oldest note gives up its channel.' : (route.roundRobinRandom ? 'Picks a random selected channel for each new note.' : 'Cycles each new note to a different selected channel.')}</p>` : ''}
             </div>`]);
   if (featuresSupported()) {
     const sections = [mapSectionHtml(route, index, 'note'), mapSectionHtml(route, index, 'cc'), launchpadSectionHtml(route, index),
@@ -2530,7 +2556,7 @@ function refreshRouteCard(index, animateStaple) {
 }
 
 // Structural changes (need a re-render): checkboxes that reveal/hide fields, staple toggle, delete
-const STRUCTURAL_FIELDS = new Set(['note', 'cc', 'ccMapEnabled', 'aftertouch', 'aftertouchMap', 'pressure', 'pressureMap', 'allInputTypes', 'allInputChannels', 'allInPorts', 'allOutPorts', 'monoRetrig', 'roundRobin', 'roundRobinRandom', 'noteToCc', 'ccMapOn', 'launchpad', 'scaleOn', 'autoChord', 'arpOn', 'echoOn', 'stutterOn', 'lpQuadEnabled', 'stutterGlobal', 'echoGlobal', 'echoLatching', 'plockOn']);
+const STRUCTURAL_FIELDS = new Set(['note', 'cc', 'ccMapEnabled', 'aftertouch', 'aftertouchMap', 'pressure', 'pressureMap', 'allInputTypes', 'allInputChannels', 'allInPorts', 'allOutPorts', 'monoRetrig', 'roundRobin', 'roundRobinRandom', 'roundRobinPriority', 'noteToCc', 'ccMapOn', 'launchpad', 'scaleOn', 'autoChord', 'arpOn', 'echoOn', 'stutterOn', 'lpQuadEnabled', 'stutterGlobal', 'echoGlobal', 'echoLatching', 'plockOn']);
 
 routesContainer.addEventListener('click', (e) => {
   const actionEl = e.target.closest('[data-action]');
@@ -2575,7 +2601,7 @@ routesContainer.addEventListener('change', (e) => {
   // the Looper row itself follow, so they redraw everything rather than just this card.
   if (field === 'launchpad' || field === 'noteToCc' || field === 'ccMapOn') renderRoutes();
   else if (STRUCTURAL_FIELDS.has(field)) refreshRouteCard(parseInt(index, 10));
-  if (field === 'outputChannels') updateChannelWarning(parseInt(index, 10));
+  if (field === 'outputChannels') { updateChannelWarning(parseInt(index, 10)); paintRankBadges(parseInt(index, 10)); }
   syncMasterSwitches(parseInt(index, 10));
   syncRouteLive(parseInt(index, 10));
 });
@@ -2590,8 +2616,9 @@ routesContainer.addEventListener('dblclick', (e) => {
   e.preventDefault();
   const index = parseInt(box.dataset.routeIndex, 10);
   state.routes[index][field] = 1 << parseInt(box.dataset.bit, 10);
+  if (field === 'outputChannels') state.routes[index].outChOrder = [parseInt(box.dataset.bit, 10)];
   box.closest('.channel-grid').querySelectorAll('input').forEach((el) => { el.checked = el === box; });
-  if (field === 'outputChannels') updateChannelWarning(index);
+  if (field === 'outputChannels') { updateChannelWarning(index); paintRankBadges(index); }
   syncMasterSwitches(index);
   syncRouteLive(index);
 });
@@ -2631,7 +2658,10 @@ function applyRouteFieldChange(route, field, el) {
   }
   if (field === 'inputChannels' || field === 'outputChannels' || field === 'inPorts' || field === 'outPorts') {
     const bit = parseInt(el.dataset.bit, 10);
+    // Round Robin Priority ranks the output channels in the order they were added, so that order is kept as they come and go.
+    const before = field === 'outputChannels' ? routeChannelOrder(route) : null;
     if (el.checked) route[field] |= (1 << bit); else route[field] &= ~(1 << bit);
+    if (before) route.outChOrder = el.checked ? [...before, bit] : before.filter((c) => c !== bit);
     return;
   }
   if (field === 'note') { setTypeFlag(route, DATA_TYPE_BITS.note, el.checked); return; }
@@ -2649,7 +2679,8 @@ function applyRouteFieldChange(route, field, el) {
   if (field === 'monoRetrig') { route.monoRetrig = el.checked; return; }
   if (field === 'looperEnabled') { route.looperEnabled = el.checked; renderLooperRow(); return; }
   if (field === 'roundRobin') { route.roundRobin = el.checked; return; }
-  if (field === 'roundRobinRandom') { route.roundRobinRandom = el.checked; return; }
+  if (field === 'roundRobinRandom') { route.roundRobinRandom = el.checked; if (el.checked) route.roundRobinPriority = false; return; }
+  if (field === 'roundRobinPriority') { route.roundRobinPriority = el.checked; if (el.checked) route.roundRobinRandom = false; return; }
   if (field === 'ccMapEnabled') {
     route._ccMapEnabled = el.checked;
     if (!el.checked) route.ccMapStart = route.ccStart; // switching off: snap back to "no remap"
@@ -2920,9 +2951,10 @@ async function saveToDevice() {
   if (!(await unitStillOnPreset())) return false;
   showOverlay('Sending settings to device…');
   try {
-    await device.saveAll(state.global, state.routes, { noteMap: state.noteMap, ccMap: state.ccMap, lpActions: state.lpActions, scale: state.scale, arps: state.arps, echo: state.echo, stutter: state.stutter, looper: state.looper, plock: state.plock }, (done, total) => setOverlayProgress(done, total));
+    const saved = await device.saveAll(state.global, state.routes, { noteMap: state.noteMap, ccMap: state.ccMap, lpActions: state.lpActions, scale: state.scale, arps: state.arps, echo: state.echo, stutter: state.stutter, looper: state.looper, plock: state.plock }, (done, total) => setOverlayProgress(done, total));
     clearDirty();
     toast('Saved to device', 'success');
+    if (saved?.rrOrderDropped) toast(`${saved.rrOrderDropped} Priority order${saved.rrOrderDropped > 1 ? 's' : ''} did not fit and play lowest channel first`, 'warn');
     refreshPresets().then(paintPresetRow).catch(() => {});
     return true;
   } catch (err) {

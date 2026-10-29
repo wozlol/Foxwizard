@@ -83,7 +83,63 @@ const ROUTE_BYTES_V4 = ROUTE_BYTES_V2 + 10; // +2 in 1.48 for Break Off a Quad
 export const FEATURE = { NOTE_TO_CC: 1 << 0, LAUNCHPAD: 1 << 1, SCALE: 1 << 2, AUTO_CHORD: 1 << 3, ECHO: 1 << 4, STUTTER: 1 << 5, CC_MAP: 1 << 6, PLOCK: 1 << 7 };
 
 // Feature blocks, shared by the routes that switch a feature on. Same as FEATURE_TYPE_* in the firmware.
-export const FEATURE_TYPE = { NOTE_TO_CC: 1, LAUNCHPAD: 2, SCALE: 3, ARP_1: 4, ECHO: 8, STUTTER: 9, LOOPER: 10, NOTE_MAP: 11, CC_MAP: 12, LP_ACTIONS: 13, PLOCK: 14 }; // arp slots 1-4 are 4-7
+export const FEATURE_TYPE = { NOTE_TO_CC: 1, LAUNCHPAD: 2, SCALE: 3, ARP_1: 4, ECHO: 8, STUTTER: 9, LOOPER: 10, NOTE_MAP: 11, CC_MAP: 12, LP_ACTIONS: 13, PLOCK: 14, RR_ORDER: 15 }; // arp slots 1-4 are 4-7
+
+// Round Robin Priority (1.108, protocol 6). A route with Round Robin and Priority on gives each new note the first free channel of its
+// output channels in rank order. The rank is the lowest channel first, unless the order the channels were added in differs from
+// that: those orders live in one block shared by every route, 96 bytes. An entry is the route's index + 1, the channel count, then
+// the channels 4 bits each, the first in the high nibble. A route in the default order has no entry. The firmware keeps the same
+// block, see src/rr_priority.h.
+export const RR_ORDER_POOL_BYTES = 96;
+
+// The channels a route sends to in rank order: the order kept for it that is still selected, then any selected channel that
+// order doesn't name, lowest first.
+export function routeChannelOrder(route) {
+  const mask = route.outputChannels;
+  const seen = new Set();
+  const order = [];
+  for (const c of route.outChOrder || []) {
+    if (((mask >> c) & 1) && !seen.has(c)) { seen.add(c); order.push(c); }
+  }
+  for (let c = 0; c < 16; c++) {
+    if (((mask >> c) & 1) && !seen.has(c)) order.push(c);
+  }
+  return order;
+}
+
+// The block's bytes for these routes, and how many routes' orders didn't fit.
+export function rrOrderToBytes(routes) {
+  const bytes = [];
+  let dropped = 0;
+  routes.forEach((r, i) => {
+    if (!r.roundRobin || !r.roundRobinPriority) return;
+    const order = routeChannelOrder(r);
+    if (order.length < 2 || order.every((c, k) => k === 0 || order[k - 1] < c)) return; // lowest first is the default
+    const entry = [i + 1, order.length];
+    for (let k = 0; k < order.length; k += 2) entry.push((order[k] << 4) | (order[k + 1] ?? 0));
+    if (i + 1 > 255 || bytes.length + entry.length > RR_ORDER_POOL_BYTES) { dropped++; return; }
+    bytes.push(...entry);
+  });
+  return { bytes, dropped };
+}
+
+// Puts the orders in the block onto their routes.
+export function applyRrOrder(routes, bytes) {
+  let pos = 0;
+  while (pos + 2 <= bytes.length && bytes[pos] !== 0) {
+    const count = bytes[pos + 1];
+    const size = (count + 1) >> 1;
+    if (count < 1 || count > 16 || pos + 2 + size > bytes.length) break;
+    const order = [];
+    for (let k = 0; k < count; k++) {
+      const b = bytes[pos + 2 + (k >> 1)];
+      order.push(k % 2 === 0 ? b >> 4 : b & 0x0F);
+    }
+    const route = routes[bytes[pos] - 1];
+    if (route) route.outChOrder = order;
+    pos += 2 + size;
+  }
+}
 
 // Arp, firmware 1.13. Same order as the firmware's ARP_* modes and fw::MusicalDivision.
 export const ARP_SLOTS = 4;
@@ -393,7 +449,7 @@ export function routeToBytes(r, protocolVersion = 2) {
     // one-off event, so worth gating independently), bit5=Round Robin Random (true random channel
     // pick instead of cycling — only meaningful with bit1 set).
     (r.monoRetrig ? 0x01 : 0) | (r.roundRobin ? 0x02 : 0) | (r.commonEnabled ? 0x04 : 0) |
-      (r.realtimeEnabled ? 0x08 : 0) | (r.clockEnabled ? 0x10 : 0) | (r.roundRobinRandom ? 0x20 : 0),
+      (r.realtimeEnabled ? 0x08 : 0) | (r.clockEnabled ? 0x10 : 0) | (r.roundRobinRandom ? 0x20 : 0) | (r.roundRobinPriority ? 0x40 : 0),
     ...encodeName(r.name)
   ];
   if (v2) bytes.push(r.inPorts & 0xFF, (r.inPorts >> 8) & 0xFF, r.outPorts & 0xFF, (r.outPorts >> 8) & 0xFF);
@@ -433,6 +489,8 @@ export function bytesToRoute(b) {
     realtimeEnabled: !!(b[16] & 0x08),
     clockEnabled: !!(b[16] & 0x10),
     roundRobinRandom: !!(b[16] & 0x20),
+    roundRobinPriority: !!(b[16] & 0x40), // 1.108
+    outChOrder: [], // filled from the order block, see applyRrOrder
     name: decodeName(b.slice(17, ROUTE_BYTES_V1)),
     features: b.length >= ROUTE_BYTES_V4 ? b[ROUTE_BYTES_V2] | (b[ROUTE_BYTES_V2 + 1] << 8) : 0,
     arpSlot: b.length >= ROUTE_BYTES_V4 ? b[ROUTE_BYTES_V2 + 2] : 0,
@@ -698,7 +756,9 @@ export class DeviceLink extends EventTarget {
         repeatOn: reply[22] ?? 0, strayOff: reply[23] ?? 0, loopOrphanOff: reply[24] ?? 0, loopRepeatOn: reply[25] ?? 0
       } : null,
       // 1.103: the preset in use and how many there are, undefined from older firmware
-      presetActive: reply[26], presetSlots: reply[27]
+      presetActive: reply[26], presetSlots: reply[27],
+      // 1.108: the lowest the free heap has been, in bytes, and the deepest the main stack has gone, in bytes
+      heapLowest: reply[28] === undefined ? undefined : reply[28] * 512, stackDeepest: reply[29] === undefined ? undefined : reply[29] * 16
     };
   }
 
@@ -828,12 +888,14 @@ export class DeviceLink extends EventTarget {
       features.stutter = bytesToStutter(await this.getFeature(FEATURE_TYPE.STUTTER));
       features.looper = bytesToLooper(await this.getFeature(FEATURE_TYPE.LOOPER));
       features.plock = bytesToPlock(await this.getFeature(FEATURE_TYPE.PLOCK));
+      if (this.protocolVersion >= 6) applyRrOrder(routes, await this.getFeature(FEATURE_TYPE.RR_ORDER));
     }
     return { global, routes, features };
   }
 
   /** Pushes global settings + a full route list to the device, replacing whatever is there. */
   async saveAll(global, routes, features, progressCb) {
+    let rrOrderDropped = 0;
     await this.clearAllRoutes();
     for (let i = 0; i < routes.length; i++) {
       await this.addRoute(routes[i]);
@@ -851,8 +913,14 @@ export class DeviceLink extends EventTarget {
       await this.setFeature(FEATURE_TYPE.STUTTER, stutterToBytes(features.stutter || defaultStutter()));
       await this.setFeature(FEATURE_TYPE.LOOPER, looperToBytes(features.looper || defaultLooper()));
       await this.setFeature(FEATURE_TYPE.PLOCK, plockToBytes(features.plock || defaultPlock()));
+      if (this.protocolVersion >= 6) {
+        const order = rrOrderToBytes(routes);
+        rrOrderDropped = order.dropped;
+        await this.setFeature(FEATURE_TYPE.RR_ORDER, order.bytes); // after the routes, whose indexes it names
+      }
     }
     await this.setGlobal(global);
     await this.commit();
+    return { rrOrderDropped };
   }
 }

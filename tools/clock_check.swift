@@ -95,6 +95,20 @@ final class Link {
     return out
   }
 
+  // The memory readout in GET_STATUS (1.108): the lowest the free heap has been in bytes, and the deepest the main stack has gone.
+  func memory(timeout: Double = 0.6) -> (heapLowest: Int, stackDeepest: Int)? {
+    _ = drain()
+    send([0xF0, 0x7D, 0x4D, 0x13, 0xF7])
+    let until = Date().addingTimeInterval(timeout)
+    while Date() < until {
+      for r in drain() where r.bytes.count > 34 && r.bytes[0] == 0xF0 && r.bytes[3] == 0x14 {
+        return (Int(r.bytes[4 + 28]) * 512, Int(r.bytes[4 + 29]) * 16)
+      }
+      Thread.sleep(forTimeInterval: 0.01)
+    }
+    return nil
+  }
+
   // GET_STATUS, and the tempo and clock state out of its reply: 0 not in use, 1 master, 2 following, 3 following with no clock,
   // 4 Auto leading with its own clock.
   func status(timeout: Double = 0.6) -> (bpm: Int, clock: Int, host: Bool, fw: Int)? {
@@ -389,6 +403,7 @@ case "version":
   }
   if let id = link.identity() { print("FoxWizard main brain: firmware \(id.major).\(id.minor), protocol \(id.protocolVersion)") } else { print("No answer") ; exit(1) }
   if let st = link.status() { print("Sidecar: \(st.host ? "present, firmware \(st.fw)" : "not present")") }
+  if let m = link.memory() { print("Memory: the free heap has been as low as \(m.heapLowest / 1024) KB since power on (of about 44 KB at start), the main stack has gone \(m.stackDeepest) bytes deep (of 2048)") }
 case "selftest":
   var selftestFailed = false
   defer { }

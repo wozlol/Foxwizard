@@ -61,6 +61,7 @@
 #include "src/rolling_history.h"
 #include "src/looper.h"
 #include "src/loop_lock.h"
+#include "src/rr_priority.h"
 
 // ============================================================================================
 // Constants
@@ -97,9 +98,9 @@ constexpr uint32_t BRIGHTNESS_PREVIEW_HOLD_MS = 400;
 
 constexpr uint8_t SYSEX_MFR_ID = 0x7D;   // reserved for non-commercial/educational use
 constexpr uint8_t SYSEX_DEVICE_ID = 0x4D; // 'M'
-constexpr uint8_t PROTOCOL_VERSION = 5; // 2: 45-byte routes with port masks, GET_STATUS. 3: clock settings, LEARN. 4: 53-byte routes with feature fields, feature blocks. 5: presets
+constexpr uint8_t PROTOCOL_VERSION = 5; // 2: 45-byte routes with port masks, GET_STATUS. 3: clock settings, LEARN. 4: 53-byte routes with feature fields, feature blocks. 5: presets. 6: Round Robin Priority order block
 constexpr uint8_t FW_VERSION_MAJOR = 1;
-constexpr uint8_t FW_VERSION_MINOR = 107;
+constexpr uint8_t FW_VERSION_MINOR = 108;
 constexpr uint8_t FW_CHUNK_BYTES = 128;          // firmware bytes per FW_DATA message, 147 once packed
 constexpr uint32_t FW_REBOOT_DELAY_MS = 300;     // lets the FW_END ACK reach the host before rebooting
 const char DEVICE_NAME[] = "FoxWizard Mini MIDI Multitool"; // long name sent in the SysEx IDENTITY_REPLY
@@ -220,7 +221,7 @@ struct RouteData {
   uint8_t ccMapStart;
   uint8_t atMapCC;    // destination CC number when typeFlags bit7 is set (poly aftertouch remapped to CC)
   uint8_t cpMapCC;    // bit7=channel pressure remapped to CC, bits6-0=destination CC number
-  uint8_t flags2;     // bit0=Mono Retrig, bit1=Round Robin, bit2=System Common, bit3=System Realtime (Transport, everything but Clock), bit4=MIDI Clock, bit5=Round Robin Random (true random channel pick instead of cycling; only meaningful with bit1 set)
+  uint8_t flags2;     // bit0=Mono Retrig, bit1=Round Robin, bit2=System Common, bit3=System Realtime (Transport, everything but Clock), bit4=MIDI Clock, bit5=Round Robin Random (true random channel pick instead of cycling; only meaningful with bit1 set), bit6=Round Robin Priority (1.108, the first free channel in rank order; with bit1 set, wins over bit5)
   char name[ROUTE_NAME_MAX_LEN]; // ASCII, zero-padded, not necessarily NUL-terminated if it fills the buffer
   uint16_t inPorts;   // PORT_* inputs, used when flags bit6 is set
   uint16_t outPorts;  // PORT_* outputs, used when flags bit6 is set
@@ -422,7 +423,8 @@ constexpr uint8_t FEATURE_TYPE_NOTE_MAP = FEATURE_TYPE_LOOPER + 1; // 11, Note t
 constexpr uint8_t FEATURE_TYPE_CC_MAP = FEATURE_TYPE_NOTE_MAP + 1;  // 12, CC to Feature
 constexpr uint8_t FEATURE_TYPE_LP_ACTIONS = FEATURE_TYPE_CC_MAP + 1; // 13, Launchpad buttons
 constexpr uint8_t FEATURE_TYPE_PLOCK = FEATURE_TYPE_LP_ACTIONS + 1; // 14, Per-Note Parameter Lock
-constexpr uint8_t FEATURE_TYPE_LAST = FEATURE_TYPE_PLOCK;
+constexpr uint8_t FEATURE_TYPE_RR_ORDER = FEATURE_TYPE_PLOCK + 1; // 15, Round Robin Priority channel orders, shared by all routes, see rr_priority.h
+constexpr uint8_t FEATURE_TYPE_LAST = FEATURE_TYPE_RR_ORDER;
 
 // Launchpad: the 16 round buttons, top row left to right (CC 104-111) then the side column top to
 // bottom (X-Y notes 8, 24 ... 120). Each runs a mapper action.
@@ -648,6 +650,12 @@ uint8_t presetAckPort = 0xFF;   // the port to tell once a requested slot is liv
 bool presetDeviceDirty = false; // the slot count or active slot changed, written once it is quiet
 uint32_t presetDeviceDirtyMs = 0;
 size_t eepromImageLen = 0;      // the settings image in the EEPROM buffer is this long
+uint8_t rrOrderPool[fw::kRrOrderPoolBytes]; // 1.108: Round Robin Priority channel orders, one block for every route
+
+// 1.108: how much room is left. The lowest the free heap has been since power on, and how deep the main stack has gone: the stack is
+// painted with a pattern at power on and the deepest write is what is left of it. Reported in GET_STATUS.
+extern "C" char __StackBottom, __StackTop;
+uint32_t heapLowestFree = 0xFFFFFFFF;
 fw::RollingHistory stutterHistory;
 fw::HistoryRepeater stutterRepeater;
 uint16_t stutterRouteIdx = 0xFFFF;
@@ -1145,6 +1153,34 @@ void sendRouteNote(uint16_t routeIndex, const RouteData &r, bool on, uint8_t not
   // pick — only meaningful while Round Robin itself is on, same as the web UI only showing it then.
   RouteNoteTrack &t = routeNoteTracks[routeIndex];
   RouteNoteSlot *slot = on ? routeNoteFindOrAllocSlot(t, note) : routeNoteFindSlot(t, note);
+
+  // Priority (1.108): the first free channel in rank order, and when every one is down the oldest note gives its up. The slot
+  // remembers where each note sounds, so its Note Off lands there. Without a slot (more keys held than the route can track)
+  // a note is not played, since its Note Off could not be placed.
+  if (r.flags2 & 0x40) {
+    auto emit = [&](uint8_t channel, bool noteOn, int16_t pitch) {
+      if (pitch < 0 || pitch > 127) return;
+      PendingMsg msg;
+      msg.used = true;
+      msg.channel = channel;
+      msg.kind = MK_NOTE;
+      msg.statusHi = noteOn ? 0x90 : 0x80;
+      msg.number = (uint8_t)pitch;
+      msg.data1 = (uint8_t)pitch;
+      msg.data2 = noteOn ? data2 : 0;
+      msg.len = 3;
+      routeNoteOut(r, msg);
+    };
+    if (on) {
+      uint8_t ranked[16];
+      const uint8_t n = fw::rrRanked(outMask, rrOrderPool, routeIndex, ranked);
+      fw::rrNoteOn(t.slots, ROUTE_NOTE_TRACK_DEPTH, t.orderCounter, slot, !(r.flags2 & 0x01), ranked, n, transpose, emit);
+    } else {
+      fw::rrNoteOff(slot, transpose, emit);
+    }
+    return;
+  }
+
   bool randomMode = r.flags2 & 0x20;
   uint8_t channel;
   if (on) {
@@ -1252,7 +1288,7 @@ constexpr uint32_t EEPROM_MAGIC_V1 = 0x464F5831; // "FOX1"
 constexpr uint32_t EEPROM_MAGIC_V2 = 0x464F5832; // "FOX2"
 constexpr size_t EEPROM_SIZE = 4096;             // the core's EEPROM maximum
 // Feature blocks after the routes: marker (2), each block's type and size (2) and data, end byte (1).
-constexpr size_t FEATURE_BLOCKS_BYTES = 2 + (2 + sizeof(MapEntry) * MAP_ENTRIES) * 2 + (2 + sizeof(MapAction) * LAUNCHPAD_BUTTONS) + (2 + sizeof(ScaleSettings)) + ARP_SLOTS * (2 + sizeof(ArpSettings)) + (2 + sizeof(EchoSettings)) + (2 + sizeof(StutterSettings)) + (2 + sizeof(LooperSettings)) + (2 + sizeof(PlockSettings)) + 1;
+constexpr size_t FEATURE_BLOCKS_BYTES = 2 + (2 + sizeof(MapEntry) * MAP_ENTRIES) * 2 + (2 + sizeof(MapAction) * LAUNCHPAD_BUTTONS) + (2 + sizeof(ScaleSettings)) + ARP_SLOTS * (2 + sizeof(ArpSettings)) + (2 + sizeof(EchoSettings)) + (2 + sizeof(StutterSettings)) + (2 + sizeof(LooperSettings)) + (2 + sizeof(PlockSettings)) + (2 + fw::kRrOrderPoolBytes) + 1;
 static_assert(4 + 2 + sizeof(GlobalSettings) + 2 + MAX_ROUTES * sizeof(RouteData) + FEATURE_BLOCKS_BYTES <= EEPROM_SIZE,
               "saved settings must fit the EEPROM area, lower MAX_ROUTES if routes or feature blocks grow");
 
@@ -1345,6 +1381,7 @@ uint8_t *featureBlockData(uint8_t type, uint8_t &size) {
   if (type == FEATURE_TYPE_CC_MAP) { size = sizeof(ccMap); return (uint8_t *)ccMap; }
   if (type == FEATURE_TYPE_LP_ACTIONS) { size = sizeof(lpActions); return (uint8_t *)lpActions; }
   if (type == FEATURE_TYPE_PLOCK) { size = sizeof(plockSettings); return (uint8_t *)&plockSettings; }
+  if (type == FEATURE_TYPE_RR_ORDER) { size = sizeof(rrOrderPool); return rrOrderPool; }
   size = 0;
   return nullptr;
 }
@@ -1376,6 +1413,7 @@ void resetFeatureBlocks() {
   memset(&stutterSettings, 0, sizeof(stutterSettings));
   memset(&looperSettings, 0, sizeof(looperSettings));
   memset(&plockSettings, 0, sizeof(plockSettings));
+  memset(rrOrderPool, 0, sizeof(rrOrderPool));
 }
 
 void loadFeatureBlocks(size_t addr) {
@@ -1403,6 +1441,10 @@ size_t saveFeatureBlocks(size_t addr) {
     uint8_t size;
     const uint8_t *data = featureBlockData(type, size);
     if (!data) continue;
+    if (type == FEATURE_TYPE_RR_ORDER) { // only what is in use, and nothing at all when no route has a custom order
+      size = fw::rrOrderUsed(rrOrderPool);
+      if (size == 0) continue;
+    }
     EEPROM.write(addr++, type);
     EEPROM.write(addr++, size);
     eepromWriteBytes(addr, data, size);
@@ -5814,6 +5856,9 @@ void handleSysexCommand(uint8_t sourcePort, const uint8_t *cmdBuf, uint8_t cmdLe
       // 1.103: the preset in use and how many there are, so Patchling sees a change made on the unit.
       appendReply(presetActive);
       appendReply(presetSlots);
+      // 1.108: the lowest the free heap has been, in 512-byte units, and the deepest the main stack has gone, in 16-byte units, 127 at most.
+      appendReply((uint8_t)min<uint32_t>(127, (heapLowestFree == 0xFFFFFFFF ? rp2040.getFreeHeap() : heapLowestFree) / 512));
+      appendReply((uint8_t)min<uint32_t>(127, stackUsedBytes() / 16));
       perfLoopMaxUs = perfLinkLimitHits = perfInputHeldBack = perfLinkHigh = perfTrsHigh = perfUsbHigh = 0;
       perfRepeatOn = perfStrayOff = perfLoopOrphanOff = perfLoopRepeatOn = 0;
       sendReply(sourcePort);
@@ -5937,6 +5982,7 @@ void handleSysexCommand(uint8_t sourcePort, const uint8_t *cmdBuf, uint8_t cmdLe
       if (idx >= routeCount) { sendAck(sourcePort, cmd, ACK_ERR_BAD_INDEX, 0, 0); break; }
       for (uint16_t i = idx; i + 1 < routeCount; ++i) routes[i] = routes[i + 1];
       routeCount--;
+      fw::rrOrderRemoveRoute(rrOrderPool, idx); // the routes after it moved down one, and so did their orders
       recomputeAnyAftertouchMapRoutes();
       resetAllRouteNoteTracks();
       sendAck(sourcePort, cmd, ACK_OK, 0, idx);
@@ -5955,6 +6001,7 @@ void handleSysexCommand(uint8_t sourcePort, const uint8_t *cmdBuf, uint8_t cmdLe
         for (uint16_t i = from; i > to; --i) routes[i] = routes[i - 1];
       }
       routes[to] = moved;
+      fw::rrOrderMoveRoute(rrOrderPool, from, to);
       resetAllRouteNoteTracks(); // route order changed, so per-index tracking state would be misattributed otherwise
       sendAck(sourcePort, cmd, ACK_OK, 0, to);
       break;
@@ -5962,6 +6009,7 @@ void handleSysexCommand(uint8_t sourcePort, const uint8_t *cmdBuf, uint8_t cmdLe
 
     case CMD_CLEAR_ALL_ROUTES: {
       routeCount = 0;
+      memset(rrOrderPool, 0, sizeof(rrOrderPool));
       recomputeAnyAftertouchMapRoutes();
       resetAllRouteNoteTracks();
       sendAck(sourcePort, cmd, ACK_OK, 0, 0);
@@ -6299,6 +6347,26 @@ void serviceStuckNoteGuard() {
 
 // The clock and the arps are the timing that has to stay put, so they run first each loop, and again every
 // few input messages, instead of waiting for a long run of input to finish (1.84).
+void paintStack() {
+  const uint8_t *sp = (const uint8_t *)__builtin_frame_address(0);
+  for (uint8_t *p = (uint8_t *)&__StackBottom; p + 128 < sp; ++p) *p = 0xA5; // below the live stack, with room to spare
+}
+
+uint16_t stackUsedBytes() {
+  const uint8_t *p = (const uint8_t *)&__StackBottom;
+  while (p < (const uint8_t *)&__StackTop && *p == 0xA5) ++p;
+  return (uint16_t)((const uint8_t *)&__StackTop - p);
+}
+
+void sampleMemory() {
+  static uint32_t lastMs = 0;
+  const uint32_t now = millis();
+  if (now - lastMs < 500) return;
+  lastMs = now;
+  const uint32_t freeNow = rp2040.getFreeHeap();
+  if (freeNow < heapLowestFree) heapLowestFree = freeNow;
+}
+
 void serviceTiming() {
   serviceClock();
   serviceArps();
@@ -6742,6 +6810,7 @@ void serviceButton() {
 // Setup / loop
 // ============================================================================================
 void setup() {
+  paintStack();
   pinMode(PIN_LED_OUT, OUTPUT);
   pinMode(PIN_LED_USB, OUTPUT);
   pinMode(PIN_LED_IN, OUTPUT);
@@ -6830,6 +6899,7 @@ void loop() {
   pumpUsbOut();
   serviceLinkFlow();
   pumpLinkOut();
+  sampleMemory();
 
   const uint32_t passUs = micros() - loopStartUs;
   if (passUs > perfLoopMaxUs) perfLoopMaxUs = passUs > 65535 ? 65535 : (uint16_t)passUs;

@@ -93,7 +93,8 @@ Each route filters and transforms MIDI by:
 | Velocity % | 10-200% |
 | CC Map Start | shift the CC range to begin at this CC |
 | Mono Retrig | poly to mono, last-note priority |
-| Round Robin | each new note to the next selected output channel, or a random one (Rand) |
+| Round Robin | each new note to the next selected output channel, a random one (Rand), or the first free one (Priority) |
+| Round Robin: Priority | each new note takes the first free selected output channel, lowest number first. If that one is already sounding, the next one up, and so on, and with every channel down the oldest note gives up its channel. To rank the channels differently, clear them and select them again in the order you want: each shows its rank in its corner. A route you leave in the default order costs nothing in a preset, and a handful of routes can each have their own order |
 | Looper | whether this route's notes are recorded (shown once the looper is set up) |
 
 Routes are evaluated top to bottom. Later routes override earlier ones

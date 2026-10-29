@@ -449,6 +449,21 @@ button.connection-pill.connecting { cursor: default; transform: none; }
   cursor: pointer;
   transition: background 0.075s ease, color 0.075s ease, border-color 0.075s ease;
 }
+.chip-rank {
+  position: absolute;
+  top: -5px;
+  right: -3px;
+  min-width: 13px;
+  padding: 0 3px;
+  border-radius: 8px;
+  background: var(--amber);
+  color: #1a0f00;
+  font-size: 0.58rem;
+  font-weight: 800;
+  line-height: 13px;
+  text-align: center;
+  pointer-events: none;
+}
 .channel-chip input:checked + label {
   background: var(--accent-soft);
   border-color: var(--accent);
