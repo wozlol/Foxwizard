@@ -62,6 +62,7 @@
 #include "src/looper.h"
 #include "src/loop_lock.h"
 #include "src/rr_priority.h"
+#include "hardware/watchdog.h"
 
 // ============================================================================================
 // Constants
@@ -100,7 +101,7 @@ constexpr uint8_t SYSEX_MFR_ID = 0x7D;   // reserved for non-commercial/educatio
 constexpr uint8_t SYSEX_DEVICE_ID = 0x4D; // 'M'
 constexpr uint8_t PROTOCOL_VERSION = 6; // 2: 45-byte routes with port masks, GET_STATUS. 3: clock settings, LEARN. 4: 53-byte routes with feature fields, feature blocks. 5: presets. 6: Round Robin Priority order block
 constexpr uint8_t FW_VERSION_MAJOR = 1;
-constexpr uint8_t FW_VERSION_MINOR = 109;
+constexpr uint8_t FW_VERSION_MINOR = 110;
 constexpr uint8_t FW_CHUNK_BYTES = 128;          // firmware bytes per FW_DATA message, 147 once packed
 constexpr uint32_t FW_REBOOT_DELAY_MS = 300;     // lets the FW_END ACK reach the host before rebooting
 const char DEVICE_NAME[] = "FoxWizard Mini MIDI Multitool"; // long name sent in the SysEx IDENTITY_REPLY
@@ -656,6 +657,11 @@ uint8_t rrOrderPool[fw::kRrOrderPoolBytes]; // 1.108: Round Robin Priority chann
 // painted with a pattern at power on and the deepest write is what is left of it. Reported in GET_STATUS.
 extern "C" char __StackBottom, __StackTop;
 uint32_t heapLowestFree = 0xFFFFFFFF;
+
+// 1.110: where the main loop was when the watchdog restarted the unit. Each stage writes its number to a register that survives a
+// watchdog restart, and the next start reads it and reports it in GET_STATUS. A stage number stays until another writes over it.
+#define CRUMB(n) (watchdog_hw->scratch[2] = (uint32_t)(n))
+uint16_t lastRestartCrumb = 0; // 0: power on or a restart the unit asked for, else the stage it was in
 fw::RollingHistory stutterHistory;
 fw::HistoryRepeater stutterRepeater;
 uint16_t stutterRouteIdx = 0xFFFF;
@@ -1111,6 +1117,7 @@ void launchpadLearnPort(uint16_t port, uint16_t routeIndex) {
 }
 
 void sendRouteNote(uint16_t routeIndex, const RouteData &r, bool on, uint8_t note, uint8_t velocity) {
+  CRUMB(60);
   if (routeOutputPorts(r) == 0) return;
   int16_t transpose = routeTranspose(r);
   int16_t outNote = (int16_t)note + transpose;
@@ -1864,6 +1871,7 @@ uint16_t usbQueueFree() {
 }
 
 void pumpUsbOut() {
+  CRUMB(63);
   while (usbRtTail != usbRtHead && usb_midi.writePacket(usbRealtime[usbRtTail])) usbRtTail = (usbRtTail + 1) % USB_REALTIME_PACKETS;
   while (usbTail != usbHead && usb_midi.writePacket(usbQueue[usbTail])) usbTail = (usbTail + 1) % USB_QUEUE_PACKETS;
 }
@@ -2111,6 +2119,7 @@ uint8_t linkPortsFor(uint16_t mask, uint8_t ports[LINK_PORTS_MAX]) {
 }
 
 void sendToOutputs(uint16_t mask, uint8_t statusHi, uint8_t channel, uint8_t data1, uint8_t data2, uint8_t len) {
+  CRUMB(62);
   if (statusHi == 0x90 && data2) { // remembered for the next All Notes Off, see serviceRouteNotesOff
     for (uint8_t b = 0; b < PORT_COUNT; ++b) if ((mask & ~launchpadPorts) & (1u << b)) notedChannels[b] |= 1u << (channel & 0x0F); // lights aren't notes
   }
@@ -2320,6 +2329,7 @@ void applyRouteOutput(const RouteData &r, uint8_t inputDevice, uint8_t channel, 
 }
 
 void flushPending() {
+  CRUMB(61);
   for (uint8_t out = 0; out < PORT_COUNT; ++out) {
     for (uint8_t i = 0; i < pendingCount[out]; ++i) {
       PendingMsg &m = pending[out][i];
@@ -4384,14 +4394,19 @@ void sendTransport(uint16_t ports, uint8_t id) {
 // Live output channel on or off: what was sounding on the old channels stops, and the arp lets go.
 void setLiveChannel(uint16_t routeIndex, int8_t channel) {
   if (liveChannel[routeIndex] == channel) return;
+  CRUMB(6);
   routeReplayHeld(routeIndex, false); // every key held on this route goes off where it started
+  CRUMB(7);
   const uint16_t oldMask = routeChannelMask(routeIndex);
   const uint16_t ports = routeOutputsNow(routes[routeIndex]);
   for (uint8_t c = 0; c < 16; ++c) if (oldMask & (1u << c)) sendToOutputs(ports, 0xB0, c, 123, 0, 3); // and the old channels are told too
   const uint8_t slot = routes[routeIndex].arpSlot;
+  CRUMB(8);
   if (slot && slot <= ARP_SLOTS) arpReleaseSlot(slot - 1);
   liveChannel[routeIndex] = channel;
+  CRUMB(9);
   routeReplayHeld(routeIndex, true); // the keys still down start again on the new channel, or the route's own
+  CRUMB(10);
 }
 
 // Held notes would end up released at the wrong pitch, so the route's channels get All Notes Off
@@ -4537,6 +4552,7 @@ void looperAction(uint8_t id, bool down) {
 }
 
 void runAction(uint16_t routeIndex, const MapAction &act, uint8_t phase, uint8_t value, bool &toggle, bool fromCc) {
+  CRUMB(5);
   if (routeIndex >= routeCount || act.type == ACT_NONE) return;
   const RouteData &r = routes[routeIndex];
   const uint16_t ports = routeOutputsNow(r);
@@ -5056,6 +5072,7 @@ void arpStep(uint8_t slot, uint64_t nowUs) {
 }
 
 void serviceArps() {
+  CRUMB(64);
   const uint64_t now = time_us_64();
   static bool loopWasPlaying = false;
   const bool loopActive = looper.recording() || looper.recordingArmed() || looper.playing();
@@ -5205,6 +5222,7 @@ void routeReplayHeld(uint16_t routeIndex, bool on) {
   const uint8_t outerHost = currentHostPort;
   for (uint8_t k = 0; k < heldDispCount; ++k) {
     const HeldRec h = heldDisp[k];
+    CRUMB(20 + (k & 0x1F));
     const uint8_t device = heldDeviceFor(h.dev);
     if (device == DEV_HOST) currentHostPort = h.dev;
     noteOffSwallowed = false;
@@ -5223,6 +5241,7 @@ void routeReplayHeld(uint16_t routeIndex, bool on) {
 }
 
 void dispatchNoteEvent(uint8_t inputDevice, uint8_t channel, bool isNoteOn, uint8_t rawNote, uint8_t velocity) {
+  CRUMB(replayingHeld ? 4 : 3);
   bool matchedAny = false;
   bool matchedLooperRoute = false; // a route whose own notes these are, with its Looper switch on
   for (uint16_t i = 0; i < routeCount; ++i) {
@@ -5292,6 +5311,7 @@ void dispatchNoteEvent(uint8_t inputDevice, uint8_t channel, bool isNoteOn, uint
 }
 
 void processIncomingEvent(uint8_t inputDevice, uint8_t statusHi, uint8_t channel, uint8_t data1, uint8_t data2, uint8_t len) {
+  CRUMB(2);
   MsgKind kind;
   uint8_t number = 0;
   switch (statusHi) {
@@ -5859,6 +5879,9 @@ void handleSysexCommand(uint8_t sourcePort, const uint8_t *cmdBuf, uint8_t cmdLe
       // 1.108: the lowest the free heap has been, in 512-byte units, and the deepest the main stack has gone, in 16-byte units, 127 at most.
       appendReply((uint8_t)min<uint32_t>(127, (heapLowestFree == 0xFFFFFFFF ? rp2040.getFreeHeap() : heapLowestFree) / 512));
       appendReply((uint8_t)min<uint32_t>(127, stackUsedBytes() / 16));
+      // 1.110: the stage the main loop was in when the watchdog last restarted the unit, 0 for none. Two 7-bit bytes.
+      appendReply(lastRestartCrumb & 0x7F);
+      appendReply((lastRestartCrumb >> 7) & 0x7F);
       perfLoopMaxUs = perfLinkLimitHits = perfInputHeldBack = perfLinkHigh = perfTrsHigh = perfUsbHigh = 0;
       perfRepeatOn = perfStrayOff = perfLoopOrphanOff = perfLoopRepeatOn = 0;
       sendReply(sourcePort);
@@ -6811,6 +6834,8 @@ void serviceButton() {
 // ============================================================================================
 void setup() {
   paintStack();
+  lastRestartCrumb = watchdog_enable_caused_reboot() ? (uint16_t)watchdog_hw->scratch[2] : 0; // a timeout, not a restart the unit asked for
+  watchdog_hw->scratch[2] = 0;
   pinMode(PIN_LED_OUT, OUTPUT);
   pinMode(PIN_LED_USB, OUTPUT);
   pinMode(PIN_LED_IN, OUTPUT);
@@ -6876,10 +6901,15 @@ void loop() {
   TinyUSBDevice.task();
 #endif
 
+  CRUMB(70);
   serviceTiming(); // before any input, so a long run of it can't hold the clock up
+  CRUMB(71);
   pumpUsbIn();
+  CRUMB(72);
   pumpDinIn();
+  CRUMB(73);
   pumpHostIn();
+  CRUMB(74);
   serviceStuckNoteGuard();
   serviceButton();
   servicePresets(); // after every input of this pass, before anything that reads the routes
@@ -6887,18 +6917,24 @@ void loop() {
   serviceLeds();
   serviceClock();
   serviceArps();
+  CRUMB(75);
   serviceMapperRamps();
   serviceRouteNotesOff();
+  CRUMB(76);
   serviceLooper();
+  CRUMB(77);
   serviceStutter();
   serviceEcho();
+  CRUMB(78);
   serviceLaunchpadLights();
   servicePlocks();
   serviceLearnTimeout();
+  CRUMB(79);
   pumpTrsOut();
   pumpUsbOut();
   serviceLinkFlow();
   pumpLinkOut();
+  CRUMB(80);
   sampleMemory();
 
   const uint32_t passUs = micros() - loopStartUs;

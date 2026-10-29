@@ -83,26 +83,54 @@ final class Link {
     }
   }
 
-  // The messages that came in since the last call. SysEx is put back together across packets.
+  // The messages that came in since the last call, one each: a complete SysEx, a channel message, a real time byte. A real
+  // parser of the byte stream, since one packet can hold the end of a SysEx and the start of a note.
+  var inSysex = false
+  var pending: [UInt8] = []
+  var runningStatus: UInt8 = 0
+
+  func dataBytes(_ status: UInt8) -> Int {
+    switch status & 0xF0 {
+    case 0x80, 0x90, 0xA0, 0xB0, 0xE0: return 2
+    case 0xC0, 0xD0: return 1
+    default: return status == 0xF2 ? 2 : (status == 0xF1 || status == 0xF3) ? 1 : 0
+    }
+  }
+
   func drain() -> [Received] {
     var out: [Received] = []
     for r in inbox.take() {
-      if r.bytes.count == 1 && r.bytes[0] >= 0xF8 { out.append(r); continue }
-      var b = r.bytes
-      if !sysexTail.isEmpty || b.first == 0xF0 { sysexTail += b; if sysexTail.last == 0xF7 { out.append(Received(time: r.time, bytes: sysexTail)); sysexTail = [] } ; continue }
-      if !b.isEmpty { out.append(Received(time: r.time, bytes: b)); b = [] }
+      for b in r.bytes {
+        if b >= 0xF8 { out.append(Received(time: r.time, bytes: [b])); continue }
+        if inSysex {
+          if b < 0x80 { sysexTail.append(b); continue }
+          if b == 0xF7 { sysexTail.append(b); out.append(Received(time: r.time, bytes: sysexTail)); sysexTail = []; inSysex = false; continue }
+          sysexTail = []; inSysex = false // a status byte ends it early, and is read as the start of the next message
+        }
+        if b == 0xF0 { inSysex = true; sysexTail = [b]; pending = []; runningStatus = 0; continue }
+        if b >= 0x80 {
+          pending = [b]
+          if b < 0xF0 { runningStatus = b } else { runningStatus = 0 }
+          if dataBytes(b) == 0 { out.append(Received(time: r.time, bytes: [b])); pending = [] }
+          continue
+        }
+        if pending.isEmpty && runningStatus != 0 { pending = [runningStatus] }
+        if pending.isEmpty { continue }
+        pending.append(b)
+        if pending.count == 1 + dataBytes(pending[0]) { out.append(Received(time: r.time, bytes: pending)); pending = [] }
+      }
     }
     return out
   }
 
   // The memory readout in GET_STATUS (1.108): the lowest the free heap has been in bytes, and the deepest the main stack has gone.
-  func memory(timeout: Double = 0.6) -> (heapLowest: Int, stackDeepest: Int)? {
+  func memory(timeout: Double = 0.6) -> (heapLowest: Int, stackDeepest: Int, crash: Int)? {
     _ = drain()
     send([0xF0, 0x7D, 0x4D, 0x13, 0xF7])
     let until = Date().addingTimeInterval(timeout)
     while Date() < until {
       for r in drain() where r.bytes.count > 34 && r.bytes[0] == 0xF0 && r.bytes[3] == 0x14 {
-        return (Int(r.bytes[4 + 28]) * 512, Int(r.bytes[4 + 29]) * 16)
+        return (Int(r.bytes[4 + 28]) * 512, Int(r.bytes[4 + 29]) * 16, r.bytes.count > 4 + 31 ? Int(r.bytes[4 + 30]) | (Int(r.bytes[4 + 31]) << 7) : 0)
       }
       Thread.sleep(forTimeInterval: 0.01)
     }
@@ -398,7 +426,7 @@ struct Lcg {
 
 struct TimedEvent { let at: Double; let bytes: [UInt8]; let kind: String }
 
-func buildSession(seconds: Double, channels: [UInt8], slots: Int, active: Int, routes: Int, seed: UInt64) -> [TimedEvent] {
+func buildSession(seconds: Double, channels: [UInt8], slots: Int, active: Int, routes: Int, seed: UInt64, live: Bool, liveKeys: [UInt8] = [120, 121, 122], skip: Set<String> = []) -> [TimedEvent] {
   var rng = Lcg(state: seed)
   var events: [TimedEvent] = []
   var busyUntil: [Int: Double] = [:] // channel * 128 + note, so a note is never started twice while it is down
@@ -412,7 +440,15 @@ func buildSession(seconds: Double, channels: [UInt8], slots: Int, active: Int, r
   while t < seconds {
     let kind = rng.int(0, 99)
     let ch = channels[rng.int(0, channels.count - 1)]
-    if kind < 30 { // a chord held for a while
+    if live && rng.int(0, 99) < 30 { // a note trigger on channel 1: Live Ch Up, Down or a direct channel, with keys down
+      let key = liveKeys[rng.int(0, liveKeys.count - 1)]
+      let at = t + rng.double(0.1, 1.2)
+      events.append(TimedEvent(at: at, bytes: [0x90, key, 100], kind: "liveOn"))
+      events.append(TimedEvent(at: at + 0.06, bytes: [0x80, key, 0], kind: "liveOff"))
+    }
+    if (kind < 30 && skip.contains("chord")) || (kind >= 30 && kind < 50 && skip.contains("roll")) || (kind >= 50 && kind < 70 && skip.contains("at")) || (kind >= 70 && kind < 85 && skip.contains("sweep")) || (kind >= 85 && skip.contains("sysex")) {
+      t += 0.5
+    } else if kind < 30 { // a chord held for a while
       let root = rng.int(36, 72)
       let shape = [[0, 4, 7], [0, 3, 7, 10], [0, 5, 7], [0, 7]][rng.int(0, 3)]
       let hold = rng.double(0.3, 4.0)
@@ -505,7 +541,80 @@ func splitMessages(_ bytes: [UInt8]) -> [[UInt8]] {
   return out
 }
 
-func runSession(_ link: Link, seconds: Double, channels: [UInt8]) {
+
+func pack7(_ raw: [UInt8]) -> [UInt8] {
+  var out: [UInt8] = []
+  var i = 0
+  while i < raw.count {
+    let group = Array(raw[i..<min(i + 7, raw.count)])
+    var msbs: UInt8 = 0
+    for (j, b) in group.enumerated() { msbs |= ((b >> 7) & 1) << UInt8(j) }
+    out.append(msbs)
+    for b in group { out.append(b & 0x7F) }
+    i += 7
+  }
+  return out
+}
+
+func unpack7(_ packed: [UInt8]) -> [UInt8] {
+  var raw: [UInt8] = []
+  var k = 0
+  while k < packed.count {
+    let msbs = packed[k]
+    for j in 0..<7 where k + 1 + j < packed.count { raw.append(packed[k + 1 + j] | (((msbs >> UInt8(j)) & 1) << 7)) }
+    k += 8
+  }
+  return raw
+}
+
+// Sends a command and waits for the reply with this command number. The reply's payload, or nil.
+func ask(_ link: Link, _ cmd: UInt8, _ payload: [UInt8] = [], reply: UInt8, timeout: Double = 0.8) -> [UInt8]? {
+  _ = link.drain()
+  link.send([0xF0, 0x7D, 0x4D, cmd] + payload + [0xF7])
+  let until = Date().addingTimeInterval(timeout)
+  while Date() < until {
+    for r in link.drain() where r.bytes.count >= 5 && r.bytes[0] == 0xF0 && r.bytes[3] == reply { return Array(r.bytes[4..<(r.bytes.count - 1)]) }
+    Thread.sleep(forTimeInterval: 0.005)
+  }
+  return nil
+}
+
+// A test setup for the session, loaded into the unit's memory only, never saved. Made from Patchling's own code (js/midi.js):
+// 1 a Round Robin Priority route with a custom order on channels 1-4 with note triggers for Live Ch Up, Down and a direct channel,
+// 2 an arp route on channel 10, 3 a Scale and Auto Chord route, 4 a plain Round Robin route, 5 Mono Retrig with Priority.
+let testRoutes: [[UInt8]] = [
+  [193,1,0,127,0,127,0,127,2,15,0,64,100,0,0,0,94,80,114,105,111,114,105,116,121,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,2,0,2,0,1,0,0,0,0,0,0,78,36,0],
+  [193,0,2,127,0,127,0,127,2,0,2,64,100,0,0,0,28,65,114,112,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,2,0,2,0,0,0,1,0,0,0,0,78,36,0],
+  [193,2,0,127,0,127,0,127,2,2,0,64,100,0,0,0,28,83,99,97,108,101,32,99,104,111,114,100,0,0,0,0,0,0,0,0,0,0,0,0,0,2,0,2,0,12,0,0,0,21,0,0,78,36,0],
+  [193,4,0,127,0,127,0,127,2,112,0,64,100,0,0,0,30,67,121,99,108,101,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,2,0,2,0,0,0,0,0,0,0,0,78,36,0],
+  [193,8,0,127,0,127,0,127,2,192,0,64,100,0,0,0,95,77,111,110,111,32,112,114,105,111,114,105,116,121,0,0,0,0,0,0,0,0,0,0,0,2,0,2,0,0,0,0,0,0,0,0,78,36,0]
+]
+let testBlocks: [(type: UInt8, bytes: [UInt8])] = [
+  (4, [0,12,1,50,0,0,16,64,0,0,0,0,16,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0]),
+  (3, [0,0,0,0,0,0,0,0]),
+  (11, [121,13,1,0,0,122,13,0,0,0,123,9,5,0,0,0] + [UInt8](repeating: 0, count: 64)),
+  (15, [1,4,32,49])
+]
+
+// Loads the test setup, remembering the blocks it replaces. False when the unit already has routes.
+func loadTestSetup(_ link: Link, originals: inout [UInt8: [UInt8]]) -> Bool {
+  for b in testBlocks {
+    guard let r = ask(link, 0x17, [b.type], reply: 0x18) else { return false }
+    originals[b.type] = unpack7(Array(r.dropFirst()))
+  }
+  _ = ask(link, 0x28, reply: 0x7E)
+  for route in testRoutes { _ = ask(link, 0x24, pack7(route), reply: 0x7E) }
+  for b in testBlocks { _ = ask(link, 0x19, [b.type] + pack7(b.bytes), reply: 0x7E) }
+  return true
+}
+
+// Back to what the unit had: no routes and its own blocks.
+func restoreAfterTestSetup(_ link: Link, originals: [UInt8: [UInt8]]) {
+  _ = ask(link, 0x28, reply: 0x7E)
+  for (type, bytes) in originals { _ = ask(link, 0x19, [type] + pack7(bytes), reply: 0x7E) }
+}
+
+func runSession(_ link: Link, seconds: Double, channels: [UInt8], useSetup: Bool) {
   guard let id = link.identity() else { print("No answer from the FoxWizard"); exit(1) }
   guard let before = link.memory() else { print("This firmware has no memory readout, update to 1.108 or later"); exit(1) }
   print("FoxWizard firmware \(id.major).\(id.minor). Memory before: free heap lowest \(before.heapLowest / 1024) KB, main stack deepest \(before.stackDeepest) of 2048 bytes")
@@ -554,11 +663,19 @@ func runSession(_ link: Link, seconds: Double, channels: [UInt8]) {
     }
   }
   print("It has \(routes) routes and \(slots) preset slot\(slots == 1 ? "" : "s"), on slot \(active + 1). Playing for \(Int(seconds)) seconds on channels \(channels.map { String($0 + 1) }.joined(separator: ", "))\(slots > 1 ? ", switching presets with keys held, ending on slot \(active + 1)" : "")")
-  let events = buildSession(seconds: seconds, channels: channels, slots: slots, active: active, routes: routes, seed: 20261029)
+  var originals: [UInt8: [UInt8]] = [:]
+  var setupLoaded = false
+  if useSetup && routes == 0 {
+    setupLoaded = loadTestSetup(link, originals: &originals)
+    print(setupLoaded ? "Test setup loaded into memory (5 routes, nothing saved, restored at the end): Priority with a custom order and Live Ch triggers on ch 1, arp on 10, scale and chord on 2, Round Robin on 3, mono with Priority on 4" : "Could not load the test setup, running without it")
+  } else if useSetup {
+    print("The unit has routes, so the test setup is not loaded, nothing of yours is touched")
+  }
+  let events = buildSession(seconds: seconds, channels: setupLoaded ? [0, 1, 2, 3, 9] : channels, slots: slots, active: active, routes: routes, seed: 20261029, live: setupLoaded && !args.contains("--no-live"), liveKeys: (option("--live-keys") ?? "120,121,122").split(separator: ",").compactMap { UInt8($0) }, skip: Set((option("--skip") ?? "").split(separator: ",").map(String.init)))
   var sent: [String: Int] = [:]
   var received: [String: Int] = [:]
   var outstanding: [Int: Int] = [:]
-  var maxLoopUs = 0, heldBack = 0, maxUsbPct = 0, maxLinkPct = 0
+  var maxLoopUs = 0, heldBack = 0, maxUsbPct = 0, maxLinkPct = 0, maxTrsPct = 0
   var lowHeap = before.heapLowest, deepStack = before.stackDeepest
   var statusReplies = 0, acks = 0
   func handle(_ r: Received) {
@@ -569,7 +686,7 @@ func runSession(_ link: Link, seconds: Double, channels: [UInt8]) {
         statusReplies += 1
         let p = Array(r.bytes[4..<(r.bytes.count - 1)])
         maxLoopUs = max(maxLoopUs, Int(p[15]) | (Int(p[16]) << 7))
-        heldBack += Int(p[18]); maxLinkPct = max(maxLinkPct, Int(p[19]) * 100 / 127); maxUsbPct = max(maxUsbPct, Int(p[21]) * 100 / 127)
+        heldBack += Int(p[18]); maxLinkPct = max(maxLinkPct, Int(p[19]) * 100 / 127); maxUsbPct = max(maxUsbPct, Int(p[21]) * 100 / 127); maxTrsPct = max(maxTrsPct, Int(p[20]) * 100 / 127)
         lowHeap = min(lowHeap, Int(p[28]) * 512); deepStack = max(deepStack, Int(p[29]) * 16)
       }
       return
@@ -581,7 +698,7 @@ func runSession(_ link: Link, seconds: Double, channels: [UInt8]) {
         let key = Int(m[0] & 0x0F) * 128 + Int(m[1])
         if hi == 0x90 && m[2] > 0 { outstanding[key, default: 0] += 1; received["noteOn", default: 0] += 1 }
         else { outstanding[key, default: 0] -= 1; received["noteOff", default: 0] += 1 }
-      } else { received["other", default: 0] += 1 }
+      } else { received[hi == 0xA0 ? "polyAT" : hi == 0xD0 ? "chanAT" : hi == 0xB0 ? "cc" : hi == 0xE0 ? "bend" : "other", default: 0] += 1 }
     }
   }
   _ = link.drain()
@@ -609,19 +726,26 @@ func runSession(_ link: Link, seconds: Double, channels: [UInt8]) {
   let settle = Date().addingTimeInterval(3.5)
   while Date() < settle { for r in link.drain() { handle(r) }; Thread.sleep(forTimeInterval: 0.01) }
   guard let after = link.memory() else { print("No memory reply at the end"); exit(1) }
+  var routesLeft = -1
+  if setupLoaded {
+    routesLeft = ask(link, 0x20, reply: 0x21).map { Int($0[0]) | (Int($0[1]) << 7) } ?? -1
+    restoreAfterTestSetup(link, originals: originals)
+  }
   lowHeap = min(lowHeap, after.heapLowest); deepStack = max(deepStack, after.stackDeepest)
   print("")
   print("Sent: " + sent.sorted { $0.key < $1.key }.map { "\($0.value) \($0.key)" }.joined(separator: ", "))
-  print("Back from the unit: \(received["noteOn", default: 0]) Note On, \(received["noteOff", default: 0]) Note Off, \(acks) acknowledgements, \(statusReplies) status replies")
+  print("Back from the unit: \(received["noteOn", default: 0]) Note On, \(received["noteOff", default: 0]) Note Off, \(received["polyAT", default: 0]) poly AT, \(received["chanAT", default: 0]) channel AT, \(received["cc", default: 0]) CC, \(received["bend", default: 0]) bend, \(received["other", default: 0]) other, \(acks) acknowledgements, \(statusReplies) status replies")
   let stuck = outstanding.filter { $0.value > 0 }
   if received["noteOn", default: 0] == 0 { print("Notes: none came back on the USB port\(usbRoute ? "" : ", and no route sends to USB"), so the stuck note check could not run. Memory and loop numbers below are still real.") }
   else if stuck.isEmpty { print("Notes: every Note On the unit sent came to an end. No stuck notes.") }
   else { print("STUCK NOTES: \(stuck.count): " + stuck.sorted { $0.key < $1.key }.prefix(12).map { "ch \($0.key / 128 + 1) note \($0.key % 128)" }.joined(separator: ", ")) }
   let extraOff = outstanding.filter { $0.value < 0 }.count
   if extraOff > 0 { print("(\(extraOff) notes were ended more than once, harmless)") }
-  print("Longest pass of the main loop: \(maxLoopUs) microseconds. Input held back \(heldBack) times. Fullest queues: link \(maxLinkPct)%, USB \(maxUsbPct)%")
+  print("Longest pass of the main loop: \(maxLoopUs) microseconds. Input held back \(heldBack) times. Fullest queues: link \(maxLinkPct)%, TRS \(maxTrsPct)%, USB \(maxUsbPct)%")
+  if after.crash != 0 { print("The unit's last watchdog restart was in stage \(after.crash)") }
   print("Memory after: free heap lowest \(lowHeap / 1024) KB (it was \(before.heapLowest / 1024) KB before), main stack deepest \(deepStack) of 2048 bytes")
-  let healthy = stuck.isEmpty && deepStack < 1600 && lowHeap > 20 * 1024
+  if setupLoaded && routesLeft != testRoutes.count { print("THE UNIT RESTARTED DURING THE SESSION: it had \(testRoutes.count) test routes and has \(routesLeft) now") }
+  let healthy = stuck.isEmpty && (!setupLoaded || routesLeft == testRoutes.count) && deepStack < 1600 && lowHeap > 20 * 1024
   print(healthy ? "RESULT: healthy" : "RESULT: look at the lines above")
   exit(healthy ? 0 : 1)
 }
@@ -647,14 +771,74 @@ case "version":
   }
   if let id = link.identity() { print("FoxWizard main brain: firmware \(id.major).\(id.minor), protocol \(id.protocolVersion)") } else { print("No answer") ; exit(1) }
   if let st = link.status() { print("Sidecar: \(st.host ? "present, firmware \(st.fw)" : "not present")") }
-  if let m = link.memory() { print("Memory: the free heap has been as low as \(m.heapLowest / 1024) KB since power on (of about 44 KB at start), the main stack has gone \(m.stackDeepest) bytes deep (of 2048)") }
+  if let m = link.memory() { print("Memory: the free heap has been as low as \(m.heapLowest / 1024) KB since power on (of about 44 KB at start), the main stack has gone \(m.stackDeepest) bytes deep (of 2048)"); if m.crash != 0 { print("The last watchdog restart was in stage \(m.crash)") } }
+case "livetest":
+  guard let (source, destination) = findEndpoints(matching: portName), let link = Link(source: source, destination: destination) else { print("no port"); exit(2) }
+  var originals: [UInt8: [UInt8]] = [:]
+  func alive() -> Bool { (ask(link, 0x20, reply: 0x21).map { Int($0[0]) | (Int($0[1]) << 7) } ?? -1) == testRoutes.count }
+  func fresh() { if !alive() { _ = loadTestSetup(link, originals: &originals) } }
+  fresh()
+  let steps: [(String, [[UInt8]])] = [
+    ("Live Ch Up with no key held", [[0x90, 120, 100], [0x80, 120, 0]]),
+    ("Live Ch Up with one key held on channel 1", [[0x90, 60, 100], [0x90, 120, 100], [0x80, 120, 0], [0x80, 60, 0]]),
+    ("Live Ch Down with one key held", [[0x90, 62, 100], [0x90, 121, 100], [0x80, 121, 0], [0x80, 62, 0]]),
+    ("Direct channel (122) with a chord held", [[0x90, 50, 100], [0x90, 54, 100], [0x90, 57, 100], [0x90, 122, 100], [0x80, 122, 0], [0x80, 50, 0], [0x80, 54, 0], [0x80, 57, 0]]),
+    ("Direct channel again (back) with a chord held", [[0x90, 50, 100], [0x90, 54, 100], [0x90, 122, 100], [0x80, 122, 0], [0x90, 122, 100], [0x80, 122, 0], [0x80, 50, 0], [0x80, 54, 0]]),
+    ("Up five times with keys held", [[0x90, 60, 100], [0x90, 64, 100]] + (0..<5).flatMap { _ in [[0x90, 120, 100], [0x80, 120, 0]] as [[UInt8]] } + [[0x80, 60, 0], [0x80, 64, 0]])
+  ]
+  for (label, msgs) in steps {
+    fresh()
+    for m in msgs { link.send(m); Thread.sleep(forTimeInterval: 0.08) }
+    Thread.sleep(forTimeInterval: 0.4)
+    print("\(alive() ? "ok      " : "CRASHED ") \(label)")
+  }
+  _ = ask(link, 0x28, reply: 0x7E)
+  restoreAfterTestSetup(link, originals: originals)
+case "flood":
+  guard let (source, destination) = findEndpoints(matching: portName), let link = Link(source: source, destination: destination) else { print("no port"); exit(2) }
+  var originals: [UInt8: [UInt8]] = [:]
+  _ = loadTestSetup(link, originals: &originals)
+  for rate in [100.0, 300.0, 600.0] {
+    _ = link.drain()
+    let n = Int(rate * 5)
+    let t0 = mach_absolute_time()
+    for i in 0..<n {
+      mach_wait_until(t0 + secToTicks(Double(i) / rate))
+      link.send([0xB1, 1, UInt8(i % 128)])
+    }
+    var back = 0
+    let until = Date().addingTimeInterval(1.0)
+    while Date() < until { for r in link.drain() where r.bytes.count == 3 && r.bytes[0] == 0xB1 && r.bytes[1] == 1 { back += 1 }; Thread.sleep(forTimeInterval: 0.01) }
+    let st = ask(link, 0x13, reply: 0x14)
+    let held = st.map { Int($0[18]) } ?? -1
+    print("\(Int(rate)) CC per second for 5 s: sent \(n), came back \(back), the unit reports input held back \(held) times")
+  }
+  restoreAfterTestSetup(link, originals: originals)
+case "probe":
+  guard let (source, destination) = findEndpoints(matching: portName), let link = Link(source: source, destination: destination) else { print("no port"); exit(2) }
+  var originals: [UInt8: [UInt8]] = [:]
+  let loaded = loadTestSetup(link, originals: &originals)
+  let count = ask(link, 0x20, reply: 0x21).map { Int($0[0]) | (Int($0[1]) << 7) } ?? -1
+  print("setup loaded \(loaded), routes now \(count)")
+  func show(_ label: String, _ seconds: Double) {
+    let until = Date().addingTimeInterval(seconds)
+    var got: [String] = []
+    while Date() < until { for r in link.drain() where r.bytes.first != 0xF0 && r.bytes != [0xF8] { got.append(r.bytes.map { String($0, radix: 16) }.joined(separator: " ")) }; Thread.sleep(forTimeInterval: 0.01) }
+    print("\(label): \(got.isEmpty ? "nothing back" : got.joined(separator: " | "))")
+  }
+  for (label, bytes) in [("ch2 note 60 on (scale chord)", [0x91, 60, 100]), ("ch2 note 60 off", [0x81, 60, 0]), ("ch3 note 62 on (round robin)", [0x92, 62, 100]), ("ch3 note 62 off", [0x82, 62, 0]), ("ch1 note 64 on (priority)", [0x90, 64, 100]), ("ch1 note 64 off", [0x80, 64, 0]), ("ch10 note 40 on (arp)", [0x99, 40, 100])] as [(String, [UInt8])] {
+    link.send(bytes); show(label, 0.5)
+  }
+  link.send([0x89, 40, 0]); show("ch10 note 40 off", 0.8)
+  restoreAfterTestSetup(link, originals: originals)
 case "session":
   guard let (source, destination) = findEndpoints(matching: portName), let link = Link(source: source, destination: destination) else {
     print("No MIDI port with \"\(portName)\" in its name. Try: clock_check list"); exit(2)
   }
   let secs = Double(args.dropFirst().first ?? "") ?? 90
   let chans = (option("--channels") ?? "1,10").split(separator: ",").compactMap { UInt8($0) }.filter { $0 >= 1 && $0 <= 16 }.map { $0 - 1 }
-  runSession(link, seconds: secs, channels: chans.isEmpty ? [0, 9] : chans)
+  let noSetup = args.contains("--no-setup")
+  runSession(link, seconds: secs, channels: chans.isEmpty ? [0, 9] : chans, useSetup: !noSetup)
 case "selftest":
   var selftestFailed = false
   defer { }
