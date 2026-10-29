@@ -597,13 +597,13 @@ let testBlocks: [(type: UInt8, bytes: [UInt8])] = [
 ]
 
 // Loads the test setup, remembering the blocks it replaces. False when the unit already has routes.
-func loadTestSetup(_ link: Link, originals: inout [UInt8: [UInt8]]) -> Bool {
+func loadTestSetup(_ link: Link, originals: inout [UInt8: [UInt8]], subset: [Int] = [0, 1, 2, 3, 4]) -> Bool {
   for b in testBlocks {
     guard let r = ask(link, 0x17, [b.type], reply: 0x18) else { return false }
     originals[b.type] = unpack7(Array(r.dropFirst()))
   }
   _ = ask(link, 0x28, reply: 0x7E)
-  for route in testRoutes { _ = ask(link, 0x24, pack7(route), reply: 0x7E) }
+  for i in subset { _ = ask(link, 0x24, pack7(testRoutes[i]), reply: 0x7E) }
   for b in testBlocks { _ = ask(link, 0x19, [b.type] + pack7(b.bytes), reply: 0x7E) }
   return true
 }
@@ -665,13 +665,14 @@ func runSession(_ link: Link, seconds: Double, channels: [UInt8], useSetup: Bool
   print("It has \(routes) routes and \(slots) preset slot\(slots == 1 ? "" : "s"), on slot \(active + 1). Playing for \(Int(seconds)) seconds on channels \(channels.map { String($0 + 1) }.joined(separator: ", "))\(slots > 1 ? ", switching presets with keys held, ending on slot \(active + 1)" : "")")
   var originals: [UInt8: [UInt8]] = [:]
   var setupLoaded = false
+  let subset = (option("--only-routes") ?? "1,2,3,4,5").split(separator: ",").compactMap { Int($0) }.map { $0 - 1 }.filter { $0 >= 0 && $0 < 5 }
   if useSetup && routes == 0 {
-    setupLoaded = loadTestSetup(link, originals: &originals)
+    setupLoaded = loadTestSetup(link, originals: &originals, subset: subset)
     print(setupLoaded ? "Test setup loaded into memory (5 routes, nothing saved, restored at the end): Priority with a custom order and Live Ch triggers on ch 1, arp on 10, scale and chord on 2, Round Robin on 3, mono with Priority on 4" : "Could not load the test setup, running without it")
   } else if useSetup {
     print("The unit has routes, so the test setup is not loaded, nothing of yours is touched")
   }
-  let events = buildSession(seconds: seconds, channels: setupLoaded ? [0, 1, 2, 3, 9] : channels, slots: slots, active: active, routes: routes, seed: 20261029, live: setupLoaded && !args.contains("--no-live"), liveKeys: (option("--live-keys") ?? "120,121,122").split(separator: ",").compactMap { UInt8($0) }, skip: Set((option("--skip") ?? "").split(separator: ",").map(String.init)))
+  let events = buildSession(seconds: seconds, channels: setupLoaded ? subset.map { [0, 9, 1, 2, 3][$0] } : channels, slots: slots, active: active, routes: routes, seed: 20261029, live: setupLoaded && !args.contains("--no-live"), liveKeys: (option("--live-keys") ?? "120,121,122").split(separator: ",").compactMap { UInt8($0) }, skip: Set((option("--skip") ?? "").split(separator: ",").map(String.init)))
   var sent: [String: Int] = [:]
   var received: [String: Int] = [:]
   var outstanding: [Int: Int] = [:]
@@ -744,8 +745,8 @@ func runSession(_ link: Link, seconds: Double, channels: [UInt8], useSetup: Bool
   print("Longest pass of the main loop: \(maxLoopUs) microseconds. Input held back \(heldBack) times. Fullest queues: link \(maxLinkPct)%, TRS \(maxTrsPct)%, USB \(maxUsbPct)%")
   if after.crash != 0 { print("The unit's last watchdog restart was in stage \(after.crash)") }
   print("Memory after: free heap lowest \(lowHeap / 1024) KB (it was \(before.heapLowest / 1024) KB before), main stack deepest \(deepStack) of 2048 bytes")
-  if setupLoaded && routesLeft != testRoutes.count { print("THE UNIT RESTARTED DURING THE SESSION: it had \(testRoutes.count) test routes and has \(routesLeft) now") }
-  let healthy = stuck.isEmpty && (!setupLoaded || routesLeft == testRoutes.count) && deepStack < 1600 && lowHeap > 20 * 1024
+  if setupLoaded && routesLeft != subset.count { print("THE UNIT RESTARTED DURING THE SESSION: it had \(subset.count) test routes and has \(routesLeft) now") }
+  let healthy = stuck.isEmpty && (!setupLoaded || routesLeft == subset.count) && deepStack < 1600 && lowHeap > 20 * 1024
   print(healthy ? "RESULT: healthy" : "RESULT: look at the lines above")
   exit(healthy ? 0 : 1)
 }
@@ -793,6 +794,30 @@ case "livetest":
     print("\(alive() ? "ok      " : "CRASHED ") \(label)")
   }
   _ = ask(link, 0x28, reply: 0x7E)
+  restoreAfterTestSetup(link, originals: originals)
+case "atflood":
+  guard let (source, destination) = findEndpoints(matching: portName), let link = Link(source: source, destination: destination) else { print("no port"); exit(2) }
+  var originals: [UInt8: [UInt8]] = [:]
+  func alive() -> Bool { (ask(link, 0x20, reply: 0x21).map { Int($0[0]) | (Int($0[1]) << 7) } ?? -1) == 1 }
+  _ = loadTestSetup(link, originals: &originals, subset: [3])
+  for rate in [100.0, 200.0, 400.0, 800.0, 1600.0] {
+    if !alive() { _ = loadTestSetup(link, originals: &originals, subset: [3]) }
+    _ = link.drain()
+    link.send([0x92, 60, 100]); Thread.sleep(forTimeInterval: 0.2)
+    let n = Int(rate * 8)
+    let t0 = mach_absolute_time()
+    for i in 0..<n {
+      mach_wait_until(t0 + secToTicks(Double(i) / rate))
+      link.send([0xA2, 60, UInt8(20 + i % 100)])
+    }
+    link.send([0x82, 60, 0])
+    var back = 0
+    let until = Date().addingTimeInterval(1.5)
+    while Date() < until { for r in link.drain() where r.bytes.count == 3 && r.bytes[0] & 0xF0 == 0xA0 { back += 1 }; Thread.sleep(forTimeInterval: 0.01) }
+    let ok = alive()
+    print("\(Int(rate)) poly AT per second for 8 s: sent \(n), came back \(back), \(ok ? "the unit survived" : "THE UNIT RESTARTED")")
+  }
+  if !alive() { _ = loadTestSetup(link, originals: &originals, subset: [3]) }
   restoreAfterTestSetup(link, originals: originals)
 case "flood":
   guard let (source, destination) = findEndpoints(matching: portName), let link = Link(source: source, destination: destination) else { print("no port"); exit(2) }

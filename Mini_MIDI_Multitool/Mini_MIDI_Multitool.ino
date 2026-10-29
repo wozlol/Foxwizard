@@ -101,7 +101,7 @@ constexpr uint8_t SYSEX_MFR_ID = 0x7D;   // reserved for non-commercial/educatio
 constexpr uint8_t SYSEX_DEVICE_ID = 0x4D; // 'M'
 constexpr uint8_t PROTOCOL_VERSION = 6; // 2: 45-byte routes with port masks, GET_STATUS. 3: clock settings, LEARN. 4: 53-byte routes with feature fields, feature blocks. 5: presets. 6: Round Robin Priority order block
 constexpr uint8_t FW_VERSION_MAJOR = 1;
-constexpr uint8_t FW_VERSION_MINOR = 110;
+constexpr uint8_t FW_VERSION_MINOR = 111;
 constexpr uint8_t FW_CHUNK_BYTES = 128;          // firmware bytes per FW_DATA message, 147 once packed
 constexpr uint32_t FW_REBOOT_DELAY_MS = 300;     // lets the FW_END ACK reach the host before rebooting
 const char DEVICE_NAME[] = "FoxWizard Mini MIDI Multitool"; // long name sent in the SysEx IDENTITY_REPLY
@@ -1870,10 +1870,30 @@ uint16_t usbQueueFree() {
   return (uint16_t)((usbTail + USB_QUEUE_PACKETS - usbHead - 1) % USB_QUEUE_PACKETS);
 }
 
+// Up to 16 packets, one full-speed bulk packet, go to TinyUSB in one call, which starts one USB transfer for them. Writing them one by
+// one started a transfer for every 4 bytes, thousands a second under a flood of aftertouch, and a unit doing that restarted itself
+// (1.111). Real time packets go first, as before.
+constexpr uint8_t USB_BATCH_PACKETS = 16;
+uint8_t usbBatch[USB_BATCH_PACKETS][4];
+
 void pumpUsbOut() {
   CRUMB(63);
-  while (usbRtTail != usbRtHead && usb_midi.writePacket(usbRealtime[usbRtTail])) usbRtTail = (usbRtTail + 1) % USB_REALTIME_PACKETS;
-  while (usbTail != usbHead && usb_midi.writePacket(usbQueue[usbTail])) usbTail = (usbTail + 1) % USB_QUEUE_PACKETS;
+  for (;;) {
+    uint8_t n = 0;
+    uint8_t rt = usbRtTail;
+    while (n < USB_BATCH_PACKETS && rt != usbRtHead) { memcpy(usbBatch[n++], usbRealtime[rt], 4); rt = (rt + 1) % USB_REALTIME_PACKETS; }
+    const uint8_t rtCount = n;
+    uint16_t nt = usbTail;
+    while (n < USB_BATCH_PACKETS && nt != usbHead) { memcpy(usbBatch[n++], usbQueue[nt], 4); nt = (nt + 1) % USB_QUEUE_PACKETS; }
+    if (n == 0) return;
+    CRUMB(65);
+    const uint8_t written = (uint8_t)tud_midi_n_packet_write_n(0, &usbBatch[0][0], n); // how many it took
+    CRUMB(66);
+    const uint8_t rtDone = written < rtCount ? written : rtCount;
+    usbRtTail = (usbRtTail + rtDone) % USB_REALTIME_PACKETS;
+    usbTail = (usbTail + (written - rtDone)) % USB_QUEUE_PACKETS;
+    if (written < n) return; // TinyUSB's buffer is full, the rest goes on the next pass
+  }
 }
 
 void usbSend(const uint8_t packet[4]) {
