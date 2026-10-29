@@ -382,6 +382,250 @@ final class FakeFox {
   }
 }
 
+// ---- a play session --------------------------------------------------------------------------------------------------
+//
+// Plays into the FoxWizard like a busy player for a while: chords held for different lengths, drum rolls, aftertouch floods like
+// a pad controller leaning on its keys, CC and pitch bend sweeps, the requests Patchling makes when it loads, and with more than one
+// preset the unit is switched while keys are held. It reads back every note the unit sends and says if any never ended, then
+// reports the memory numbers. Nothing is saved on the unit, and it ends on the preset it started on.
+
+struct Lcg {
+  var state: UInt64
+  mutating func next() -> UInt64 { state = state &* 6364136223846793005 &+ 1442695040888963407; return state >> 33 }
+  mutating func int(_ lo: Int, _ hi: Int) -> Int { lo + Int(next() % UInt64(hi - lo + 1)) }
+  mutating func double(_ lo: Double, _ hi: Double) -> Double { lo + Double(next() % 100000) / 100000.0 * (hi - lo) }
+}
+
+struct TimedEvent { let at: Double; let bytes: [UInt8]; let kind: String }
+
+func buildSession(seconds: Double, channels: [UInt8], slots: Int, active: Int, routes: Int, seed: UInt64) -> [TimedEvent] {
+  var rng = Lcg(state: seed)
+  var events: [TimedEvent] = []
+  var busyUntil: [Int: Double] = [:] // channel * 128 + note, so a note is never started twice while it is down
+  func note(_ at: Double, _ on: Bool, _ ch: UInt8, _ n: UInt8, _ v: UInt8) {
+    events.append(TimedEvent(at: at, bytes: [(on ? 0x90 : 0x80) | ch, n, on ? v : 0], kind: on ? "noteOn" : "noteOff"))
+  }
+  func free(_ ch: UInt8, _ n: UInt8, _ at: Double) -> Bool { (busyUntil[Int(ch) * 128 + Int(n)] ?? -1) < at }
+  var t = 0.5
+  var presetAt = 10.0
+  var presetStep = 0
+  while t < seconds {
+    let kind = rng.int(0, 99)
+    let ch = channels[rng.int(0, channels.count - 1)]
+    if kind < 30 { // a chord held for a while
+      let root = rng.int(36, 72)
+      let shape = [[0, 4, 7], [0, 3, 7, 10], [0, 5, 7], [0, 7]][rng.int(0, 3)]
+      let hold = rng.double(0.3, 4.0)
+      for (i, iv) in shape.enumerated() {
+        let n = UInt8(min(127, root + iv)); let at = t + Double(i) * 0.012
+        if !free(ch, n, at) { continue }
+        busyUntil[Int(ch) * 128 + Int(n)] = at + hold + 0.05
+        note(at, true, ch, n, UInt8(rng.int(60, 120))); note(at + hold, false, ch, n, 0)
+      }
+      t += rng.double(0.2, 1.2)
+    } else if kind < 50 { // a drum roll
+      let n = UInt8(rng.int(36, 46))
+      var at = t
+      for _ in 0..<rng.int(8, 24) {
+        if free(ch, n, at) {
+          busyUntil[Int(ch) * 128 + Int(n)] = at + 0.06
+          note(at, true, ch, n, UInt8(rng.int(70, 127))); note(at + 0.05, false, ch, n, 0)
+        }
+        at += rng.double(0.1, 0.18)
+      }
+      t += (at - t) * 0.7
+    } else if kind < 70 { // a chord with aftertouch flooding while it is held
+      let root = rng.int(48, 72)
+      let hold = rng.double(2.0, 5.0)
+      let rate = Double(rng.int(100, 400))
+      var held: [UInt8] = []
+      for (i, iv) in [0, 4, 7].enumerated() {
+        let n = UInt8(root + iv); let at = t + Double(i) * 0.01
+        if !free(ch, n, at) { continue }
+        busyUntil[Int(ch) * 128 + Int(n)] = at + hold + 0.05
+        note(at, true, ch, n, 100); note(at + hold, false, ch, n, 0); held.append(n)
+      }
+      var at = t + 0.05
+      var k = 0
+      while at < t + hold - 0.05 {
+        let v = UInt8(40 + 60 * (0.5 + 0.5 * sin(Double(k) * 0.07)))
+        if !held.isEmpty {
+          events.append(TimedEvent(at: at, bytes: [0xA0 | ch, held[k % held.count], v], kind: "polyAT"))
+        }
+        events.append(TimedEvent(at: at, bytes: [0xD0 | ch, v], kind: "chanAT"))
+        at += 1.0 / rate; k += 1
+      }
+      t += rng.double(0.5, 2.0)
+    } else if kind < 85 { // controller and pitch bend sweeps
+      let cc = [1, 74, 11, 7][rng.int(0, 3)]
+      let len = rng.double(1.0, 3.0)
+      var at = t
+      while at < t + len {
+        let x = (at - t) / len
+        let v = UInt8(127 * (x < 0.5 ? x * 2 : 2 - x * 2))
+        events.append(TimedEvent(at: at, bytes: [0xB0 | ch, UInt8(cc), v], kind: "cc"))
+        let pb = Int(8192 + 4000 * sin(x * 6.28))
+        events.append(TimedEvent(at: at, bytes: [0xE0 | ch, UInt8(pb & 0x7F), UInt8((pb >> 7) & 0x7F)], kind: "bend"))
+        at += 0.01
+      }
+      t += len * 0.5
+    } else { // what Patchling asks for when it loads
+      var at = t
+      func ask(_ cmd: [UInt8]) { events.append(TimedEvent(at: at, bytes: [0xF0, 0x7D, 0x4D] + cmd + [0xF7], kind: "sysex")); at += 0.03 }
+      ask([0x10]); ask([0x20])
+      for i in 0..<min(routes, 8) { ask([0x22, UInt8(i & 0x7F), UInt8(i >> 7)]) }
+      for ty in [11, 12, 13, 3, 4, 5, 6, 7, 8, 9, 10, 14, 15] { ask([0x17, UInt8(ty)]) }
+      ask([0x37]); ask([0x13])
+      t += 1.0
+    }
+    // the unit is switched with keys held, when there are presets to switch between
+    if slots > 1 && t >= presetAt {
+      presetStep += 1
+      events.append(TimedEvent(at: t, bytes: [0xF0, 0x7D, 0x4D, 0x3A, UInt8((active + presetStep) % slots), 0xF7], kind: "preset"))
+      presetAt += rng.double(9.0, 16.0)
+    }
+  }
+  // back where it started, and a status request every two seconds like Patchling's
+  if slots > 1 { events.append(TimedEvent(at: seconds + 1.0, bytes: [0xF0, 0x7D, 0x4D, 0x3A, UInt8(active), 0xF7], kind: "preset")) }
+  var tick = 0.0
+  while tick < seconds + 6 { events.append(TimedEvent(at: tick, bytes: [0xF0, 0x7D, 0x4D, 0x13, 0xF7], kind: "status")); tick += 2.0 }
+  return events.sorted { $0.at < $1.at }
+}
+
+// A note's channel and number, when the message is a Note On or Off. A velocity 0 Note On is an Off.
+func splitMessages(_ bytes: [UInt8]) -> [[UInt8]] {
+  var out: [[UInt8]] = []
+  var i = 0
+  while i < bytes.count {
+    let b = bytes[i]
+    let len = b >= 0xF8 ? 1 : (b >= 0xC0 && b < 0xE0) ? 2 : (b >= 0x80 && b < 0xF0) ? 3 : 1
+    if i + len <= bytes.count { out.append(Array(bytes[i..<(i + len)])) }
+    i += len
+  }
+  return out
+}
+
+func runSession(_ link: Link, seconds: Double, channels: [UInt8]) {
+  guard let id = link.identity() else { print("No answer from the FoxWizard"); exit(1) }
+  guard let before = link.memory() else { print("This firmware has no memory readout, update to 1.108 or later"); exit(1) }
+  print("FoxWizard firmware \(id.major).\(id.minor). Memory before: free heap lowest \(before.heapLowest / 1024) KB, main stack deepest \(before.stackDeepest) of 2048 bytes")
+  // which presets there are
+  _ = link.drain()
+  link.send([0xF0, 0x7D, 0x4D, 0x37, 0xF7])
+  var slots = 1, active = 0, routes = 0
+  var until = Date().addingTimeInterval(0.8)
+  while Date() < until {
+    for r in link.drain() where r.bytes.count > 8 && r.bytes[3] == 0x38 { slots = Int(r.bytes[4]); active = Int(r.bytes[5]) }
+    Thread.sleep(forTimeInterval: 0.01)
+  }
+  link.send([0xF0, 0x7D, 0x4D, 0x20, 0xF7])
+  until = Date().addingTimeInterval(0.8)
+  while Date() < until {
+    for r in link.drain() where r.bytes.count > 6 && r.bytes[3] == 0x21 { routes = Int(r.bytes[4]) | (Int(r.bytes[5]) << 7) }
+    Thread.sleep(forTimeInterval: 0.01)
+  }
+  var usbRoute = false
+  for i in 0..<min(routes, 12) {
+    link.send([0xF0, 0x7D, 0x4D, 0x22, UInt8(i & 0x7F), UInt8(i >> 7), 0xF7])
+    let waitUntil = Date().addingTimeInterval(0.6)
+    while Date() < waitUntil {
+      var got = false
+      for r in link.drain() where r.bytes.count > 12 && r.bytes[3] == 0x23 {
+        var raw: [UInt8] = []
+        let packed = Array(r.bytes[6..<(r.bytes.count - 1)])
+        var k = 0
+        while k < packed.count {
+          let msbs = packed[k]
+          for j in 0..<7 where k + 1 + j < packed.count { raw.append(packed[k + 1 + j] | (((msbs >> UInt8(j)) & 1) << 7)) }
+          k += 8
+        }
+        if raw.count >= 45 {
+          let outPorts = Int(raw[43]) | (Int(raw[44]) << 8), inPorts = Int(raw[41]) | (Int(raw[42]) << 8)
+          let inCh = Int(raw[1]) | (Int(raw[2]) << 8), outCh = Int(raw[9]) | (Int(raw[10]) << 8)
+          func names(_ m: Int) -> String { ["TRS", "USB", "Host1", "Host2", "Host3", "Host4", "TRS2", "TRS3", "TRS4", "TRS5", "TRS6", "Host5", "Host6", "Host7"].enumerated().filter { m & (1 << $0.offset) != 0 }.map { $0.element }.joined(separator: "+") }
+          func chans(_ m: Int) -> String { m == 0xFFFF ? "all" : (0..<16).filter { m & (1 << $0) != 0 }.map { String($0 + 1) }.joined(separator: ",") }
+          print("  route \(i + 1): in \(names(inPorts)) ch \(chans(inCh)) -> out \(names(outPorts)) ch \(chans(outCh))")
+          if outPorts & 2 != 0 { usbRoute = true }
+        }
+        got = true
+      }
+      if got { break }
+      Thread.sleep(forTimeInterval: 0.01)
+    }
+  }
+  print("It has \(routes) routes and \(slots) preset slot\(slots == 1 ? "" : "s"), on slot \(active + 1). Playing for \(Int(seconds)) seconds on channels \(channels.map { String($0 + 1) }.joined(separator: ", "))\(slots > 1 ? ", switching presets with keys held, ending on slot \(active + 1)" : "")")
+  let events = buildSession(seconds: seconds, channels: channels, slots: slots, active: active, routes: routes, seed: 20261029)
+  var sent: [String: Int] = [:]
+  var received: [String: Int] = [:]
+  var outstanding: [Int: Int] = [:]
+  var maxLoopUs = 0, heldBack = 0, maxUsbPct = 0, maxLinkPct = 0
+  var lowHeap = before.heapLowest, deepStack = before.stackDeepest
+  var statusReplies = 0, acks = 0
+  func handle(_ r: Received) {
+    if r.bytes.first == 0xF0 {
+      guard r.bytes.count > 5, r.bytes[1] == 0x7D else { return }
+      if r.bytes[3] == 0x7E { acks += 1 }
+      if r.bytes[3] == 0x14, r.bytes.count > 34 {
+        statusReplies += 1
+        let p = Array(r.bytes[4..<(r.bytes.count - 1)])
+        maxLoopUs = max(maxLoopUs, Int(p[15]) | (Int(p[16]) << 7))
+        heldBack += Int(p[18]); maxLinkPct = max(maxLinkPct, Int(p[19]) * 100 / 127); maxUsbPct = max(maxUsbPct, Int(p[21]) * 100 / 127)
+        lowHeap = min(lowHeap, Int(p[28]) * 512); deepStack = max(deepStack, Int(p[29]) * 16)
+      }
+      return
+    }
+    for m in splitMessages(r.bytes) {
+      let hi = m[0] & 0xF0
+      if m[0] >= 0xF8 { continue }
+      if (hi == 0x90 || hi == 0x80) && m.count == 3 {
+        let key = Int(m[0] & 0x0F) * 128 + Int(m[1])
+        if hi == 0x90 && m[2] > 0 { outstanding[key, default: 0] += 1; received["noteOn", default: 0] += 1 }
+        else { outstanding[key, default: 0] -= 1; received["noteOff", default: 0] += 1 }
+      } else { received["other", default: 0] += 1 }
+    }
+  }
+  _ = link.drain()
+  let quietStart = Date().addingTimeInterval(0.5)
+  while Date() < quietStart { for r in link.drain() { handle(r) }; Thread.sleep(forTimeInterval: 0.01) }
+  if !received.isEmpty { print("Note: the unit was already sending MIDI before the session started, a loop or an arp may be running, stuck note results will not be clean") }
+  received = [:]; outstanding = [:]
+  let t0 = mach_absolute_time()
+  var index = 0
+  var nextReport = 10.0
+  while index < events.count {
+    let e = events[index]
+    let due = t0 + secToTicks(e.at)
+    while mach_absolute_time() < due {
+      for r in link.drain() { handle(r) }
+      Thread.sleep(forTimeInterval: 0.002)
+    }
+    link.send(e.bytes)
+    sent[e.kind, default: 0] += 1
+    index += 1
+    let now = ticksToSec(mach_absolute_time() - t0)
+    if now >= nextReport { print(String(format: "  %.0f s of %.0f s", now, seconds)); nextReport += 10 }
+  }
+  // let arps and gates finish, then every note should be down
+  let settle = Date().addingTimeInterval(3.5)
+  while Date() < settle { for r in link.drain() { handle(r) }; Thread.sleep(forTimeInterval: 0.01) }
+  guard let after = link.memory() else { print("No memory reply at the end"); exit(1) }
+  lowHeap = min(lowHeap, after.heapLowest); deepStack = max(deepStack, after.stackDeepest)
+  print("")
+  print("Sent: " + sent.sorted { $0.key < $1.key }.map { "\($0.value) \($0.key)" }.joined(separator: ", "))
+  print("Back from the unit: \(received["noteOn", default: 0]) Note On, \(received["noteOff", default: 0]) Note Off, \(acks) acknowledgements, \(statusReplies) status replies")
+  let stuck = outstanding.filter { $0.value > 0 }
+  if received["noteOn", default: 0] == 0 { print("Notes: none came back on the USB port\(usbRoute ? "" : ", and no route sends to USB"), so the stuck note check could not run. Memory and loop numbers below are still real.") }
+  else if stuck.isEmpty { print("Notes: every Note On the unit sent came to an end. No stuck notes.") }
+  else { print("STUCK NOTES: \(stuck.count): " + stuck.sorted { $0.key < $1.key }.prefix(12).map { "ch \($0.key / 128 + 1) note \($0.key % 128)" }.joined(separator: ", ")) }
+  let extraOff = outstanding.filter { $0.value < 0 }.count
+  if extraOff > 0 { print("(\(extraOff) notes were ended more than once, harmless)") }
+  print("Longest pass of the main loop: \(maxLoopUs) microseconds. Input held back \(heldBack) times. Fullest queues: link \(maxLinkPct)%, USB \(maxUsbPct)%")
+  print("Memory after: free heap lowest \(lowHeap / 1024) KB (it was \(before.heapLowest / 1024) KB before), main stack deepest \(deepStack) of 2048 bytes")
+  let healthy = stuck.isEmpty && deepStack < 1600 && lowHeap > 20 * 1024
+  print(healthy ? "RESULT: healthy" : "RESULT: look at the lines above")
+  exit(healthy ? 0 : 1)
+}
+
 // ---- main ------------------------------------------------------------------------------------------------------------
 
 var args = Array(CommandLine.arguments.dropFirst())
@@ -404,6 +648,13 @@ case "version":
   if let id = link.identity() { print("FoxWizard main brain: firmware \(id.major).\(id.minor), protocol \(id.protocolVersion)") } else { print("No answer") ; exit(1) }
   if let st = link.status() { print("Sidecar: \(st.host ? "present, firmware \(st.fw)" : "not present")") }
   if let m = link.memory() { print("Memory: the free heap has been as low as \(m.heapLowest / 1024) KB since power on (of about 44 KB at start), the main stack has gone \(m.stackDeepest) bytes deep (of 2048)") }
+case "session":
+  guard let (source, destination) = findEndpoints(matching: portName), let link = Link(source: source, destination: destination) else {
+    print("No MIDI port with \"\(portName)\" in its name. Try: clock_check list"); exit(2)
+  }
+  let secs = Double(args.dropFirst().first ?? "") ?? 90
+  let chans = (option("--channels") ?? "1,10").split(separator: ",").compactMap { UInt8($0) }.filter { $0 >= 1 && $0 <= 16 }.map { $0 - 1 }
+  runSession(link, seconds: secs, channels: chans.isEmpty ? [0, 9] : chans)
 case "selftest":
   var selftestFailed = false
   defer { }
@@ -441,5 +692,5 @@ case "out", "in", "all":
   }
   exit(summary())
 default:
-  print("clock_check list | version | all | out [seconds] | in [bpm] [seconds] | selftest   (--port NAME, --expect BPM)")
+  print("clock_check list | version | session [seconds] | all | out [seconds] | in [bpm] [seconds] | selftest   (--port NAME, --expect BPM)")
 }
