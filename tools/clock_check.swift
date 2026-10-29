@@ -124,13 +124,13 @@ final class Link {
   }
 
   // The memory readout in GET_STATUS (1.108): the lowest the free heap has been in bytes, and the deepest the main stack has gone.
-  func memory(timeout: Double = 0.6) -> (heapLowest: Int, stackDeepest: Int, crash: Int)? {
+  func memory(timeout: Double = 0.6) -> (heapLowest: Int, stackDeepest: Int, crash: Int, faultPc: Int)? {
     _ = drain()
     send([0xF0, 0x7D, 0x4D, 0x13, 0xF7])
     let until = Date().addingTimeInterval(timeout)
     while Date() < until {
       for r in drain() where r.bytes.count > 34 && r.bytes[0] == 0xF0 && r.bytes[3] == 0x14 {
-        return (Int(r.bytes[4 + 28]) * 512, Int(r.bytes[4 + 29]) * 16, r.bytes.count > 4 + 31 ? Int(r.bytes[4 + 30]) | (Int(r.bytes[4 + 31]) << 7) : 0)
+        return (Int(r.bytes[4 + 28]) * 512, Int(r.bytes[4 + 29]) * 16, r.bytes.count > 4 + 31 ? Int(r.bytes[4 + 30]) | (Int(r.bytes[4 + 31]) << 7) : 0, r.bytes.count > 4 + 36 && r.bytes[4 + 36] & 0x40 != 0 ? Int(r.bytes[4 + 32]) | (Int(r.bytes[4 + 33]) << 7) | (Int(r.bytes[4 + 34]) << 14) | (Int(r.bytes[4 + 35]) << 21) | (Int(r.bytes[4 + 36] & 0x0F) << 28) : 0)
       }
       Thread.sleep(forTimeInterval: 0.01)
     }
@@ -743,7 +743,8 @@ func runSession(_ link: Link, seconds: Double, channels: [UInt8], useSetup: Bool
   let extraOff = outstanding.filter { $0.value < 0 }.count
   if extraOff > 0 { print("(\(extraOff) notes were ended more than once, harmless)") }
   print("Longest pass of the main loop: \(maxLoopUs) microseconds. Input held back \(heldBack) times. Fullest queues: link \(maxLinkPct)%, TRS \(maxTrsPct)%, USB \(maxUsbPct)%")
-  if after.crash != 0 { print("The unit's last watchdog restart was in stage \(after.crash)") }
+  if after.faultPc != 0 { print("The unit's last restart was a HARD FAULT at address 0x\(String(after.faultPc, radix: 16)), in stage \(after.crash)") }
+  else if after.crash != 0 { print("The unit's last watchdog restart was in stage \(after.crash)") }
   print("Memory after: free heap lowest \(lowHeap / 1024) KB (it was \(before.heapLowest / 1024) KB before), main stack deepest \(deepStack) of 2048 bytes")
   if setupLoaded && routesLeft != subset.count { print("THE UNIT RESTARTED DURING THE SESSION: it had \(subset.count) test routes and has \(routesLeft) now") }
   let healthy = stuck.isEmpty && (!setupLoaded || routesLeft == subset.count) && deepStack < 1600 && lowHeap > 20 * 1024

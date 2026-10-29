@@ -101,7 +101,7 @@ constexpr uint8_t SYSEX_MFR_ID = 0x7D;   // reserved for non-commercial/educatio
 constexpr uint8_t SYSEX_DEVICE_ID = 0x4D; // 'M'
 constexpr uint8_t PROTOCOL_VERSION = 6; // 2: 45-byte routes with port masks, GET_STATUS. 3: clock settings, LEARN. 4: 53-byte routes with feature fields, feature blocks. 5: presets. 6: Round Robin Priority order block
 constexpr uint8_t FW_VERSION_MAJOR = 1;
-constexpr uint8_t FW_VERSION_MINOR = 111;
+constexpr uint8_t FW_VERSION_MINOR = 112;
 constexpr uint8_t FW_CHUNK_BYTES = 128;          // firmware bytes per FW_DATA message, 147 once packed
 constexpr uint32_t FW_REBOOT_DELAY_MS = 300;     // lets the FW_END ACK reach the host before rebooting
 const char DEVICE_NAME[] = "FoxWizard Mini MIDI Multitool"; // long name sent in the SysEx IDENTITY_REPLY
@@ -662,6 +662,9 @@ uint32_t heapLowestFree = 0xFFFFFFFF;
 // watchdog restart, and the next start reads it and reports it in GET_STATUS. A stage number stays until another writes over it.
 #define CRUMB(n) (watchdog_hw->scratch[2] = (uint32_t)(n))
 uint16_t lastRestartCrumb = 0; // 0: power on or a restart the unit asked for, else the stage it was in
+uint32_t lastFaultPc = 0;      // 1.112: the address a hard fault stopped at, 0 if the last restart was not one
+bool lastFaultSeen = false;
+
 fw::RollingHistory stutterHistory;
 fw::HistoryRepeater stutterRepeater;
 uint16_t stutterRouteIdx = 0xFFFF;
@@ -1910,6 +1913,7 @@ void usbSend(const uint8_t packet[4]) {
     usbHead = next;
   }
   pumpUsbOut(); // straight out when TinyUSB has room, so nothing waits for the next loop
+  CRUMB(83);
 }
 
 // Inputs are read only while both output queues have room, so a slow output holds the inputs back
@@ -5902,6 +5906,12 @@ void handleSysexCommand(uint8_t sourcePort, const uint8_t *cmdBuf, uint8_t cmdLe
       // 1.110: the stage the main loop was in when the watchdog last restarted the unit, 0 for none. Two 7-bit bytes.
       appendReply(lastRestartCrumb & 0x7F);
       appendReply((lastRestartCrumb >> 7) & 0x7F);
+      // 1.112: the address a hard fault stopped at, 28 bits in four 7-bit bytes, then its top 4 bits with bit 6 set when there was one.
+      appendReply(lastFaultPc & 0x7F);
+      appendReply((lastFaultPc >> 7) & 0x7F);
+      appendReply((lastFaultPc >> 14) & 0x7F);
+      appendReply((lastFaultPc >> 21) & 0x7F);
+      appendReply((uint8_t)((lastFaultSeen ? 0x40 : 0) | ((lastFaultPc >> 28) & 0x0F)));
       perfLoopMaxUs = perfLinkLimitHits = perfInputHeldBack = perfLinkHigh = perfTrsHigh = perfUsbHigh = 0;
       perfRepeatOn = perfStrayOff = perfLoopOrphanOff = perfLoopRepeatOn = 0;
       sendReply(sourcePort);
@@ -6390,6 +6400,31 @@ void serviceStuckNoteGuard() {
 
 // The clock and the arps are the timing that has to stay put, so they run first each loop, and again every
 // few input messages, instead of waiting for a long run of input to finish (1.84).
+// A hard fault saves the address it stopped at and restarts the unit at once, instead of sitting there until the watchdog fires. The
+// watchdog's scratch registers survive the restart: 2 holds the stage with a marker in its top half, 3 the address.
+extern "C" __attribute__((naked)) void isr_hardfault(void) {
+  __asm volatile(
+    ".syntax unified\n"
+    "mov  r0, lr\n"
+    "movs r1, #4\n"
+    "tst  r0, r1\n"
+    "bne  1f\n"
+    "mrs  r0, msp\n"
+    "b    2f\n"
+    "1: mrs  r0, psp\n"
+    "2: ldr  r1, [r0, #24]\n"   // the stacked PC: where it stopped
+    "ldr  r2, =0x40058000\n"    // the watchdog
+    "str  r1, [r2, #0x18]\n"    // scratch 3
+    "ldr  r1, [r2, #0x14]\n"    // scratch 2, the stage
+    "ldr  r3, =0xFA170000\n"
+    "adds r1, r1, r3\n"   // the stage is below 0x10000, so adding sets the marker
+    "str  r1, [r2, #0x14]\n"
+    "ldr  r1, =0x80000000\n"
+    "str  r1, [r2, #0]\n"       // trigger: restart now
+    "3: b 3b\n"
+  );
+}
+
 void paintStack() {
   const uint8_t *sp = (const uint8_t *)__builtin_frame_address(0);
   for (uint8_t *p = (uint8_t *)&__StackBottom; p + 128 < sp; ++p) *p = 0xA5; // below the live stack, with room to spare
@@ -6854,8 +6889,16 @@ void serviceButton() {
 // ============================================================================================
 void setup() {
   paintStack();
-  lastRestartCrumb = watchdog_enable_caused_reboot() ? (uint16_t)watchdog_hw->scratch[2] : 0; // a timeout, not a restart the unit asked for
+  const uint32_t scratch2 = watchdog_hw->scratch[2];
+  if ((scratch2 & 0xFFFF0000u) == 0xFA170000u) { // a hard fault saved where it stopped
+    lastFaultSeen = true;
+    lastFaultPc = watchdog_hw->scratch[3];
+    lastRestartCrumb = (uint16_t)scratch2;
+  } else if (watchdog_enable_caused_reboot()) { // a timeout, not a restart the unit asked for
+    lastRestartCrumb = (uint16_t)scratch2;
+  }
   watchdog_hw->scratch[2] = 0;
+  watchdog_hw->scratch[3] = 0;
   pinMode(PIN_LED_OUT, OUTPUT);
   pinMode(PIN_LED_USB, OUTPUT);
   pinMode(PIN_LED_IN, OUTPUT);
@@ -6952,7 +6995,9 @@ void loop() {
   CRUMB(79);
   pumpTrsOut();
   pumpUsbOut();
+  CRUMB(81);
   serviceLinkFlow();
+  CRUMB(82);
   pumpLinkOut();
   CRUMB(80);
   sampleMemory();
