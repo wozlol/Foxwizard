@@ -31,7 +31,7 @@ case "$1" in
     TEST_MINOR="$2"
     case "$TEST_MINOR" in ''|*[!0-9]*) echo "Usage: $0 --test MINOR" >&2; exit 1 ;; esac
     # Build a copy with the test version, leaving the source alone.
-    mkdir "$BUILD/$SKETCH_NAME"
+    cp -R "$SKETCH" "$BUILD/$SKETCH_NAME"
     sed "s/^constexpr uint8_t FW_VERSION_MINOR = [0-9]*;/constexpr uint8_t FW_VERSION_MINOR = $TEST_MINOR;/" "$SKETCH/$SKETCH_NAME.ino" > "$BUILD/$SKETCH_NAME/$SKETCH_NAME.ino"
     SKETCH="$BUILD/$SKETCH_NAME"
     ;;
