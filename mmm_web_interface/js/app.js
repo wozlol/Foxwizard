@@ -1925,7 +1925,7 @@ function renderRouteCard(route, index, animateStaple) {
         <div class="route-output-col">
           <div class="col-header-row">${portSwitchesHtml(route, index, 'outPorts', 'Output')}</div>
           <div class="field-row">
-            <label>Output Channels <span class="channel-warning">${countBits(route.outputChannels) > 2 ? 'Caution: dense data may lag if cloned to too many channels.' : ''}</span></label>
+            <label>Output Channels <span class="channel-warning">${channelWarningText(route)}</span></label>
             ${channelGrid(index, 'outputChannels', route.outputChannels)}
           </div>
           <div class="field-row-cols">
@@ -1957,12 +1957,16 @@ function renderRouteCard(route, index, animateStaple) {
 // The "many channels" warning is computed at render time only — channel checkboxes don't trigger
 // a re-render (the whole point is avoiding a full-list rebuild on every click), so it needs its
 // own tiny direct DOM update or it just goes stale after the first render.
+// Notes sent to several channels are cloned to all of them. With Round Robin on they go to one at a time, so no caution.
+function channelWarningText(route) {
+  return !route.roundRobin && countBits(route.outputChannels) > 2 ? 'Caution: dense data may lag if cloned to too many channels.' : '';
+}
+
 function updateChannelWarning(index) {
   const card = routesContainer.querySelector(`.route-card[data-route-index="${index}"]`);
   const warningEl = card?.querySelector('.channel-warning');
   if (!warningEl) return;
-  const on = countBits(state.routes[index].outputChannels) > 2;
-  warningEl.textContent = on ? 'Caution: dense data may lag if cloned to too many channels.' : '';
+  warningEl.textContent = channelWarningText(state.routes[index]);
 }
 
 // Same idea as updateChannelWarning above — "All Channels"/"All Data" only reflect the current
