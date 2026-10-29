@@ -141,15 +141,17 @@ USB-A devices and hubs have no CC, so the Zero's own 5.1 kΩ CC resistors don't 
 
 ## Link protocol
 
-UART, 1,000,000 baud, 8N1. One frame carries one USB-MIDI packet plus a port number.
+UART, 1,000,000 baud, 8N1. The link carries UMP, the MIDI 2.0 packet. One frame carries one 32-bit UMP word plus a port number. A message is 1 to 4 words, and the Message Type in the top 4 bits of its first word gives its length, so a message type added to the MIDI 2.0 spec later passes through the host brain unchanged.
 
 | Byte | Contents |
 |---|---|
-| 0 | bit 7 = 1, bits 6-4 = USB cable 0-7, bits 3-0 = CIN |
-| 1 | bit 7 = 0, bits 6-3 = port, bit 2 = top bit of MIDI byte 3, bit 1 = MIDI byte 2, bit 0 = MIDI byte 1 |
-| 2, 3, 4 | MIDI bytes 1, 2, 3, low 7 bits |
+| 0 | bit 7 = 1, bits 6-3 = port, bit 2 = first word of a message, bits 1-0 = 0 |
+| 1 | bit 7 = 0, bits 3-0 = bits 31-28 of the word |
+| 2, 3, 4, 5 | bit 7 = 0, the word's next 7 bits each: 27-21, 20-14, 13-7, 6-0 |
 
-Only byte 0 has bit 7 set, so after any glitch the receiver resyncs on the next frame.
+Only byte 0 has bit 7 set, so after any glitch the receiver resyncs on the next frame. A real time message (clock, start, stop, continue) can come between the words of another message, because it skips the queues. The receiver takes it out whole and carries on with the message in progress. A first-word frame that arrives mid-message drops the unfinished message. At 1,000,000 baud a frame takes 60 µs.
+
+Each brain turns MIDI at its own edge. The host brain converts the USB MIDI 1.0 packets of its devices and DIN IN into UMP, and UMP back into USB MIDI 1.0 packets for devices and DIN OUTs, translating a MIDI 2.0 message down for those. The main brain does the same for the link, so everything inside it stays MIDI 1.0 until it is changed on purpose. `ump.h` has the conversion, with MIDI 1.0 messages carried exactly and MIDI 2.0 messages translated by the spec's scaling.
 
 | Port | Host to main | Main to host |
 |---|---|---|
@@ -161,7 +163,7 @@ Only byte 0 has bit 7 set, so after any glitch the receiver resyncs on the next 
 | 13-14 | From C3 BLE MIDI devices (planned) | C3 BLE MIDI devices (planned) |
 | 15 | Control | Control |
 
-Port 15 carries control frames, with the frame type in the CIN field:
+Port 15 carries control frames. The word's four bytes are the frame type (0-15) then three data bytes, all 8 bits:
 
 | Type | Direction | Contents |
 |---|---|---|
@@ -213,7 +215,7 @@ The host brain reports its total drop count in its port map frame. The main brai
 
 ## Timing
 
-- Realtime messages (clock, start, stop, continue) and control frames skip every ordinary queue on both brains, and still flow while a brain is paused. A clock tick waits at most one frame, 50 µs.
+- Realtime messages (clock, start, stop, continue) and control frames skip every ordinary queue on both brains, and still flow while a brain is paused. A clock tick waits at most one frame, 60 µs.
 - On DIN OUTs, realtime bytes go out between the bytes of other messages, as MIDI allows.
 - USB adds up to 1 ms of wobble, the same as any USB MIDI device on a computer.
 - The main brain parses at most 256 link bytes per loop and only writes to the link while the PIO FIFO has room. It never waits on the host brain.

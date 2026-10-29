@@ -6,6 +6,8 @@
 #include <stdint.h>
 #include <string.h>
 
+#include "ump.h"
+
 constexpr uint32_t LINK_BAUD = 1000000;
 
 constexpr uint8_t LINK_PORT_ALL = 0;      // main -> host: every USB device and every DIN OUT
@@ -61,48 +63,96 @@ constexpr uint8_t RESTART_STALL = 5;    // the USB driver was asked to clear a d
 constexpr uint32_t FLOW_REPEAT_MS = 100; // flow state is resent this often
 constexpr uint32_t FLOW_EXPIRY_MS = 500; // a pause with no repeat this long is treated as resume
 
+// The link carries UMP, the MIDI 2.0 packet (ump.h), one 32-bit word to a frame. Each side converts to and from the USB
+// MIDI 1.0 packets its own code uses at the edge of the link, so a MIDI 2.0 message passes through unchanged and a MIDI 1.0
+// one is a UMP packet that carries it exactly.
+//
+// A frame is 6 bytes. Byte 0 is the only one with bit 7 set: bits 6-3 the port, bit 2 set on the first word of a message.
+// Bytes 1-5 are the 32 bit word, 7 bits at a time, most significant first (4 bits in byte 1). A message is 1 to 4 words, its
+// length the Message Type of its first word, so a message type added later passes through without being understood.
+constexpr uint8_t LINK_FRAME_BYTES = 6;
+
 struct LinkFrame {
-  uint8_t b[5];
+  uint8_t b[LINK_FRAME_BYTES];
 };
 
 struct MidiPacket {
   uint8_t b[4];
 };
 
-// Clock, Start, Continue, Stop, Active Sensing, Reset. These skip every normal queue.
-inline bool isRealtimePacket(const uint8_t pkt[4]) {
-  uint8_t cin = pkt[0] & 0x0F;
-  return (cin == 0x05 || cin == 0x0F) && pkt[1] >= 0xF8;
-}
-
-// Messages that leave notes or sustain stuck if lost. Same set as ARPnMIDI's secondary link,
-// plus sustain release.
-inline bool isCriticalPacket(const uint8_t pkt[4]) {
-  uint8_t type = pkt[1] & 0xF0;
-  if (type == 0x80) return true;
-  if (type == 0x90 && pkt[3] == 0) return true;
-  if (type == 0xB0 && (pkt[2] == 120 || pkt[2] == 123)) return true;
-  if (type == 0xB0 && pkt[2] == 64 && pkt[3] < 64) return true;
-  return false;
-}
-
-inline void encodeLinkFrame(uint8_t port, const uint8_t pkt[4], LinkFrame &f) {
-  f.b[0] = 0x80 | (((pkt[0] >> 4) & 0x07) << 4) | (pkt[0] & 0x0F);
-  f.b[1] = ((port & 0x0F) << 3) | ((pkt[1] >> 7) & 1) | (((pkt[2] >> 7) & 1) << 1) | (((pkt[3] >> 7) & 1) << 2);
-  f.b[2] = pkt[1] & 0x7F;
-  f.b[3] = pkt[2] & 0x7F;
-  f.b[4] = pkt[3] & 0x7F;
+inline void encodeLinkWord(uint8_t port, uint32_t word, bool first, LinkFrame &f) {
+  f.b[0] = 0x80 | ((port & 0x0F) << 3) | (first ? 0x04 : 0x00);
+  f.b[1] = (uint8_t)((word >> 28) & 0x0F);
+  f.b[2] = (uint8_t)((word >> 21) & 0x7F);
+  f.b[3] = (uint8_t)((word >> 14) & 0x7F);
+  f.b[4] = (uint8_t)((word >> 7) & 0x7F);
+  f.b[5] = (uint8_t)(word & 0x7F);
 }
 
 // Returns the port.
-inline uint8_t decodeLinkFrame(const LinkFrame &f, uint8_t pkt[4]) {
-  uint8_t msbs = f.b[1] & 0x07;
-  pkt[0] = (((f.b[0] >> 4) & 0x07) << 4) | (f.b[0] & 0x0F);
-  pkt[1] = f.b[2] | ((msbs & 1) << 7);
-  pkt[2] = f.b[3] | (((msbs >> 1) & 1) << 7);
-  pkt[3] = f.b[4] | (((msbs >> 2) & 1) << 7);
-  return (f.b[1] >> 3) & 0x0F;
+inline uint8_t decodeLinkWord(const LinkFrame &f, uint32_t &word, bool &first) {
+  word = ((uint32_t)(f.b[1] & 0x0F) << 28) | ((uint32_t)f.b[2] << 21) | ((uint32_t)f.b[3] << 14) | ((uint32_t)f.b[4] << 7) | f.b[5];
+  first = (f.b[0] & 0x04) != 0;
+  return (f.b[0] >> 3) & 0x0F;
 }
+
+// Control frames (port 15) are one word whose 4 bytes are the type then 3 bytes of data.
+inline void encodeLinkFrame(uint8_t port, const uint8_t pkt[4], LinkFrame &f) {
+  encodeLinkWord(port, ((uint32_t)pkt[0] << 24) | ((uint32_t)pkt[1] << 16) | ((uint32_t)pkt[2] << 8) | pkt[3], true, f);
+}
+
+inline uint8_t decodeLinkFrame(const LinkFrame &f, uint8_t pkt[4]) {
+  uint32_t word; bool first;
+  const uint8_t port = decodeLinkWord(f, word, first);
+  pkt[0] = (uint8_t)(word >> 24); pkt[1] = (uint8_t)(word >> 16); pkt[2] = (uint8_t)(word >> 8); pkt[3] = (uint8_t)word;
+  return port;
+}
+
+// Clock, Start, Continue, Stop, Active Sensing, Reset. These skip every normal queue.
+inline bool isRealtimeWord(uint32_t w) { return (w >> 28) == 0x1 && ((w >> 16) & 0xFF) >= 0xF8; }
+
+// Messages that leave notes or sustain stuck if lost. Same set as ARPnMIDI's secondary link, plus sustain release, for
+// MIDI 1.0 and MIDI 2.0 channel voice messages. Judged on a message's first word, and its other words follow it.
+inline bool isCriticalWord(uint32_t w) {
+  const uint8_t type = (uint8_t)(w >> 28), op = (uint8_t)((w >> 16) & 0xF0);
+  const uint8_t d1 = (uint8_t)(w >> 8), d2 = (uint8_t)w;
+  if (type == 0x2) {
+    if (op == 0x80) return true;
+    if (op == 0x90 && d2 == 0) return true;
+    if (op == 0xB0 && (d1 == 120 || d1 == 123)) return true;
+    if (op == 0xB0 && d1 == 64 && d2 < 64) return true;
+  } else if (type == 0x4) {
+    if (op == 0x80) return true;
+    if (op == 0xB0 && (d1 == 120 || d1 == 123 || d1 == 64)) return true; // sustain's value is in the second word
+  }
+  return false;
+}
+
+// Puts a message's words back together from frames. A real time message can sit between the words of another, it goes first
+// on the link, so it comes out whole without disturbing the one in progress. A frame marked as a first word that arrives
+// mid-message drops what was waiting, and the words of a message whose start was lost are ignored.
+struct LinkMessageReader {
+  uint32_t words[4];
+  uint8_t have = 0;
+  uint8_t need = 0;
+
+  // Returns the number of words in out when a message is whole, else 0.
+  uint8_t feed(uint32_t word, bool first, uint32_t out[4]) {
+    if (first) {
+      if (isRealtimeWord(word)) { out[0] = word; return 1; }
+      have = 0;
+      need = fw::ump::wordCount(word);
+    } else if (need == 0) {
+      return 0;
+    }
+    words[have++] = word;
+    if (have < need) return 0;
+    for (uint8_t i = 0; i < need; ++i) out[i] = words[i];
+    const uint8_t n = need;
+    have = need = 0;
+    return n;
+  }
+};
 
 // Collects link bytes into frames. Only byte 0 of a frame has bit 7 set, so any glitch costs at
 // most the frame it hit.
@@ -118,7 +168,7 @@ struct LinkFrameReader {
     }
     if (len == 0) return false;
     frame.b[len++] = byte;
-    if (len < 5) return false;
+    if (len < LINK_FRAME_BYTES) return false;
     len = 0;
     return true;
   }
@@ -155,6 +205,7 @@ class MidiQueue {
   }
 
   T *peek() { return empty() ? nullptr : &entries_[tail_]; }
+  T *peekAt(uint16_t i) { return i < size() ? &entries_[(tail_ + i) % Capacity] : nullptr; } // the i-th waiting entry
   void pop() { if (!empty()) tail_ = (uint16_t)((tail_ + 1) % Capacity); }
   void clear() { head_ = tail_ = 0; }
 
@@ -174,3 +225,18 @@ class MidiQueue {
   uint32_t dropped_ = 0;
   uint32_t criticalDropped_ = 0;
 };
+
+// Puts a whole message into a frame queue or none of it, so a message never goes out in part.
+template <typename Q>
+inline bool pushLinkMessage(Q &q, uint8_t port, const uint32_t *words, uint8_t n, bool critical) {
+  if (q.freeSlots(critical) < n) {
+    q.countDrop(critical);
+    return false;
+  }
+  for (uint8_t i = 0; i < n; ++i) {
+    LinkFrame f;
+    encodeLinkWord(port, words[i], i == 0, f);
+    q.push(f, critical);
+  }
+  return true;
+}

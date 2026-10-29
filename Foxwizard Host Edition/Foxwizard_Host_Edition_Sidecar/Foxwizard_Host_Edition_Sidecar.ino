@@ -68,7 +68,7 @@ constexpr uint8_t PIN_TRS_BOARD = 14; // floating (its internal pull-up): a bare
                                        // Tells the main brain whether TRS 2-6 physically exist.
 
 constexpr uint32_t DIN_BAUD = 31250;
-constexpr uint8_t HOST_FW_VERSION = 7; // 3: the host report. 4: chained hubs, hub and spare device reporting. 5: 64 endpoint slots, stack trace events. 6: 7 USB Host slots. 7: steadier TRS board pin read
+constexpr uint8_t HOST_FW_VERSION = 8; // 3: the host report. 4: chained hubs, hub and spare device reporting. 5: 64 endpoint slots, stack trace events. 6: 7 USB Host slots. 7: steadier TRS board pin read. 8: the link carries UMP
 
 constexpr uint8_t HUB_PORTS = HOST_SLOTS; // USB Host slots, 7 from host firmware 6
 constexpr uint8_t LED_PORTS = 4;           // only the first four have a light on the board
@@ -107,6 +107,8 @@ struct HubPort {
   uint8_t midiIdx = 0xFF;
   MidiQueue<MidiPacket, 32, 0> rt;
   MidiQueue<MidiPacket, 256, 32> normal;
+  fw::ump::UsbMidiToUmp up;   // this device's packets into UMP for the link
+  fw::ump::UmpToUsbMidi conv; // the link's UMP into this device's packets
   uint32_t lastProgressMs = 0;
   uint32_t blinkUntilMs = 0;
 };
@@ -115,6 +117,7 @@ struct DinOut {
   HardwareSerial *serial;
   MidiQueue<MidiPacket, 32, 0> rt;
   MidiQueue<MidiPacket, 256, 32> normal;
+  fw::ump::UmpToUsbMidi conv; // the link's UMP into the packets this DIN OUT sends as bytes
   MidiPacket current;
   uint8_t pos = 0;
   uint8_t len = 0;
@@ -320,8 +323,10 @@ MidiQueue<LinkFrame, 2048, 128> toMainNormal;
 MidiQueue<LinkFrame, FROM_MAIN_FRAMES, 64> fromMain;
 
 LinkFrame linkTxFrame;
-uint8_t linkTxPos = 5; // 5 = no frame in progress
+uint8_t linkTxPos = LINK_FRAME_BYTES; // LINK_FRAME_BYTES = no frame in progress
 LinkFrameReader linkReader;
+bool linkInCritical = false; // the message being read from the main brain, judged on its first word
+fw::ump::UsbMidiToUmp dinUp; // DIN IN's packets into UMP for the link
 
 bool mainAskedPause = false;
 uint32_t mainFlowMs = 0;
@@ -340,11 +345,24 @@ uint32_t usbStallDrops = 0;
 // Link out to the main brain. Realtime and control frames always go first. Ordinary frames
 // stop while the main brain has asked for a pause and wait in toMainNormal.
 // ============================================================================================
+// A control frame, port 15: a type byte then 3 data bytes.
 void sendToMain(uint8_t port, const uint8_t pkt[4]) {
   LinkFrame f;
   encodeLinkFrame(port, pkt, f);
-  if (port == LINK_PORT_CONTROL || isRealtimePacket(pkt)) toMainRt.push(f, true);
-  else toMainNormal.push(f, isCriticalPacket(pkt));
+  toMainRt.push(f, true);
+}
+
+// A USB MIDI 1.0 packet from a device or DIN IN, into UMP for the main brain. A SysEx can come out a little after its last
+// packet, a message is queued whole or not at all.
+void sendPacketToMain(uint8_t port, fw::ump::UsbMidiToUmp &up, const uint8_t pkt[4]) {
+  uint32_t words[4];
+  const uint8_t n = up.push(pkt, words);
+  for (uint8_t i = 0; i < n;) {
+    const uint8_t len = fw::ump::wordCount(words[i]);
+    if (isRealtimeWord(words[i])) pushLinkMessage(toMainRt, port, &words[i], len, true);
+    else pushLinkMessage(toMainNormal, port, &words[i], len, isCriticalWord(words[i]));
+    i += len;
+  }
 }
 
 bool mainPaused() {
@@ -353,7 +371,7 @@ bool mainPaused() {
 
 void pumpLinkOut() {
   while (true) {
-    if (linkTxPos >= 5) {
+    if (linkTxPos >= LINK_FRAME_BYTES) {
       LinkFrame *next = toMainRt.peek();
       if (next) {
         linkTxFrame = *next;
@@ -366,8 +384,8 @@ void pumpLinkOut() {
       }
       linkTxPos = 0;
     }
-    while (linkTxPos < 5 && Serial1.availableForWrite() > 0) Serial1.write(linkTxFrame.b[linkTxPos++]);
-    if (linkTxPos < 5) return; // UART FIFO full, carry on next loop
+    while (linkTxPos < LINK_FRAME_BYTES && Serial1.availableForWrite() > 0) Serial1.write(linkTxFrame.b[linkTxPos++]);
+    if (linkTxPos < LINK_FRAME_BYTES) return; // UART FIFO full, carry on next loop
   }
 }
 
@@ -404,8 +422,8 @@ void serviceControlOut() {
     if (++reportNext >= HOST_REPORT_BYTES / 2) reportNext = 0xFFFF;
   }
 
-  // Bytes still in the UART buffer count as 5 to a frame.
-  uint16_t backlog = fromMain.size() + Serial1.available() / 5;
+  // Bytes still in the UART buffer count as LINK_FRAME_BYTES to a frame.
+  uint16_t backlog = fromMain.size() + Serial1.available() / LINK_FRAME_BYTES;
   bool wantPause = pausingMain ? backlog > FROM_MAIN_RESUME_AT : backlog > FROM_MAIN_PAUSE_AT;
   if (wantPause != pausingMain || now - lastFlowSentMs >= FLOW_REPEAT_MS) {
     pausingMain = wantPause;
@@ -442,15 +460,28 @@ void dispatchRealtime(uint8_t port, const uint8_t pkt[4]) {
   }
 }
 
-// Moves frames from fromMain to the outputs in order. A frame waits until every output it goes
-// to has room, so nothing is dropped while outputs are just slow. Only a USB device that has
-// accepted nothing for USB_STALL_MS is skipped, so one stuck device can't hold up the rest.
+// Moves messages from fromMain to the outputs in order, each as the USB MIDI 1.0 packets that output takes (a MIDI 2.0
+// message is translated down for DIN and for devices). A message waits until every output it goes to has room, so nothing
+// is dropped while outputs are just slow. Only a USB device that has accepted nothing for USB_STALL_MS is skipped, so one
+// stuck device can't hold up the rest.
+constexpr uint16_t OUT_ROOM_PACKETS = 8; // a message can make up to 8 packets
 void dispatchFromMain() {
   LinkFrame *f;
   while ((f = fromMain.peek()) != nullptr) {
-    uint8_t pkt[4];
-    uint8_t port = decodeLinkFrame(*f, pkt);
-    bool critical = isCriticalPacket(pkt);
+    uint32_t words[4];
+    bool first;
+    const uint8_t port = decodeLinkWord(*f, words[0], first);
+    if (!first) { fromMain.pop(); continue; } // the rest of a message whose start was lost
+    const uint8_t n = fw::ump::wordCount(words[0]);
+    if (fromMain.size() < n) return;          // the rest of the message is still on its way
+    uint8_t whole = 1;
+    for (; whole < n; ++whole) {
+      bool again;
+      decodeLinkWord(*fromMain.peekAt(whole), words[whole], again);
+      if (again) break;                       // a new message starts here, so this one was cut short
+    }
+    if (whole < n) { for (uint8_t i = 0; i < whole; ++i) fromMain.pop(); continue; }
+    const bool critical = isCriticalWord(words[0]);
     bool toUsb[HUB_PORTS] = {};
     bool toDin[DIN_OUTS] = {false, false, false, false, false};
 
@@ -461,7 +492,7 @@ void dispatchFromMain() {
     for (uint8_t i = 0; i < HUB_PORTS && ready; ++i) {
       if (!toUsb[i]) continue;
       HubPort &hp = hubPorts[i];
-      if (hp.normal.freeSlots(critical) > 0) continue;
+      if (hp.normal.freeSlots(critical) >= OUT_ROOM_PACKETS) continue;
       if (usbStalled(hp)) {
         toUsb[i] = false;
         ++usbStallDrops;
@@ -472,19 +503,23 @@ void dispatchFromMain() {
       ready = false;
     }
     for (uint8_t i = 0; i < DIN_OUTS && ready; ++i) {
-      if (toDin[i] && dinOuts[i].normal.freeSlots(critical) == 0) ready = false;
+      if (toDin[i] && dinOuts[i].normal.freeSlots(critical) < OUT_ROOM_PACKETS) ready = false;
     }
     if (!ready) return; // try again next loop, the outputs are draining
 
-    MidiPacket p;
-    memcpy(p.b, pkt, 4);
+    uint8_t packets[8][4];
     for (uint8_t i = 0; i < HUB_PORTS; ++i) {
       if (!toUsb[i]) continue;
-      hubPorts[i].normal.push(p, critical);
+      const uint8_t made = hubPorts[i].conv.push(words, n, packets);
+      for (uint8_t k = 0; k < made; ++k) { MidiPacket p; memcpy(p.b, packets[k], 4); hubPorts[i].normal.push(p, critical); }
       hubPorts[i].blinkUntilMs = millis() + LED_BLINK_MS;
     }
-    for (uint8_t i = 0; i < DIN_OUTS; ++i) if (toDin[i]) dinOuts[i].normal.push(p, critical);
-    fromMain.pop();
+    for (uint8_t i = 0; i < DIN_OUTS; ++i) {
+      if (!toDin[i]) continue;
+      const uint8_t made = dinOuts[i].conv.push(words, n, packets);
+      for (uint8_t k = 0; k < made; ++k) { MidiPacket p; memcpy(p.b, packets[k], 4); dinOuts[i].normal.push(p, critical); }
+    }
+    for (uint8_t i = 0; i < n; ++i) fromMain.pop();
   }
 }
 
@@ -561,28 +596,32 @@ void snapshotPortsForRestart() {
 void pumpLinkIn() {
   uint16_t budget = LINK_RX_BUDGET;
   while (budget-- && Serial1.available() > 0) {
-    // With fromMain full, bytes stay in the 4 KB UART buffer instead of being dropped.
-    if (fromMain.freeSlots(false) == 0) return;
+    // With fromMain nearly full, bytes stay in the 4 KB UART buffer instead of being dropped. A message is up to 4 frames.
+    if (fromMain.freeSlots(false) < 4) return;
     if (!linkReader.feed((uint8_t)Serial1.read())) continue;
-    uint8_t pkt[4];
-    uint8_t port = decodeLinkFrame(linkReader.frame, pkt);
+    uint32_t word;
+    bool first;
+    const uint8_t port = decodeLinkWord(linkReader.frame, word, first);
     lastMainFrameMs = millis();
 
     if (port == LINK_PORT_CONTROL) {
-      const uint8_t type = pkt[0] & 0x0F;
+      const uint8_t type = (uint8_t)(word >> 24) & 0x0F;
+      const uint8_t data = (uint8_t)(word >> 16);
       if (type == CONTROL_FLOW) {
-        mainAskedPause = pkt[1] == 1;
+        mainAskedPause = data == 1;
         mainFlowMs = millis();
       } else if (type == CONTROL_BRIGHTNESS) {
-        ledBrightnessStep = pkt[1] > 10 ? 10 : pkt[1];
+        ledBrightnessStep = data > 10 ? 10 : data;
       }
       continue;
     }
-    if (isRealtimePacket(pkt)) {
+    if (first && isRealtimeWord(word)) { // goes straight out, as a packet, never behind other traffic
+      const uint8_t pkt[4] = {(uint8_t)((fw::ump::group(word) << 4) | 0x0F), (uint8_t)(word >> 16), 0, 0};
       dispatchRealtime(port, pkt);
       continue;
     }
-    fromMain.push(linkReader.frame, isCriticalPacket(pkt));
+    if (first) linkInCritical = isCriticalWord(word);
+    fromMain.push(linkReader.frame, linkInCritical);
   }
 }
 
@@ -591,7 +630,7 @@ void pumpLinkIn() {
 // ============================================================================================
 void sendDinInPacket(uint8_t cin, uint8_t b1, uint8_t b2, uint8_t b3) {
   uint8_t pkt[4] = {cin, b1, b2, b3};
-  sendToMain(LINK_PORT_DIN, pkt);
+  sendPacketToMain(LINK_PORT_DIN, dinUp, pkt);
   noteStatusActivity(STATUS_BLUE);
 }
 
@@ -684,6 +723,8 @@ void resetHubPort(HubPort &hp) {
   hp.midiIdx = 0xFF;
   hp.rt.clear();
   hp.normal.clear();
+  hp.up.reset();
+  hp.conv.reset();
   hp.lastProgressMs = millis();
   hp.blinkUntilMs = 0;
 }
@@ -833,13 +874,13 @@ void pumpUsbIn() {
     HubPort &hp = hubPorts[p];
     if (!hp.mounted) continue;
     uint8_t buf[USB_READ_PACKETS * 4];
-    while (toMainNormal.freeSlots(false) >= USB_READ_PACKETS && toMainRt.freeSlots(true) >= USB_READ_PACKETS) {
+    while (toMainNormal.freeSlots(false) >= USB_READ_PACKETS * 4 && toMainRt.freeSlots(true) >= USB_READ_PACKETS) { // a packet can make up to 4 words
       uint32_t n = tuh_midi_packet_read_n(hp.midiIdx, buf, sizeof(buf));
       if (n == 0) break;
       for (uint32_t i = 0; i + 3 < n; i += 4) {
         if ((buf[i] & 0x0F) < 2) continue; // CIN 0/1 reserved, also skips zero padding
         ++blackBox.port[p].received;
-        sendToMain(hostLinkPort(p + 1), &buf[i]);
+        sendPacketToMain(hostLinkPort(p + 1), hp.up, &buf[i]);
       }
       hp.blinkUntilMs = millis() + LED_BLINK_MS;
       noteStatusActivity(STATUS_BLUE);

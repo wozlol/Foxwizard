@@ -99,7 +99,7 @@ constexpr uint8_t SYSEX_MFR_ID = 0x7D;   // reserved for non-commercial/educatio
 constexpr uint8_t SYSEX_DEVICE_ID = 0x4D; // 'M'
 constexpr uint8_t PROTOCOL_VERSION = 4; // 2: 45-byte routes with port masks, GET_STATUS. 3: clock settings, LEARN. 4: 53-byte routes with feature fields, feature blocks
 constexpr uint8_t FW_VERSION_MAJOR = 1;
-constexpr uint8_t FW_VERSION_MINOR = 98;
+constexpr uint8_t FW_VERSION_MINOR = 99;
 constexpr uint8_t FW_CHUNK_BYTES = 128;          // firmware bytes per FW_DATA message, 147 once packed
 constexpr uint32_t FW_REBOOT_DELAY_MS = 300;     // lets the FW_END ACK reach the host before rebooting
 const char DEVICE_NAME[] = "FoxWizard Mini MIDI Multitool"; // long name sent in the SysEx IDENTITY_REPLY
@@ -332,8 +332,12 @@ UsbOutSysexAccum linkOutFrom[SOURCE_COUNT];
 MidiQueue<LinkFrame, 64, 0> linkRtQueue;         // realtime and control frames, always sent first
 MidiQueue<LinkFrame, 1024, 64> linkNormalQueue;  // everything else, waits here while the host brain pauses us
 LinkFrame linkTxFrame;
-uint8_t linkTxPos = 5; // 5 = no frame in progress
+uint8_t linkTxPos = LINK_FRAME_BYTES; // LINK_FRAME_BYTES = no frame in progress
 LinkFrameReader linkReader;
+// The link carries UMP. Each host port's MIDI 1.0 packets are turned into UMP on the way out and back on the way in (1.99).
+LinkMessageReader linkMessage;
+fw::ump::UsbMidiToUmp linkUp[LINK_PORT_COUNT];
+fw::ump::UmpToUsbMidi linkDown[LINK_PORT_COUNT];
 bool hostAskedPause = false;
 uint32_t hostFlowMs = 0;
 bool pausingHost = false;
@@ -1645,12 +1649,30 @@ bool hostPresent() {
   return hostLastStatusMs != 0 && millis() - hostLastStatusMs < HOST_PRESENT_MS;
 }
 
+// A message in progress on either side of the link is dropped when the host brain goes or comes.
+void resetLinkConversion() {
+  linkMessage = LinkMessageReader();
+  for (uint8_t i = 0; i < LINK_PORT_COUNT; ++i) { linkUp[i].reset(); linkDown[i].reset(); }
+}
+
+// pkt is a USB MIDI 1.0 packet for a host port, or a control frame's 4 bytes.
 void linkSend(uint8_t port, const uint8_t pkt[4]) {
   if (port != LINK_PORT_CONTROL && !hostPresent()) return;
-  LinkFrame f;
-  encodeLinkFrame(port, pkt, f);
-  if (port == LINK_PORT_CONTROL || isRealtimePacket(pkt)) linkRtQueue.push(f, true);
-  else linkNormalQueue.push(f, isCriticalPacket(pkt));
+  if (port == LINK_PORT_CONTROL) {
+    LinkFrame f;
+    encodeLinkFrame(port, pkt, f);
+    linkRtQueue.push(f, true);
+    return;
+  }
+  uint32_t words[4];
+  const uint8_t n = linkUp[port & 0x0F].push(pkt, words);
+  for (uint8_t i = 0; i < n;) {
+    const uint8_t len = fw::ump::wordCount(words[i]);
+    const bool realtime = isRealtimeWord(words[i]);
+    if (realtime) pushLinkMessage(linkRtQueue, port, &words[i], len, true);
+    else pushLinkMessage(linkNormalQueue, port, &words[i], len, isCriticalWord(words[i]));
+    i += len;
+  }
 }
 
 bool hostPaused() {
@@ -1659,7 +1681,7 @@ bool hostPaused() {
 
 void pumpLinkOut() {
   while (true) {
-    if (linkTxPos >= 5) {
+    if (linkTxPos >= LINK_FRAME_BYTES) {
       LinkFrame *next = linkRtQueue.peek();
       if (next) {
         linkTxFrame = *next;
@@ -1672,8 +1694,8 @@ void pumpLinkOut() {
       }
       linkTxPos = 0;
     }
-    while (linkTxPos < 5 && linkSerial.availableForWrite() > 0) linkSerial.write(linkTxFrame.b[linkTxPos++]);
-    if (linkTxPos < 5) return; // PIO FIFO full, carry on next loop
+    while (linkTxPos < LINK_FRAME_BYTES && linkSerial.availableForWrite() > 0) linkSerial.write(linkTxFrame.b[linkTxPos++]);
+    if (linkTxPos < LINK_FRAME_BYTES) return; // PIO FIFO full, carry on next loop
   }
 }
 
@@ -5855,12 +5877,15 @@ void serviceStuckNoteGuard() {
   const bool present = hostPresent();
   if (hostRestarted) {
     hostRestarted = false;
+    resetLinkConversion();
     releaseSidecarNotes();
     silenceSidecarOutputs();
     applyBrightnessToLeds(); // the sidecar forgot the brightness knob across its own restart
   } else if (hostWasPresent && !present) {
+    resetLinkConversion();
     releaseSidecarNotes();
   } else if (!hostWasPresent && present) {
+    resetLinkConversion();
     if (hostEverPresent) silenceSidecarOutputs();
     applyBrightnessToLeds(); // first time or returning: give it the current brightness
   }
@@ -5882,8 +5907,10 @@ void pumpHostIn() {
   while (budget-- && linkSerial.available() > 0) {
     if (++sinceTiming >= 40) { sinceTiming = 0; serviceTiming(); } // every 8 frames' worth of bytes
     if (!linkReader.feed((uint8_t)linkSerial.read())) continue;
-    uint8_t packet[4];
-    uint8_t port = decodeLinkFrame(linkReader.frame, packet);
+    uint32_t word;
+    bool first;
+    const uint8_t port = decodeLinkWord(linkReader.frame, word, first);
+    const uint8_t packet[4] = {(uint8_t)(word >> 24), (uint8_t)(word >> 16), (uint8_t)(word >> 8), (uint8_t)word}; // a control frame's bytes
 
     if (port == LINK_PORT_CONTROL) {
       uint8_t type = packet[0] & 0x0F;
@@ -5926,11 +5953,19 @@ void pumpHostIn() {
       continue;
     }
     if (!hostPresent()) continue; // MIDI only counts once the sidecar has identified itself
-    if (hostSlotFromLink(port)) {
-      currentHostPort = hostSlotFromLink(port);
-      handleUsbMidiPacket(DEV_HOST, hostSysex[port], packet);
-    } else if (port == LINK_PORT_DIN) {
-      handleUsbMidiPacket(DEV_TRS2, hostSysex[port], packet);
+    uint32_t message[4];
+    const uint8_t words = linkMessage.feed(word, first, message);
+    if (!words) continue;
+    // The whole message, as the USB MIDI 1.0 packets the rest of this sketch works in. A MIDI 2.0 message is translated down.
+    uint8_t packets[8][4];
+    const uint8_t made = linkDown[port].push(message, words, packets);
+    for (uint8_t k = 0; k < made; ++k) {
+      if (hostSlotFromLink(port)) {
+        currentHostPort = hostSlotFromLink(port);
+        handleUsbMidiPacket(DEV_HOST, hostSysex[port], packets[k]);
+      } else if (port == LINK_PORT_DIN) {
+        handleUsbMidiPacket(DEV_TRS2, hostSysex[port], packets[k]);
+      }
     }
     // Other ports are reserved (13-14: C3 BLE MIDI, planned).
   }
