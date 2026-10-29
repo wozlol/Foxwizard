@@ -98,7 +98,7 @@ constexpr uint8_t SYSEX_MFR_ID = 0x7D;   // reserved for non-commercial/educatio
 constexpr uint8_t SYSEX_DEVICE_ID = 0x4D; // 'M'
 constexpr uint8_t PROTOCOL_VERSION = 4; // 2: 45-byte routes with port masks, GET_STATUS. 3: clock settings, LEARN. 4: 53-byte routes with feature fields, feature blocks
 constexpr uint8_t FW_VERSION_MAJOR = 1;
-constexpr uint8_t FW_VERSION_MINOR = 96;
+constexpr uint8_t FW_VERSION_MINOR = 97;
 constexpr uint8_t FW_CHUNK_BYTES = 128;          // firmware bytes per FW_DATA message, 147 once packed
 constexpr uint32_t FW_REBOOT_DELAY_MS = 300;     // lets the FW_END ACK reach the host before rebooting
 const char DEVICE_NAME[] = "FoxWizard Mini MIDI Multitool"; // long name sent in the SysEx IDENTITY_REPLY
@@ -1296,14 +1296,14 @@ uint8_t *featureBlockData(uint8_t type, uint8_t &size) {
 // The Launchpad's 16 round buttons out of the box, Top 1-8 then Side 1-8. Patchling's
 // defaultLpActions() is the same list, so Reset to Defaults there matches a factory reset here.
 const MapAction LP_DEFAULT_ACTIONS[LAUNCHPAD_BUTTONS] = {
-  {ACT_PROGRAM_STEP, 1, 0, 0}, {ACT_PROGRAM_STEP, 0, 0, 0},     // Program Up, Down
-  {ACT_ARP_DIV_STEP, 0, 0, 0}, {ACT_ARP_DIV_STEP, 1, 0, 0},     // Arp Div Down, Up
-  {ACT_LIVE_CHANNEL, 0, 0, 0}, {ACT_LIVE_CHANNEL, 9, 0, 0},     // Live Ch 1, 10
-  {ACT_LIVE_CHANNEL, 1, 0, 0}, {ACT_LIVE_CHANNEL, 2, 0, 0},     // Live Ch 2, 3
-  {ACT_STUTTER_LENGTH, 4, 0, 0}, {ACT_STUTTER_LENGTH, 3, 0, 0}, // Stutter 2 bars, 1 bar
-  {ACT_STUTTER_LENGTH, 2, 0, 0}, {ACT_STUTTER_LENGTH, 1, 0, 0}, // Stutter 1/2, 1/4 bar
-  {ACT_STUTTER_LENGTH, 0, 0, 0}, {ACT_LOOPER, LOOP_ACT_NOTE_DELETE, 0, 0}, // Stutter 1/8 bar, Looper Note Delete
-  {ACT_LOOPER, 1, 0, 0}, {ACT_LOOPER, 2, 0, 0},                 // Looper Play/Arm/Rec, Stop/Clear/Undo
+  {ACT_LIVE_CHANNEL_STEP, 0, 0, 0}, {ACT_LIVE_CHANNEL_STEP, 1, 0, 0}, // Live Ch Down, Up
+  {ACT_STUTTER_LENGTH, 5, 0, 0}, {ACT_STUTTER_LENGTH, 4, 0, 0},         // Stutter 4 bars, 2 bars
+  {ACT_STUTTER_LENGTH, 3, 0, 0}, {ACT_STUTTER_LENGTH, 2, 0, 0},         // Stutter 1 bar, 1/2 bar
+  {ACT_STUTTER_LENGTH, 1, 0, 0}, {ACT_STUTTER_LENGTH, 0, 0, 0},         // Stutter 1/4 bar, 1/8 bar
+  {ACT_LOOPER, LOOP_ACT_UN_OVERDUB, 0, 0}, {ACT_LOOPER, LOOP_ACT_RE_OVERDUB, 0, 0}, // Layer Undo, Layer Redo
+  {ACT_LOOPER, LOOP_ACT_DOUBLE, 0, 0}, {ACT_LOOPER, LOOP_ACT_HALF, 0, 0},           // Double, Half
+  {ACT_QUAD_TOGGLE, 0, 0, 0}, {ACT_LOOPER, LOOP_ACT_NOTE_DELETE, 0, 0},             // LP Quad, Looper Note Delete
+  {ACT_LOOPER, 1, 0, 0}, {ACT_LOOPER, 2, 0, 0},                                     // Looper Play/Arm/Rec, Stop/Clear/Undo
 };
 
 void resetFeatureBlocks() {

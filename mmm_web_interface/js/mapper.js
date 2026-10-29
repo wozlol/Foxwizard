@@ -108,22 +108,23 @@ export function bytesToLpActions(b) {
   return Array.from({ length: 16 }, (_, i) => bytesToAction(b, i * 4));
 }
 
-// 1.48 defaults, left to right: Top 1-8 then Side 1-8 (indices 0-7, 8-15).
+// Defaults, left to right: Top 1-8 then Side 1-8 (indices 0-7, 8-15). Updated in 1.97 to the layout in use: Live Ch Down and
+// Up, the six Stutter lengths along the top, and the loop's layer, size, quad and transport buttons down the side.
 export function defaultLpActions() {
   return [
-    { type: ACT.PROGRAM_STEP, a: 1, b: 0 },       // Top 1: Program Up
-    { type: ACT.PROGRAM_STEP, a: 0, b: 0 },       // Top 2: Program Down
-    { type: ACT.ARP_DIV_STEP, a: 0, b: 0 },       // Top 3: Arp Division Down
-    { type: ACT.ARP_DIV_STEP, a: 1, b: 0 },       // Top 4: Arp Division Up
-    { type: ACT.LIVE_CHANNEL, a: 0, b: 0 },        // Top 5: Live Ch 1
-    { type: ACT.LIVE_CHANNEL, a: 9, b: 0 },        // Top 6: Live Ch 10
-    { type: ACT.LIVE_CHANNEL, a: 1, b: 0 },        // Top 7: Live Ch 2
-    { type: ACT.LIVE_CHANNEL, a: 2, b: 0 },        // Top 8: Live Ch 3
-    { type: ACT.STUTTER_LENGTH, a: 4, b: 0 },      // Side 1: Stutter 2 bars
-    { type: ACT.STUTTER_LENGTH, a: 3, b: 0 },      // Side 2: Stutter 1 bar
-    { type: ACT.STUTTER_LENGTH, a: 2, b: 0 },      // Side 3: Stutter 1/2 bar
-    { type: ACT.STUTTER_LENGTH, a: 1, b: 0 },      // Side 4: Stutter 1/4 bar
-    { type: ACT.STUTTER_LENGTH, a: 0, b: 0 },      // Side 5: Stutter 1/8 bar
+    { type: ACT.LIVE_CHANNEL_STEP, a: 0, b: 0 },   // Top 1: Live Ch Down
+    { type: ACT.LIVE_CHANNEL_STEP, a: 1, b: 0 },   // Top 2: Live Ch Up
+    { type: ACT.STUTTER_LENGTH, a: 5, b: 0 },      // Top 3: Stutter 4 bars
+    { type: ACT.STUTTER_LENGTH, a: 4, b: 0 },      // Top 4: Stutter 2 bars
+    { type: ACT.STUTTER_LENGTH, a: 3, b: 0 },      // Top 5: Stutter 1 bar
+    { type: ACT.STUTTER_LENGTH, a: 2, b: 0 },      // Top 6: Stutter 1/2 bar
+    { type: ACT.STUTTER_LENGTH, a: 1, b: 0 },      // Top 7: Stutter 1/4 bar
+    { type: ACT.STUTTER_LENGTH, a: 0, b: 0 },      // Top 8: Stutter 1/8 bar
+    { type: ACT.LOOPER, a: 10, b: 0 },             // Side 1: Layer Undo
+    { type: ACT.LOOPER, a: 11, b: 0 },             // Side 2: Layer Redo
+    { type: ACT.LOOPER, a: 12, b: 0 },             // Side 3: Double
+    { type: ACT.LOOPER, a: 13, b: 0 },             // Side 4: Half
+    { type: ACT.QUAD_TOGGLE, a: 0, b: 0 },         // Side 5: LP Quad
     { type: ACT.LOOPER, a: 14, b: 0 },             // Side 6: Looper Note Delete
     { type: ACT.LOOPER, a: 1, b: 0 },              // Side 7: Looper Play/Arm/Rec
     { type: ACT.LOOPER, a: 2, b: 0 }               // Side 8: Looper Stop/Clear/Undo

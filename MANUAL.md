@@ -273,7 +273,7 @@ light up with whatever notes play back to them, in each channel's color.
 |---|---|
 | Octave | 0, -1 or -2 |
 | Break Off a Quad | one 4x4 block of pads plays as if it were a separate controller. Quadrant picks the block, Quadrant Channel is the channel it plays on, and Quadrant Start Note is its first note. Defaults: Upper Right, channel 10, note 36. |
-| Top 1-8, Side 1-8 | each button runs an action, with an optional light color (a raw Launchpad velocity, 0 for the usual channel color). Reset to Defaults restores the factory set. |
+| Top 1-8, Side 1-8 | each button runs an action, with an optional light color (a raw Launchpad velocity, 0 for the usual channel color). Reset to Defaults restores the factory set: Top 1 Live Ch Down, Top 2 Live Ch Up, Top 3-8 Stutter Length from 4 bars down to 1/8 bar, Side 1 Layer Undo, Side 2 Layer Redo, Side 3 Double, Side 4 Half, Side 5 LP Quad, Side 6 Note Delete, Side 7 Play/Arm/Rec, Side 8 Stop/Clear/Undo. |
 
 Each button lights to show what its action is doing, in a color from a fixed set, or the button's own
 color if you set one:
