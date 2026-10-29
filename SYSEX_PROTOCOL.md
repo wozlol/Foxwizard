@@ -114,7 +114,7 @@ receive these commands. Firmware 1.0 ignores them anyway.
 - Nothing is installed until FW_END succeeds, so a failed or abandoned transfer leaves the running
   firmware untouched. Saved settings live in the EEPROM area, which the update never touches.
 - The file is the sketch `.bin`, staged in the LittleFS partition, so the firmware must be built
-  with Flash Size `2MB (Sketch: 1792KB, FS: 256KB)`. `mmm_web_interface/firmware/build_firmware.sh`
+  with Flash Size `2MB (Sketch: 1MB, FS: 1MB)`. `mmm_web_interface/firmware/build_firmware.sh`
   does this.
 
 ## Global clock (protocol 3)

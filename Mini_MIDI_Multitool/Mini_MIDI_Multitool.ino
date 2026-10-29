@@ -37,7 +37,7 @@
   Arduino setup:
   - Board: Waveshare RP2040-Zero
   - Tools -> USB Stack = Adafruit TinyUSB
-  - Tools -> Flash Size = 2MB (Sketch: 1792KB, FS: 256KB). Firmware updates over MIDI are staged in
+  - Tools -> Flash Size = 2MB (Sketch: 1MB, FS: 1MB). Firmware updates over MIDI are staged in
     that FS. Saved settings live in the EEPROM area, which sits at the same address in every layout.
 
   Factory reset: hold the button while power is applied / USB is plugged in (checked once at boot,
@@ -99,7 +99,7 @@ constexpr uint8_t SYSEX_MFR_ID = 0x7D;   // reserved for non-commercial/educatio
 constexpr uint8_t SYSEX_DEVICE_ID = 0x4D; // 'M'
 constexpr uint8_t PROTOCOL_VERSION = 4; // 2: 45-byte routes with port masks, GET_STATUS. 3: clock settings, LEARN. 4: 53-byte routes with feature fields, feature blocks
 constexpr uint8_t FW_VERSION_MAJOR = 1;
-constexpr uint8_t FW_VERSION_MINOR = 99;
+constexpr uint8_t FW_VERSION_MINOR = 100;
 constexpr uint8_t FW_CHUNK_BYTES = 128;          // firmware bytes per FW_DATA message, 147 once packed
 constexpr uint32_t FW_REBOOT_DELAY_MS = 300;     // lets the FW_END ACK reach the host before rebooting
 const char DEVICE_NAME[] = "FoxWizard Mini MIDI Multitool"; // long name sent in the SysEx IDENTITY_REPLY

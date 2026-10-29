@@ -17,10 +17,10 @@ Why it is first and why it is urgent:
 - MIDI 2.0 (the upstream TinyUSB with the MIDI 2.0 classes) and 16 preset files will both need more room.
 
 Tasks:
-- [ ] Switch the main brain to `Flash Size = 2MB (Sketch: 1MB, FS: 1MB)` (`flash=2097152_1048576`). The saved settings live in the EEPROM area, which sits at the same address in every layout, so they survive.
+- [x] Switch the main brain to `Flash Size = 2MB (Sketch: 1MB, FS: 1MB)` (`flash=2097152_1048576`), as 1.100. Checked in the core: the EEPROM area starts at 0x101FF000 in both layouts, and the OTA bootloader in each image carries its own filesystem address, so an update over MIDI crosses layouts.
 - [ ] First boot on the new layout: the filesystem is formatted once (the saved loop and plocks are lost once, nothing else). Say so in the release notes.
-- [ ] Update `build_firmware.sh`, the Host Edition README (Arduino settings table), and the comment at the top of the sketch.
-- [ ] Test an update over MIDI from the old layout to the new one, and one new layout to new layout. Keep this release free of other changes.
+- [x] Update `build_firmware.sh`, the Host Edition README (Arduino settings table), `SYSEX_PROTOCOL.md`, and the comment at the top of the sketch.
+- [ ] Test an update over MIDI from the old layout to the new one (kit: `~/Desktop/FoxWizard-layout-test/`), then one new layout to new layout with a relabeled 1.101 test build. Keep this release free of other changes.
 - [ ] The sidecar is a separate board with its own flash and is not part of this.
 
 ## Next: Preset mode (plan only so far)

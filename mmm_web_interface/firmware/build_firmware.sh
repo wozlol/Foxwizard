@@ -13,7 +13,7 @@
 # to publish unless the Patchling footer (index.html) and cache name (sw.js) match.
 set -e
 cd "$(dirname "$0")"
-FQBN=rp2040:rp2040:waveshare_rp2040_zero:usbstack=tinyusb,flash=2097152_262144
+FQBN=rp2040:rp2040:waveshare_rp2040_zero:usbstack=tinyusb,flash=2097152_1048576
 BUILD=$(mktemp -d)
 trap 'rm -rf "$BUILD"' EXIT
 

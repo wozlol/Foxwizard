@@ -42,7 +42,7 @@ The sidecar can't be updated through Patchling. Flash it from the Arduino IDE.
 
 | Sketch | Board | Tools -> USB Stack |
 |---|---|---|
-| Main brain | Waveshare RP2040-Zero, Flash Size 2MB (Sketch: 1792KB, FS: 256KB) | Adafruit TinyUSB |
+| Main brain | Waveshare RP2040-Zero, Flash Size 2MB (Sketch: 1MB, FS: 1MB) | Adafruit TinyUSB |
 | Host brain | Waveshare RP2040-Zero | Adafruit TinyUSB Host (native) |
 
 **Tinkerers:** the host brain must use **Tools -> USB Stack -> Adafruit TinyUSB Host (native)**. With any other USB Stack setting it won't compile, or won't act as a USB host.
