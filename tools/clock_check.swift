@@ -116,6 +116,20 @@ final class Link {
   }
 }
 
+extension Link {
+  // The Send Clock switch from GET_GLOBAL, nil when there is no reply.
+  func sendClockOn(timeout: Double = 0.6) -> Bool? {
+    _ = drain()
+    send([0xF0, 0x7D, 0x4D, 0x10, 0xF7])
+    let until = Date().addingTimeInterval(timeout)
+    while Date() < until {
+      for r in drain() where r.bytes.count > 16 && r.bytes[0] == 0xF0 && r.bytes[3] == 0x11 { return r.bytes[4 + 11] != 0 }
+      Thread.sleep(forTimeInterval: 0.01)
+    }
+    return nil
+  }
+}
+
 func findEndpoints(matching name: String) -> (MIDIEndpointRef, MIDIEndpointRef)? {
   var source: MIDIEndpointRef = 0, destination: MIDIEndpointRef = 0
   for i in 0..<MIDIGetNumberOfSources() { let e = MIDIGetSource(i); if endpointName(e).localizedCaseInsensitiveContains(name) { source = e; break } }
@@ -246,7 +260,13 @@ func runAll(_ link: Link, expectArg: Double?) {
   let nominal = expectArg ?? Double(st.bpm)
   print("")
   if st.clock == 2 { print("It is following a clock right now. Stop the other clock sources first.") ; exit(1) }
-  checkOut(link, label: "leading", expect: nominal, seconds: 15)
+  let sends = link.sendClockOn() ?? true
+  func out(_ label: String, expect: Double, seconds: Double) {
+    if sends { checkOut(link, label: label, expect: expect, seconds: seconds) }
+    else { record("\(label): clock out", false, "skipped, Send Clock is off on the unit. Turn it on in Patchling (Clock, Send Clock) and run again") }
+  }
+  if !sends { print("Send Clock is OFF on the unit, so it sends no clock bytes. The clock out checks are skipped and count as not passed.\n") }
+  out("leading", expect: nominal, seconds: 15)
   print("")
   checkIn(link, bpm: 120, seconds: 10, start: true, label: "120 BPM")
   print("")
@@ -254,7 +274,7 @@ func runAll(_ link: Link, expectArg: Double?) {
   Thread.sleep(forTimeInterval: 1.6)
   let quiet = pollStatus(link, times: 3)
   record("after the clock stops: it leads at the same tempo", quiet.count >= 2 && quiet.suffix(2).allSatisfy { $0.clock == 4 && abs($0.bpm - 120) <= 1 }, quiet.map { "\(clockWord($0.clock)) \($0.bpm)" }.joined(separator: ", "))
-  checkOut(link, label: "carrying on at 120", expect: 120, seconds: 12)
+  out("carrying on at 120", expect: 120, seconds: 12)
   print("")
   checkIn(link, bpm: 130, seconds: 8, start: false, label: "a new clock at 130 BPM, no Start")
   print("")
@@ -312,6 +332,10 @@ final class FakeFox {
       if samples.isEmpty || now - samples.last!.0 >= 0.25 { samples.append((now, count)); if samples.count > 16 { samples.removeFirst() } }
       if let a = samples.first, let b = samples.last, b.0 - a.0 >= 1.0 { tempo = 60.0 * Double(b.1 - a.1) / (24.0 * (b.0 - a.0)) }
     } else if r.bytes == [0xFA] { stopped = false } else if r.bytes == [0xFC] { stopped = true }
+    else if r.bytes == [0xF0, 0x7D, 0x4D, 0x10, 0xF7] {
+      var p = [UInt8](repeating: 0, count: 15); p[11] = sendClock ? 1 : 0
+      emit([0xF0, 0x7D, 0x4D, 0x11] + p + [0xF7])
+    }
     else if r.bytes == [0xF0, 0x7D, 0x4D, 0x13, 0xF7] {
       var p = [UInt8](repeating: 0, count: 15)
       let bpm = Int(tempo + 0.5); p[0] = 1; p[6] = UInt8(bpm & 0x7F); p[7] = UInt8((bpm >> 7) & 0x7F); p[8] = following(now) ? 2 : 4; p[14] = 8
