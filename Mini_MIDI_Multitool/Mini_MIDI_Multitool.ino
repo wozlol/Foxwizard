@@ -99,7 +99,7 @@ constexpr uint8_t SYSEX_MFR_ID = 0x7D;   // reserved for non-commercial/educatio
 constexpr uint8_t SYSEX_DEVICE_ID = 0x4D; // 'M'
 constexpr uint8_t PROTOCOL_VERSION = 5; // 2: 45-byte routes with port masks, GET_STATUS. 3: clock settings, LEARN. 4: 53-byte routes with feature fields, feature blocks. 5: presets
 constexpr uint8_t FW_VERSION_MAJOR = 1;
-constexpr uint8_t FW_VERSION_MINOR = 103;
+constexpr uint8_t FW_VERSION_MINOR = 104;
 constexpr uint8_t FW_CHUNK_BYTES = 128;          // firmware bytes per FW_DATA message, 147 once packed
 constexpr uint32_t FW_REBOOT_DELAY_MS = 300;     // lets the FW_END ACK reach the host before rebooting
 const char DEVICE_NAME[] = "FoxWizard Mini MIDI Multitool"; // long name sent in the SysEx IDENTITY_REPLY
@@ -6345,15 +6345,27 @@ void panicStopEngines() {
   looperStop(); // the loop stays, a tap plays it again
 }
 
-// A preset change (1.103) stops the same things, then sends Reset All Controllers, All Notes Off and All Sound Off only
-// where notes have sounded, to the channels of each port that had one. Panic's burst to every channel of every port would
-// hit every device each time a preset is picked.
+// A preset change (1.103) stops the same things, then sends Reset All Controllers, All Notes Off and All Sound Off to where
+// the routes send, not to every channel of every port as Panic does, which would hit every device each time a preset is
+// picked. For each port: the channels of every enabled route that outputs to it (with a Live Ch override and the Break Off a
+// Quad channel), and any channel a note has been sent on, which covers input no route took. The panic goes straight to those
+// destinations, not in at the input: a route would filter or remap a CC, and a panic must not be.
 void presetSilence() {
   panicStopEngines();
-  const uint16_t available = availablePorts();
+  const uint16_t available = availablePorts() & ~launchpadPorts; // a Launchpad's lights are not notes
+  uint16_t channelsOn[PORT_COUNT];
+  for (uint8_t b = 0; b < PORT_COUNT; ++b) channelsOn[b] = notedChannels[b];
+  for (uint16_t i = 0; i < routeCount; ++i) {
+    const RouteData &r = routes[i];
+    if (!(r.flags & 0x80)) continue;
+    uint16_t channels = routeChannelMask(i);
+    if (r.launchpadQuad & 0x01) channels |= 1u << quadChannel(r);
+    const uint16_t ports = routeOutputsNow(r);
+    for (uint8_t b = 0; b < PORT_COUNT; ++b) if (ports & (1u << b)) channelsOn[b] |= channels;
+  }
   for (uint8_t channel = 0; channel < 16; ++channel) {
     uint16_t mask = 0;
-    for (uint8_t b = 0; b < PORT_COUNT; ++b) if (notedChannels[b] & (1u << channel)) mask |= 1u << b;
+    for (uint8_t b = 0; b < PORT_COUNT; ++b) if (channelsOn[b] & (1u << channel)) mask |= 1u << b;
     mask &= available;
     if (!mask) continue;
     sendToOutputs(mask, 0xB0, channel, 121, 0, 3);
