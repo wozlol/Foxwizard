@@ -174,6 +174,8 @@ Port 15 carries control frames, with the frame type in the CIN field:
 
 `foxwizard_link.h` holds the frame code and queue rules. Both sketch folders carry an identical copy.
 
+`ump.h` holds the MIDI 2.0 packet code: UMP message lengths, the conversion to and from USB MIDI 1.0 packets, and the MIDI 1.0 and MIDI 2.0 Protocol translation. Both sketch folders carry an identical copy, and `Mini_MIDI_Multitool/tests/ump_test.cpp` checks it on a computer.
+
 ## Buffering, flow control, and drops
 
 Dropping is the last resort. Each step below is tried first.
