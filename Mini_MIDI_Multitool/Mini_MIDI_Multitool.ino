@@ -99,7 +99,7 @@ constexpr uint8_t SYSEX_MFR_ID = 0x7D;   // reserved for non-commercial/educatio
 constexpr uint8_t SYSEX_DEVICE_ID = 0x4D; // 'M'
 constexpr uint8_t PROTOCOL_VERSION = 5; // 2: 45-byte routes with port masks, GET_STATUS. 3: clock settings, LEARN. 4: 53-byte routes with feature fields, feature blocks. 5: presets
 constexpr uint8_t FW_VERSION_MAJOR = 1;
-constexpr uint8_t FW_VERSION_MINOR = 106;
+constexpr uint8_t FW_VERSION_MINOR = 107;
 constexpr uint8_t FW_CHUNK_BYTES = 128;          // firmware bytes per FW_DATA message, 147 once packed
 constexpr uint32_t FW_REBOOT_DELAY_MS = 300;     // lets the FW_END ACK reach the host before rebooting
 const char DEVICE_NAME[] = "FoxWizard Mini MIDI Multitool"; // long name sent in the SysEx IDENTITY_REPLY
@@ -3421,7 +3421,7 @@ uint8_t lpStatus(uint8_t b) {
       color = LP_RED;
       break;
     case ACT_LIVE_CHANNEL: on = route != 0xFFFF && liveChannel[route] == (int8_t)act.a; break;
-    case ACT_LIVE_CHANNEL_STEP: { // how far the live channel is from the route's own, the shorter way round (1.106): green, yellow, orange, then red
+    case ACT_LIVE_CHANNEL_STEP: { // how far the live channel is from the route's own, the shorter way round (1.107): green, yellow, orange, then red
       const int8_t stop = route != 0xFFFF ? liveChannel[route] + 1 : 0; // 0 is the route's own channels, 1-16 are channels 1-16
       const int8_t n = act.a ? (stop <= 8 ? stop : 0) : (stop > 8 ? 17 - stop : 0); // Up counts channels 1-8, Down counts 16 back to 9
       if (n > 0) { on = true; color = n == 1 ? LP_GREEN : (n == 2 ? LP_AMBER : (n == 3 ? LP_ORANGE : LP_RED)); }
