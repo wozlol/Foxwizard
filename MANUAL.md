@@ -256,7 +256,7 @@ action list drives the Launchpad buttons.
 | Pitch Ramp, Mod Ramp, CC Ramp | sweep over a division |
 | Transport | Play, Stop, Continue, Pause, Record, Record Exit, Rewind, Fast Forward, Return to Start (MMC, and MIDI Start/Stop/Continue) |
 | Program Change, Program Up/Down | |
-| Live Ch, Live Ch Up/Down, Live Velocity | change a route's output channel or velocity while playing |
+| Live Ch, Live Ch Up/Down, Live Velocity | change a route's output channel or velocity while playing. Live Ch Up/Down steps through channels 1 to 16 and one more stop between 16 and 1: the route's own channels, with everything the live channel switched off back, like its arp. Keys held when the channel changes are released on the old channel and start again on the new one |
 | Octave Up/Down | |
 | Arp Div Up/Down | |
 | Echo On/Off | |
@@ -295,6 +295,7 @@ color if you set one:
 | Looper: Double, Half | blinks the loop's length in bars when pressed. Then the one it's moved toward is lit, green after one step from where the loop started, yellow after two, red after three or more, and neither at the start. A loop starts from its own take. Before there's a loop they start from the Length setting. Clearing the loop goes back to the start. |
 | Note Delete, and any button | held |
 | Live Ch, Octave Up/Down | that channel or octave is on |
+| Live Ch Up/Down | lit the way the channel has moved from the route's own: green after one step, yellow after two, orange after three, red after four or more. Up counts channels 1 to 8. From channel 9 the Down button counts the way back, 16 is one step, and neither is lit at the route's own channels |
 | LP Quad, Note Toggle, CC Toggle | on |
 
 All the buttons are painted when a Launchpad first sends something to the FoxWizard or is plugged in.

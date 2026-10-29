@@ -99,7 +99,7 @@ constexpr uint8_t SYSEX_MFR_ID = 0x7D;   // reserved for non-commercial/educatio
 constexpr uint8_t SYSEX_DEVICE_ID = 0x4D; // 'M'
 constexpr uint8_t PROTOCOL_VERSION = 5; // 2: 45-byte routes with port masks, GET_STATUS. 3: clock settings, LEARN. 4: 53-byte routes with feature fields, feature blocks. 5: presets
 constexpr uint8_t FW_VERSION_MAJOR = 1;
-constexpr uint8_t FW_VERSION_MINOR = 105;
+constexpr uint8_t FW_VERSION_MINOR = 106;
 constexpr uint8_t FW_CHUNK_BYTES = 128;          // firmware bytes per FW_DATA message, 147 once packed
 constexpr uint32_t FW_REBOOT_DELAY_MS = 300;     // lets the FW_END ACK reach the host before rebooting
 const char DEVICE_NAME[] = "FoxWizard Mini MIDI Multitool"; // long name sent in the SysEx IDENTITY_REPLY
@@ -1043,6 +1043,15 @@ uint16_t launchpadExcludePorts = 0;
 // and, for a Break Off a Quad note, the route that broke it off, which that note skips.
 uint16_t edgeLaunchpadPort = 0;
 int16_t edgeSkipRoute = -1;
+int16_t edgeOnlyRoute = -1;   // 1.106: a held note being played again through this one route only, see routeReplayHeld
+bool replayingHeld = false;
+// The keys held right now, as the routes see them (after any Launchpad translation and octave shift), for a live channel
+// or octave change to release and play again. dev is the inputHeld code. extra: bit 7 a Launchpad pad, the rest the route
+// a Break Off a Quad pad skips, plus 1, 0 for none.
+constexpr uint8_t HELD_DISP_MAX = 64;
+struct HeldRec { uint8_t ch, note, dev, vel, extra; };
+HeldRec heldDisp[HELD_DISP_MAX];
+uint8_t heldDispCount = 0;
 
 
 uint16_t routeChannelMask(uint16_t routeIndex) {
@@ -3412,6 +3421,12 @@ uint8_t lpStatus(uint8_t b) {
       color = LP_RED;
       break;
     case ACT_LIVE_CHANNEL: on = route != 0xFFFF && liveChannel[route] == (int8_t)act.a; break;
+    case ACT_LIVE_CHANNEL_STEP: { // how far the live channel is from the route's own, the shorter way round (1.106): green, yellow, orange, then red
+      const int8_t stop = route != 0xFFFF ? liveChannel[route] + 1 : 0; // 0 is the route's own channels, 1-16 are channels 1-16
+      const int8_t n = act.a ? (stop <= 8 ? stop : 0) : (stop > 8 ? 17 - stop : 0); // Up counts channels 1-8, Down counts 16 back to 9
+      if (n > 0) { on = true; color = n == 1 ? LP_GREEN : (n == 2 ? LP_AMBER : (n == 3 ? LP_ORANGE : LP_RED)); }
+      break;
+    }
     case ACT_OCTAVE: on = route != 0xFFFF && liveOctave[route] == (act.a ? 1 : -1); color = LP_ORANGE; break;
     case ACT_QUAD_TOGGLE: on = route != 0xFFFF && (routes[route].launchpadQuad & 0x01) && !quadToggleOff[route]; break;
     case ACT_NOTE_TOGGLE: case ACT_CC_TOGGLE: on = lpToggle[b]; break;
@@ -4326,24 +4341,29 @@ void sendTransport(uint16_t ports, uint8_t id) {
 
 // Live output channel on or off: what was sounding on the old channels stops, and the arp lets go.
 void setLiveChannel(uint16_t routeIndex, int8_t channel) {
+  if (liveChannel[routeIndex] == channel) return;
+  routeReplayHeld(routeIndex, false); // every key held on this route goes off where it started
   const uint16_t oldMask = routeChannelMask(routeIndex);
-  liveChannel[routeIndex] = channel;
   const uint16_t ports = routeOutputsNow(routes[routeIndex]);
-  for (uint8_t c = 0; c < 16; ++c) if (oldMask & (1u << c)) sendToOutputs(ports, 0xB0, c, 123, 0, 3);
+  for (uint8_t c = 0; c < 16; ++c) if (oldMask & (1u << c)) sendToOutputs(ports, 0xB0, c, 123, 0, 3); // and the old channels are told too
   const uint8_t slot = routes[routeIndex].arpSlot;
   if (slot && slot <= ARP_SLOTS) arpReleaseSlot(slot - 1);
+  liveChannel[routeIndex] = channel;
+  routeReplayHeld(routeIndex, true); // the keys still down start again on the new channel, or the route's own
 }
 
 // Held notes would end up released at the wrong pitch, so the route's channels get All Notes Off
 // first, same as a live channel change.
 void setLiveOctave(uint16_t routeIndex, int8_t octave) {
   if (liveOctave[routeIndex] == octave) return;
+  routeReplayHeld(routeIndex, false); // released at the pitch they started at, then again at the new one
   const uint16_t mask = routeChannelMask(routeIndex);
   const uint16_t ports = routeOutputsNow(routes[routeIndex]);
   for (uint8_t c = 0; c < 16; ++c) if (mask & (1u << c)) sendToOutputs(ports, 0xB0, c, 123, 0, 3);
   const uint8_t slot = routes[routeIndex].arpSlot;
   if (slot && slot <= ARP_SLOTS) arpReleaseSlot(slot - 1);
   liveOctave[routeIndex] = octave;
+  routeReplayHeld(routeIndex, true);
 }
 
 // After layers hide or show, or the loop changes length mid-play: everything the loop is sounding
@@ -4538,9 +4558,10 @@ void runAction(uint16_t routeIndex, const MapAction &act, uint8_t phase, uint8_t
       if (press) tapTempo();
       break;
     case ACT_LIVE_CHANNEL_STEP:
-      if (press) {
-        const int8_t cur = liveChannel[routeIndex];
-        setLiveChannel(routeIndex, cur < 0 ? (act.a ? 0 : 15) : (act.a ? (cur + 1) % 16 : (cur + 15) % 16));
+      if (press) { // 17 stops: the route's own channels, then channel 1 to 16, and 16 steps on to the route's own again (1.106)
+        const int8_t stop = liveChannel[routeIndex] + 1; // 0 is the route's own
+        const int8_t next = act.a ? (stop + 1) % 17 : (stop + 16) % 17;
+        setLiveChannel(routeIndex, next - 1);
       }
       break;
     case ACT_ARP_DIV_STEP:
@@ -5102,16 +5123,75 @@ void routeNoteIn(uint16_t i, bool isNoteOn, uint8_t note, uint8_t velocity) {
   }
 }
 
+// The inputHeld code of an input, and the input of a code. A USB Host input is its slot, 1-7.
+uint8_t heldCodeFor(uint8_t inputDevice) {
+  return inputDevice == DEV_HOST ? currentHostPort : inputDevice == DEV_TRS2 ? 0x80 : inputDevice == DEV_USB ? 0x81 : 0x82;
+}
+
+uint8_t heldDeviceFor(uint8_t code) {
+  return code == 0x82 ? DEV_TRS : code == 0x81 ? DEV_USB : code == 0x80 ? DEV_TRS2 : DEV_HOST;
+}
+
+// Called for every note that reaches the routes: a Note On adds the key, a Note Off removes it.
+void heldDispUpdate(uint8_t inputDevice, uint8_t channel, uint8_t note, bool isNoteOn, uint8_t velocity, bool launchpadPad, int16_t skipRoute) {
+  const uint8_t dev = heldCodeFor(inputDevice);
+  for (uint8_t k = 0; k < heldDispCount; ++k) {
+    if (heldDisp[k].ch != channel || heldDisp[k].note != note || heldDisp[k].dev != dev) continue;
+    if (isNoteOn) { heldDisp[k].vel = velocity; return; }
+    heldDisp[k] = heldDisp[--heldDispCount];
+    return;
+  }
+  if (!isNoteOn || heldDispCount >= HELD_DISP_MAX) return;
+  heldDisp[heldDispCount++] = HeldRec{channel, note, dev, velocity, (uint8_t)((launchpadPad ? 0x80 : 0) | (skipRoute >= 0 ? (skipRoute + 1) & 0x7F : 0))};
+}
+
+// A key's Note Off or Note On again, through one route only. Not a new press: no actions, division squares, echo or stutter
+// triggers, parameter locks or loop recording, and nothing goes to unrouted ports.
+bool noteMapHasKey(uint16_t routeIndex, uint8_t note) {
+  if (!(routes[routeIndex].features & FEATURE_NOTE_TO_CC)) return false;
+  for (uint8_t e = 0; e < MAP_ENTRIES; ++e) if (noteMap[e].sourcePlusOne == note + 1) return true;
+  return false;
+}
+
+// Plays every key held right now through one route, as Note Offs (on false) or as Note Ons with the velocity they were played
+// with. A live channel or octave change on the route releases what is held where it started, the real Note Off a device
+// that ignores All Notes Off needs, then starts it again where the route now sends it, with the key still down (1.106).
+void routeReplayHeld(uint16_t routeIndex, bool on) {
+  const bool outerSwallowed = noteOffSwallowed;
+  const uint16_t outerPort = edgeLaunchpadPort;
+  const int16_t outerSkip = edgeSkipRoute;
+  const uint8_t outerHost = currentHostPort;
+  for (uint8_t k = 0; k < heldDispCount; ++k) {
+    const HeldRec h = heldDisp[k];
+    const uint8_t device = heldDeviceFor(h.dev);
+    if (device == DEV_HOST) currentHostPort = h.dev;
+    noteOffSwallowed = false;
+    edgeLaunchpadPort = (h.extra & 0x80) ? sourcePort(device) : 0;
+    edgeSkipRoute = (h.extra & 0x7F) ? (int16_t)(h.extra & 0x7F) - 1 : -1;
+    edgeOnlyRoute = (int16_t)routeIndex;
+    replayingHeld = true;
+    dispatchNoteEvent(device, h.ch, on, h.note, on ? h.vel : 0);
+    replayingHeld = false;
+    edgeOnlyRoute = -1;
+  }
+  noteOffSwallowed = outerSwallowed;
+  edgeLaunchpadPort = outerPort;
+  edgeSkipRoute = outerSkip;
+  currentHostPort = outerHost;
+}
+
 void dispatchNoteEvent(uint8_t inputDevice, uint8_t channel, bool isNoteOn, uint8_t rawNote, uint8_t velocity) {
   bool matchedAny = false;
   bool matchedLooperRoute = false; // a route whose own notes these are, with its Looper switch on
   for (uint16_t i = 0; i < routeCount; ++i) {
     if ((int16_t)i == edgeSkipRoute) continue;
+    if (edgeOnlyRoute >= 0 && (int16_t)i != edgeOnlyRoute) continue;
     const uint8_t note = rawNote;
     launchpadExcludePorts = (routes[i].features & FEATURE_LAUNCHPAD) ? edgeLaunchpadPort : 0;
     const int8_t square = arpSquareFor(routes[i], inputDevice, 1, channel, rawNote);
     if (square >= 0) { // a division trigger, it doesn't pass through
       matchedAny = true;
+      if (replayingHeld) continue;
       // Recorded like the route's own notes, so loop playback changes the division again.
       if (!routeLooperOff(routes[i])) matchedLooperRoute = true;
       if (!noteOffSwallowed) arpSquarePress(routes[i].arpSlot - 1, square, isNoteOn);
@@ -5120,17 +5200,23 @@ void dispatchNoteEvent(uint8_t inputDevice, uint8_t channel, bool isNoteOn, uint
     const int8_t stutterSquare = stutterSquareFor(i, inputDevice, 1, channel, rawNote);
     if (stutterSquare >= 0) {
       matchedAny = true;
+      if (replayingHeld) continue;
       if (!noteOffSwallowed) stutterPress(stutterSquare, isNoteOn);
       continue;
     }
     const int8_t echoSquare = echoSquareFor(i, inputDevice, 1, channel, rawNote);
     if (echoSquare >= 0) {
       matchedAny = true;
+      if (replayingHeld) continue;
       if (!noteOffSwallowed) echoPress(echoSquare, isNoteOn);
       continue;
     }
     if (routeMatches(routes[i], inputDevice, channel, MK_NOTE, note)) {
       matchedAny = true;
+      if (replayingHeld) { // a held key played again: the music, not a press
+        if (!noteMapHasKey(i, note)) routeNoteIn(i, isNoteOn, note, velocity);
+        continue;
+      }
       // A note a Note to Feature mapping consumes is a control press, not music: recording it would
       // make loop playback fire that action again from inside the looper.
       if (handleNoteMap(i, isNoteOn, note, velocity)) continue;
@@ -5142,6 +5228,7 @@ void dispatchNoteEvent(uint8_t inputDevice, uint8_t channel, bool isNoteOn, uint
   }
   launchpadExcludePorts = 0;
   flushPending();
+  if (replayingHeld) return;
 
   if (!matchedAny) {
     if (!noteOffSwallowed) applyModeDefault(inputDevice, isNoteOn ? 0x90 : 0x80, channel, rawNote, velocity, 3);
@@ -5295,6 +5382,7 @@ void processIncomingEvent(uint8_t inputDevice, uint8_t statusHi, uint8_t channel
     noteOffSwallowed = !isNoteOn && (looperEmitting ? owners != 0 : loopSoundingHas(channel, number));
     edgeLaunchpadPort = lpPort;
     edgeSkipRoute = lpSkipRoute;
+    if (!looperEmitting) heldDispUpdate(inputDevice, channel, number, isNoteOn, data2, lpPort != 0, lpSkipRoute);
     dispatchNoteEvent(inputDevice, channel, isNoteOn, number, data2);
     noteOffSwallowed = outerSwallowed;
     edgeLaunchpadPort = 0;
