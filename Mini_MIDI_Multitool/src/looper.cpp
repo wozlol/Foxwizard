@@ -1,4 +1,5 @@
 #include "looper.h"
+#include "swing.h"
 
 #include <string.h>
 
@@ -68,6 +69,7 @@ void Looper::reset() {
   recordStartUs_ = 0;
   recordFixedLengthUs_ = 0;
   recordQuantizeUs_ = 0;
+  recordSwingPercent_ = 0;
   selectedTrack_ = 0;
   recordingTrack_ = 0;
   mode_ = LoopTrackMode::Manual;
@@ -363,9 +365,7 @@ bool Looper::captureV(uint64_t nowUs, const LoopMidiEvent &input) {
   LoopMidiEvent event = input;
   event.layer = overdubbing_ ? currentLayer_ : 0;
   if (recordQuantizeUs_ > 0) {
-    atUs = static_cast<uint32_t>(
-        ((static_cast<uint64_t>(atUs) + recordQuantizeUs_ / 2U) / recordQuantizeUs_) *
-        recordQuantizeUs_);
+    atUs = swingQuantize(atUs, recordQuantizeUs_, recordSwingPercent_);
     const uint32_t limit = overdubbing_ ? track.lengthUs : recordFixedLengthUs_;
     if (limit > 0 && atUs >= limit) atUs = limit - 1U;
   }
@@ -416,7 +416,7 @@ void Looper::flushHold(PendingHold &h, uint32_t endPositionUs, uint64_t nowUs) {
   // Record Quantize rounds a hold's press and release like any other note (ARPnMIDI quantizes every note).
   auto quantized = [&](uint32_t at) {
     if (recordQuantizeUs_ == 0) return at;
-    const uint32_t q = static_cast<uint32_t>(((static_cast<uint64_t>(at) + recordQuantizeUs_ / 2U) / recordQuantizeUs_) * recordQuantizeUs_);
+    const uint32_t q = swingQuantize(at, recordQuantizeUs_, recordSwingPercent_);
     return q >= length ? last : q;
   };
   if (heldUs >= length || length == 0) {

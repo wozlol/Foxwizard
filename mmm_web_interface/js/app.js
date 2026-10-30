@@ -1,5 +1,5 @@
 import { ACT, MAP_ENTRIES, defaultAction, defaultLpActions, actionEditorHtml, applyActionField, usesLooper, usesLiveChannel } from './mapper.js';
-import { DeviceLink, DATA_TYPE_BITS, ROUTE_NAME_MAX_LEN, PORTS, PORT_TRS, PORT_USB, SIDECAR_INPUT_PORTS, SIDECAR_OUTPUT_PORTS, SIDECAR_TRS_PORTS, FEATURE, SCALES, LAYOUTS, routeChannelOrder, defaultScale, ARP_SLOTS, ARP_MODES, ARP_MODE_ORDER, ARP_SQUARES, DIVISIONS, defaultArp, defaultEcho, defaultStutter, defaultLooper, defaultLpQuad, noTrigger, STUTTER_RUNOUTS, snapRunout, defaultPlock } from './midi.js';
+import { DeviceLink, DATA_TYPE_BITS, ROUTE_NAME_MAX_LEN, PORTS, PORT_TRS, PORT_USB, SIDECAR_INPUT_PORTS, SIDECAR_OUTPUT_PORTS, SIDECAR_TRS_PORTS, FEATURE, SCALES, LAYOUTS, routeChannelOrder, SWING_AMOUNTS, defaultScale, ARP_SLOTS, ARP_MODES, ARP_MODE_ORDER, ARP_SQUARES, DIVISIONS, defaultArp, defaultEcho, defaultStutter, defaultLooper, defaultLpQuad, noTrigger, STUTTER_RUNOUTS, snapRunout, defaultPlock } from './midi.js';
 import { serializePreset, parsePreset, downloadPreset, readPresetFile, channelsToRangeString } from './presetXml.js';
 import { attachDragReorder } from './dragReorder.js';
 import { parseHostReport, hostReportSummary, hostReportText } from './hostReport.js';
@@ -1078,6 +1078,8 @@ function renderLooperRow() {
     ${mapped ? `<div class="looper-settings">${[
       ['Length', `<select data-looper-field="bars">${opt(0, l.bars, 'Free')}${Array.from({ length: 16 }, (_, k) => opt(k + 1, l.bars, `${k + 1} bar${k ? 's' : ''}`)).join('')}</select>`],
       ['Quantize', `<select data-looper-field="quantize">${opt(-1, l.quantize, 'Off')}${DIVISIONS.map((d, i) => opt(i, l.quantize, d)).join('')}</select>`],
+      // Swings the Quantize grid, every second line later. Greyed while Quantize is Off, there is no grid to swing.
+      ['Quantize Swing', `<select data-looper-field="quantizeSwing" ${l.quantize < 0 ? 'disabled' : ''}>${SWING_AMOUNTS.map(([v, lab]) => opt(v, l.quantizeSwing || 0, lab)).join('')}</select>`, l.quantize < 0 ? 'Not used while Quantize is Off.' : ''],
       // Record After Routes and Record Unrouted Notes sit side by side. With Record After Routes on, the loop already records
       // everything the FoxWizard sends, so Record Unrouted Notes has nothing left to add and is greyed instead of hidden.
       ['Record After Routes', sw('recordAfter', !l.recordInputs)],
@@ -2242,6 +2244,8 @@ function arpSectionHtml(route, index) {
         ${field('Mode', `<select ${attrs('mode')}>${ARP_MODE_ORDER.map((i) => opt(i, a.mode, ARP_MODES[i])).join('')}</select>`)}
         ${field('Octaves', `<select ${attrs('octaves')}>${[1, 2, 3, 4].map((o) => opt(o, a.octaves, o)).join('')}</select>`)}
         ${field('Gate %', `<input type="number" min="5" max="100" value="${a.gate}" ${attrs('gate')}>`)}
+        ${field('Swing', `<select ${attrs('swing')}>${SWING_AMOUNTS.map(([v, l]) => opt(v, a.swing || 0, l)).join('')}</select>`)}
+        ${a.swing ? field('Swing Base', `<select ${attrs('swingBase')}>${opt(0, a.swingBase || 0, '1/16')}${opt(1, a.swingBase || 0, '1/8')}</select>`) : ''}
         ${field('Velocity', `<select ${attrs('velocityMode')}>${opt(0, velMode, 'Played')}${opt(1, velMode, 'Fixed')}${opt(2, velMode, 'Aftertouch')}</select>
           ${velMode === 1 ? `<input type="number" min="1" max="127" value="${a.velocity}" ${attrs('velocity')}>` : ''}`)}
         ${routeHasLiveChannel(route) ? field('&nbsp;', `<label class="switch"><input type="checkbox" ${attrs('followsLiveChannel')} ${a.followsLiveChannel ? 'checked' : ''}><span class="switch-track"><span class="switch-thumb"></span></span><span class="switch-label">Follows Live Ch Change</span></label>`) : ''}
@@ -2457,7 +2461,7 @@ routesContainer.addEventListener('click', async (e) => {
   refreshRouteCard(routeIndex);
 });
 
-const ARP_STRUCTURAL = new Set(['velocityMode', 'holdType']);
+const ARP_STRUCTURAL = new Set(['velocityMode', 'holdType', 'swing']);
 
 routesContainer.addEventListener('change', (e) => {
   const field = e.target.dataset.arpField;

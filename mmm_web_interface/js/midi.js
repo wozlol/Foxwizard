@@ -154,21 +154,25 @@ export const DEFAULT_DIVISION = 11; // 1/16
 export function defaultArp() {
   return {
     mode: 0, division: DEFAULT_DIVISION, octaves: 1, gate: 50, velocity: 0, aftertouch: false, bypassChannel: 0, bassChannel: 0, defaultTrigger: noTrigger(), holdType: 0, holdChannel: 16, holdNumber: 64,
+    swing: 0, swingBase: 0, // 1.116: 0 off, else 51-75 percent, and 0 a 16th, 1 an 8th
     squares: Array.from({ length: ARP_SQUARES }, () => null) // { division, triggerType 0 none 1 note 2 CC, triggerChannel 0-15 16 any, triggerNumber }
   };
 }
 // 48 bytes: mode, division + 1, octaves, gate %, velocity (0 = played), holdType (0 none, 2 CC), holdChannel,
 // holdNumber, aftertouch velocity, bypass channel (0 off, 1-16), bass channel (0 off, 1-16), default trigger (3,
-// turns the arp off and on), 2 spare, then 7 division squares of (division + 1, 0 = unused, triggerType,
-// triggerChannel, triggerNumber), 4 spare.
+// turns the arp off and on), follows live channel, swing percent (1.116, 0 off), then 7 division squares of (division + 1, 0 = unused, triggerType,
+// triggerChannel, triggerNumber), swing base (1.116, 0 a 16th, 1 an 8th), 3 spare.
 export function arpToBytes(a) {
-  const b = [a.mode, a.division + 1, a.octaves, a.gate, a.aftertouch ? 0 : a.velocity, a.holdType, a.holdChannel, a.holdNumber, a.aftertouch ? 1 : 0, a.bypassChannel || 0, a.bassChannel || 0, ...triggerToBytes(a.defaultTrigger), a.followsLiveChannel ? 1 : 0, 0];
+  const b = [a.mode, a.division + 1, a.octaves, a.gate, a.aftertouch ? 0 : a.velocity, a.holdType, a.holdChannel, a.holdNumber, a.aftertouch ? 1 : 0, a.bypassChannel || 0, a.bassChannel || 0, ...triggerToBytes(a.defaultTrigger), a.followsLiveChannel ? 1 : 0, swingValue(a.swing)];
   for (let k = 0; k < ARP_SQUARES; k++) {
     const sq = a.squares?.[k];
     b.push(...(sq ? [sq.division + 1, sq.triggerType, sq.triggerChannel, sq.triggerNumber] : [0, 0, 0, 0]));
   }
-  return b.concat([0, 0, 0, 0]);
+  return b.concat([a.swingBase ? 1 : 0, 0, 0, 0]);
 }
+// Swing as the firmware keeps it: 0 for off, else 51 to 75 percent.
+export const SWING_AMOUNTS = [[0, 'Off'], [54, '54%'], [58, '58%'], [62, '62%'], [66, '66% Triplet'], [70, '70%'], [75, '75%']];
+function swingValue(v) { return v >= 51 && v <= 75 ? v : 0; }
 // A division table's default square trigger (1.24), 3 bytes: type (0 none, 1 note, 2 CC), channel (16 any), number.
 export function noTrigger() { return { triggerType: 0, triggerChannel: 16, triggerNumber: 0 }; }
 function triggerToBytes(t) { return t ? [t.triggerType, t.triggerChannel, t.triggerNumber] : [0, 16, 0]; }
@@ -224,11 +228,11 @@ export function bytesToEcho(b) {
 // holding the button clears and a double tap stops, 1 the other way), play/arm trigger (3), stop/clear
 // trigger (3), 37 spare. 1.93 takes the first spare for Restart on Clock Start.
 export function defaultLooper() {
-  return { bars: 0, quantize: -1, autoOverdub: false, recordInputs: false, holdClears: true, loopUnrouted: true, trigger: noTrigger(), recordCcs: false, restartOnStart: false };
+  return { bars: 0, quantize: -1, autoOverdub: false, recordInputs: false, holdClears: true, loopUnrouted: true, trigger: noTrigger(), recordCcs: false, restartOnStart: false, quantizeSwing: 0 };
 }
 export function looperToBytes(l) {
   return [l.bars, l.quantize + 1, l.autoOverdub ? 1 : 0, l.recordInputs ? 1 : 0, l.holdClears ? 0 : 1,
-    l.loopUnrouted ? 0 : 1, ...triggerToBytes(l.trigger), l.recordCcs ? 1 : 0, l.restartOnStart ? 1 : 0, ...new Array(37).fill(0)];
+    l.loopUnrouted ? 0 : 1, ...triggerToBytes(l.trigger), l.recordCcs ? 1 : 0, l.restartOnStart ? 1 : 0, swingValue(l.quantizeSwing), ...new Array(36).fill(0)];
 }
 export function bytesToLooper(b) {
   return {
@@ -240,7 +244,8 @@ export function bytesToLooper(b) {
     loopUnrouted: b[5] !== 1,
     trigger: bytesToTrigger(b, 6), // 1.49: the looper's own one-button trigger
     recordCcs: b[9] === 1, // 1.55
-    restartOnStart: b[10] === 1 // 1.93
+    restartOnStart: b[10] === 1, // 1.93
+    quantizeSwing: swingValue(b[11]) // 1.116, only used while Quantize is on
   };
 }
 
@@ -297,6 +302,8 @@ export function bytesToArp(b) {
     bassChannel: b[10] <= 16 ? b[10] : 0,
     defaultTrigger: bytesToTrigger(b, 11),
     followsLiveChannel: b[14] === 1,
+    swing: swingValue(b[15]),
+    swingBase: b[44] === 1 ? 1 : 0,
     squares: Array.from({ length: ARP_SQUARES }, (_, k) => {
       const o = 16 + k * 4;
       if (!(b[o] >= 1 && b[o] <= DIVISIONS.length)) return null;

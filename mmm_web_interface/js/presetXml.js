@@ -110,6 +110,12 @@ function plockFromXml(el) {
   return p;
 }
 
+// A swing percent from a file: 51 to 75, anything else is off.
+function swingFromXml(text) {
+  const v = parseInt(text || '0', 10);
+  return v >= 51 && v <= 75 ? v : 0;
+}
+
 function looperFromXml(el) {
   const lp = defaultLooper();
   if (!el) return lp;
@@ -123,6 +129,7 @@ function looperFromXml(el) {
   lp.trigger = triggerFromXml(el);
   lp.recordCcs = el.getAttribute('recordCcs') === 'true';
   lp.restartOnStart = el.getAttribute('restartOnStart') === 'true';
+  lp.quantizeSwing = swingFromXml(el.getAttribute('quantizeSwing'));
   return lp;
 }
 
@@ -223,7 +230,7 @@ export function serializePreset(state) {
   lines.push(`  <scale root="${sc.root}" scale="${esc(SCALES[sc.scaleType]?.name || 'Major')}"/>`);
   lines.push('  <arps>');
   (state.arps || []).forEach((ar, s) => {
-    lines.push(`    <arp slot="${s + 1}" mode="${esc(ARP_MODES[ar.mode] || 'Up')}" division="${DIVISIONS[ar.division] || '1/16'}" octaves="${ar.octaves}" gate="${ar.gate}" velocity="${ar.aftertouch ? 'aftertouch' : (ar.velocity ? ar.velocity : 'played')}" hold="${ar.holdType ? 'cc' : 'none'}" holdChannel="${ar.holdChannel > 15 ? 'any' : ar.holdChannel + 1}" holdNumber="${ar.holdNumber}" bypass="${ar.bypassChannel || 'off'}" bass="${ar.bassChannel || 'off'}" followsLiveCh="${!!ar.followsLiveChannel}"${triggerAttrs(ar.defaultTrigger)}>`);
+    lines.push(`    <arp slot="${s + 1}" mode="${esc(ARP_MODES[ar.mode] || 'Up')}" division="${DIVISIONS[ar.division] || '1/16'}" octaves="${ar.octaves}" gate="${ar.gate}" velocity="${ar.aftertouch ? 'aftertouch' : (ar.velocity ? ar.velocity : 'played')}" hold="${ar.holdType ? 'cc' : 'none'}" holdChannel="${ar.holdChannel > 15 ? 'any' : ar.holdChannel + 1}" holdNumber="${ar.holdNumber}" bypass="${ar.bypassChannel || 'off'}" bass="${ar.bassChannel || 'off'}" followsLiveCh="${!!ar.followsLiveChannel}" swing="${ar.swing || 0}" swingBase="${ar.swingBase ? '1/8' : '1/16'}"${triggerAttrs(ar.defaultTrigger)}>`);
     squaresToXml(lines, ar.squares, '      ');
     lines.push('    </arp>');
   });
@@ -237,7 +244,7 @@ export function serializePreset(state) {
   squaresToXml(lines, stt.squares, '    ', STUTTER_DIVISIONS);
   lines.push('  </stutter>');
   const lp = state.looper || defaultLooper();
-  lines.push(`  <looper length="${lp.bars ? lp.bars : 'free'}" quantize="${lp.quantize >= 0 ? DIVISIONS[lp.quantize] : 'off'}" autoOverdub="${lp.autoOverdub}" records="${lp.recordInputs ? 'inputs' : 'outputs'}" holdClears="${lp.holdClears}" loopUnrouted="${lp.loopUnrouted !== false}" recordCcs="${!!lp.recordCcs}" restartOnStart="${!!lp.restartOnStart}"${triggerAttrs(lp.trigger)}>`);
+  lines.push(`  <looper length="${lp.bars ? lp.bars : 'free'}" quantize="${lp.quantize >= 0 ? DIVISIONS[lp.quantize] : 'off'}" autoOverdub="${lp.autoOverdub}" records="${lp.recordInputs ? 'inputs' : 'outputs'}" holdClears="${lp.holdClears}" loopUnrouted="${lp.loopUnrouted !== false}" recordCcs="${!!lp.recordCcs}" restartOnStart="${!!lp.restartOnStart}" quantizeSwing="${lp.quantizeSwing || 0}"${triggerAttrs(lp.trigger)}>`);
   lines.push('  </looper>');
   const pl = state.plock || defaultPlock();
   lines.push(`  <parameterLock delay="${pl.delay ? DIVISIONS[pl.delay - 1] : 'none'}" glide="${!!pl.glide}"/>`);
@@ -418,6 +425,8 @@ export function parsePreset(xmlText) {
       squares: squaresFromXml(el),
       defaultTrigger: triggerFromXml(el),
       followsLiveChannel: el.getAttribute('followsLiveCh') === 'true',
+      swing: swingFromXml(el.getAttribute('swing')),
+      swingBase: el.getAttribute('swingBase') === '1/8' ? 1 : 0,
       holdType: el.getAttribute('hold') === 'cc' ? 2 : 0,
       holdChannel: ch === 'any' ? 16 : Math.min(15, Math.max(0, parseInt(ch, 10) - 1)),
       holdNumber: Math.min(127, Math.max(0, parseInt(el.getAttribute('holdNumber') || '64', 10) || 0))

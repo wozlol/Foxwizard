@@ -62,6 +62,7 @@
 #include "src/looper.h"
 #include "src/loop_lock.h"
 #include "src/rr_priority.h"
+#include "src/swing.h"
 #include "hardware/watchdog.h"
 
 // ============================================================================================
@@ -101,7 +102,7 @@ constexpr uint8_t SYSEX_MFR_ID = 0x7D;   // reserved for non-commercial/educatio
 constexpr uint8_t SYSEX_DEVICE_ID = 0x4D; // 'M'
 constexpr uint8_t PROTOCOL_VERSION = 6; // 2: 45-byte routes with port masks, GET_STATUS. 3: clock settings, LEARN. 4: 53-byte routes with feature fields, feature blocks. 5: presets. 6: Round Robin Priority order block
 constexpr uint8_t FW_VERSION_MAJOR = 1;
-constexpr uint8_t FW_VERSION_MINOR = 115;
+constexpr uint8_t FW_VERSION_MINOR = 116;
 constexpr uint8_t FW_CHUNK_BYTES = 128;          // firmware bytes per FW_DATA message, 147 once packed
 constexpr uint32_t FW_REBOOT_DELAY_MS = 300;     // lets the FW_END ACK reach the host before rebooting
 const char DEVICE_NAME[] = "FoxWizard Mini MIDI Multitool"; // long name sent in the SysEx IDENTITY_REPLY
@@ -527,9 +528,10 @@ struct ArpSettings {
   uint8_t defaultTriggerChannel; // off and on until power off. 0-15, 16 = any
   uint8_t defaultTriggerNumber;
   uint8_t followsLiveChannel; // 1.40: with a live output channel on, 1 keeps arpeggiating onto it, 0 plays straight
-  uint8_t spare[1];
+  uint8_t swingPercent; // 1.116: 0 or 50 straight, 51-75 swung (66 is a triplet feel), see src/swing.h
   DivisionSquare squares[ARP_SQUARES];
-  uint8_t spare2[4];
+  uint8_t swingBase; // 1.116: 0 swings every second 16th, 1 every second 8th
+  uint8_t spare2[3];
 };
 #pragma pack(pop)
 ArpSettings arpSettings[ARP_SLOTS];
@@ -621,7 +623,8 @@ struct LooperSettings {
   uint8_t triggerNumber;
   uint8_t recordCcs; // 1.55: 1 records CCs too (input side or output side, same as notes)
   uint8_t restartOnStart; // 1.93: 1 plays the loop again from its top when the clock it follows sends Start
-  uint8_t spare[37];
+  uint8_t quantizeSwing; // 1.116: swing of the Record Quantize grid, 0 or 50 straight, 51-75, only while Quantize is on
+  uint8_t spare[36];
 };
 #pragma pack(pop)
 LooperSettings looperSettings;
@@ -3638,6 +3641,7 @@ uint32_t looperBarUs() {
 void looperSetQuantize() {
   const uint8_t q = looperSettings.quantizePlus1;
   looper.setRecordQuantizeUs(q && q <= fw::kMusicalDivisionCount ? (uint32_t)fw::divisionDurationUs(arpDivisionFrom(q), clockEngine.bpm()) : 0);
+  looper.setRecordSwing(fw::swingClamp(looperSettings.quantizeSwing)); // only used while a quantize is set
 }
 
 // An overdub that starts with notes already held begins with them, at the start of the pass, so a hat
@@ -5163,6 +5167,21 @@ void serviceArps() {
     if (!r.running) continue;
     if (!clockEngine.synchronizedAdvanceAllowed(now)) continue;
     const uint32_t pulse = clockEngine.internalPulse();
+    // Swing (1.116): a step is due at its swung place, a little after its place on the straight grid, by the clock's position with its
+    // fraction. The grid itself stays straight, so nothing builds up, and the clock is untouched. See src/swing.h, which tests this.
+    // With swing off, the lines after this block are exactly as they were.
+    const uint8_t swing = fw::swingClamp(arpSettings[s].swingPercent);
+    if (swing) {
+      const double position = clockEngine.pulsePosition(now);
+      const uint32_t unit = arpSettings[s].swingBase ? 48 : 24;
+      if (fw::swungDue(position, r.nextStepPulse, unit, swing)) {
+        const uint16_t div = fw::divisionPulses(arpCurrentDivision(s));
+        const uint32_t fired = r.nextStepPulse;
+        arpStep(s, now);
+        r.nextStepPulse = fw::swungNextStep(fired, div, position, pulse, unit, swing);
+      }
+      continue;
+    }
     if (pulse >= r.nextStepPulse) {
       const uint16_t div = fw::divisionPulses(arpCurrentDivision(s));
       arpStep(s, now);

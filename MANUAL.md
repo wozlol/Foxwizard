@@ -197,11 +197,17 @@ Up to 4 routes can arp at once, all on the Global Clock.
 | Mode | Up, Down, Up-Down 1, Up-Down 2, Drum Roll/Chord Pulse, Random, As Played, Converge, Diverge, Thumb, Pinky, Up 4-Step, Rhythm, Ostinato, Octave Walk, Fifth, Bass+Chord, Chord+Run |
 | Octaves | 1-4 |
 | Gate % | 5-100 |
+| Swing | Off, or 54 to 75%. Delays the off-beat steps and nothing else, so the arp has a shuffle and the MIDI clock stays straight. 50% is straight, 66% is a triplet feel, 75% is the most. Each arp has its own |
+| Swing Base | shown when Swing is on: every second 16th (default) or every second 8th is delayed |
 | Velocity | Played, Fixed, or Aftertouch |
 | Bypass ch | also sends the played notes, unarped, on this channel |
 | Bass ch | also plays the lowest held note an octave down on this channel |
 | Hold | a CC that holds the arp's notes, with Learn |
 | Division | division table. The default square's trigger turns the arp off and on. |
+
+### Swing
+
+Swing delays the second note of each pair and leaves the first where it is, so every pair keeps its length and nothing drifts. The amount is the share of the pair the first note takes: 50% is straight, 66% is a triplet feel, 75% is the most. The MIDI clock out and a clock the FoxWizard follows are never touched. It follows tempo changes and Start, Stop and a following clock, since it is worked out in clock pulses. Echo and Stutter are not swung, they capture things as they are. Played notes passing through are not swung.
 
 ## Echo
 
@@ -311,6 +317,7 @@ use Note/CC to Feature and select Looper, or set a Looper Button trigger
 |---|---|
 | Length | Free (the first take sets it) or 1-16 bars |
 | Quantize | Off, or snap recorded notes to a division |
+| Quantize Swing | Off, or 54 to 75%. Swings the Quantize grid: every second line is later, so notes snap to a swung grid as they are recorded and play back exactly as recorded. Grey while Quantize is Off. A loop recorded without Quantize stays exactly as played |
 | Record After Routes | on: records what the routes send. Off: records the notes coming in, and plays them back through the routes. |
 | Record Unrouted Notes | also records notes that no route matches. It only works when Record After Routes is off. When Record After Routes is on, the loop already records everything the FoxWizard sends, so this switch is grey. |
 | Auto Overdub | goes straight into overdub after the first take |

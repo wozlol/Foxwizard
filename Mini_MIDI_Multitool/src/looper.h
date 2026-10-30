@@ -70,6 +70,8 @@ class Looper {
   void armRecord(uint8_t track, uint32_t fixedLengthUs, bool overdub);
   bool beginArmedRecording(uint64_t nowUs);
   void setRecordQuantizeUs(uint32_t quantumUs) { recordQuantizeUs_ = quantumUs; }
+  // 1.116: the swing of the quantize grid, 0 or 50 straight, 51-75. Only matters while a quantum is set.
+  void setRecordSwing(uint8_t percent) { recordSwingPercent_ = percent; }
   bool capture(uint64_t nowUs, const LoopMidiEvent &event);
   bool finishRecording(uint64_t nowUs);
   void cancelRecording();
@@ -233,6 +235,7 @@ class Looper {
   uint64_t recordStartUs_ = 0;
   uint32_t recordFixedLengthUs_ = 0;
   uint32_t recordQuantizeUs_ = 0;
+  uint8_t recordSwingPercent_ = 0;
   uint8_t selectedTrack_ = 0;
   uint8_t recordingTrack_ = 0;
   LoopTrackMode mode_ = LoopTrackMode::Manual;
