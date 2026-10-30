@@ -950,6 +950,18 @@ case "rrvelocity":
   let ok = runRrVelocity(link)
   print(ok ? "ROUND ROBIN VELOCITY: ALL PASS" : "ROUND ROBIN VELOCITY: SOMETHING FAILED")
   exit(ok ? 0 : 1)
+case "commit":
+  // Writes the unit's current settings to its flash, the same as Patchling's Save to Device. Used to read the stack depth that costs.
+  guard let (source, destination) = findEndpoints(matching: portName), let link = Link(source: source, destination: destination) else { print("no port"); exit(2) }
+  let reply = ask(link, 0x31, reply: 0x7E, timeout: 5.0)
+  print(reply == nil ? "No answer to the save" : "Saved to the unit's flash")
+  exit(reply == nil ? 1 : 0)
+case "getblock":
+  // Reads one feature block the way Patchling does, for finding which request raises the stack depth.
+  guard let (source, destination) = findEndpoints(matching: portName), let link = Link(source: source, destination: destination), let type = args.dropFirst().first.flatMap({ UInt8($0) }) else { print("clock_check getblock TYPE"); exit(2) }
+  let r = ask(link, 0x17, [type], reply: 0x18, timeout: 2.0)
+  print(r == nil ? "block \(type): no answer" : "block \(type): \(unpack7(Array(r!.dropFirst())).count) bytes")
+  exit(0)
 case "swingtest":
   guard let (source, destination) = findEndpoints(matching: portName), let link = Link(source: source, destination: destination) else { print("no port"); exit(2) }
   var originals: [UInt8: [UInt8]] = [:]

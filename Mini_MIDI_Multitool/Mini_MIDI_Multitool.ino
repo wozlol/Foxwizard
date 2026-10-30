@@ -102,7 +102,7 @@ constexpr uint8_t SYSEX_MFR_ID = 0x7D;   // reserved for non-commercial/educatio
 constexpr uint8_t SYSEX_DEVICE_ID = 0x4D; // 'M'
 constexpr uint8_t PROTOCOL_VERSION = 7; // 2: 45-byte routes with port masks, GET_STATUS. 3: clock settings, LEARN. 4: 53-byte routes with feature fields, feature blocks. 5: presets. 6: Round Robin Priority order block. 7: Round Robin Velocity
 constexpr uint8_t FW_VERSION_MAJOR = 1;
-constexpr uint8_t FW_VERSION_MINOR = 119;
+constexpr uint8_t FW_VERSION_MINOR = 120;
 constexpr uint8_t FW_CHUNK_BYTES = 128;          // firmware bytes per FW_DATA message, 147 once packed
 constexpr uint32_t FW_REBOOT_DELAY_MS = 300;     // lets the FW_END ACK reach the host before rebooting
 const char DEVICE_NAME[] = "FoxWizard Mini MIDI Multitool"; // long name sent in the SysEx IDENTITY_REPLY
@@ -2860,7 +2860,7 @@ void stutterUpdate(uint64_t now) {
   if (!stutterHistoryStartUs || now - stutterHistoryStartUs < lengthUs) return;
   if (!stutterRepeater.activate(stutterHistory, now, lengthUs, 0)) return; // nothing played yet, retried while held
   // Notes sounding now with nothing at all inside the slice started before it: carried.
-  uint8_t touched[16][16];
+  static uint8_t touched[16][16]; // static since 1.120, 256 bytes off the stack. stutterUpdate does not call itself.
   memset(touched, 0, sizeof(touched));
   fw::HistorySnapshot snap = stutterHistory.snapshot(now, lengthUs, 0);
   fw::EchoEvent ev;
@@ -5013,7 +5013,9 @@ void arpStep(uint8_t slot, uint64_t nowUs) {
   const ArpSettings &a = arpSettings[slot];
   arpReleaseActive(slot);
   if (r.routeIndex >= routeCount) return;
-  uint8_t notes[128];
+  // Scratch for one step, static since 1.120 so the 384 bytes are not on the stack under everything an arp note triggers (Echo, the
+  // looper, Priority). arpStep runs only from serviceArps and nothing it calls comes back to it.
+  static uint8_t notes[128];
   uint8_t n = 0;
   for (uint8_t note = 0; note < 128; ++note) if (arpSounding(r, note)) notes[n++] = note;
   if (n == 0) return;
@@ -5053,7 +5055,7 @@ void arpStep(uint8_t slot, uint64_t nowUs) {
     playAll();
   } else if (mode >= ARP_AS_PLAYED) {
     // Each mode is an order of the held notes, played round; a full pass moves up an octave.
-    uint8_t seq[256];
+    static uint8_t seq[256]; // see notes above
     uint16_t len = 0;
     if (mode == ARP_AS_PLAYED) {
       for (uint8_t i = 0; i < n; ++i) seq[len++] = i;
