@@ -130,7 +130,9 @@ final class Link {
     let until = Date().addingTimeInterval(timeout)
     while Date() < until {
       for r in drain() where r.bytes.count > 34 && r.bytes[0] == 0xF0 && r.bytes[3] == 0x14 {
-        return (Int(r.bytes[4 + 28]) * 512, Int(r.bytes[4 + 29]) * 16, r.bytes.count > 4 + 31 ? Int(r.bytes[4 + 30]) | (Int(r.bytes[4 + 31]) << 7) : 0, r.bytes.count > 4 + 36 && r.bytes[4 + 36] & 0x40 != 0 ? Int(r.bytes[4 + 32]) | (Int(r.bytes[4 + 33]) << 7) | (Int(r.bytes[4 + 34]) << 14) | (Int(r.bytes[4 + 35]) << 21) | (Int(r.bytes[4 + 36] & 0x0F) << 28) : 0)
+        // the stack depth: from 1.122 two bytes at 41 and 42 in 16 byte units, before that byte 29, which stops at 2,032
+        let deep = r.bytes.count > 4 + 42 ? (Int(r.bytes[4 + 41]) | (Int(r.bytes[4 + 42]) << 7)) * 16 : Int(r.bytes[4 + 29]) * 16
+        return (Int(r.bytes[4 + 28]) * 512, deep, r.bytes.count > 4 + 31 ? Int(r.bytes[4 + 30]) | (Int(r.bytes[4 + 31]) << 7) : 0, r.bytes.count > 4 + 36 && r.bytes[4 + 36] & 0x40 != 0 ? Int(r.bytes[4 + 32]) | (Int(r.bytes[4 + 33]) << 7) | (Int(r.bytes[4 + 34]) << 14) | (Int(r.bytes[4 + 35]) << 21) | (Int(r.bytes[4 + 36] & 0x0F) << 28) : 0)
       }
       Thread.sleep(forTimeInterval: 0.01)
     }
@@ -829,7 +831,7 @@ func runFourArps(_ link: Link) -> Bool {
 func runSession(_ link: Link, seconds: Double, channels: [UInt8], useSetup: Bool) {
   guard let id = link.identity() else { print("No answer from the FoxWizard"); exit(1) }
   guard let before = link.memory() else { print("This firmware has no memory readout, update to 1.108 or later"); exit(1) }
-  print("FoxWizard firmware \(id.major).\(id.minor). Memory before: free heap lowest \(before.heapLowest / 1024) KB, main stack deepest \(before.stackDeepest) of 2048 bytes")
+  print("FoxWizard firmware \(id.major).\(id.minor). Memory before: free heap lowest \(before.heapLowest / 1024) KB, main stack deepest \(before.stackDeepest) bytes")
   // which presets there are
   _ = link.drain()
   link.send([0xF0, 0x7D, 0x4D, 0x37, 0xF7])
@@ -1049,6 +1051,25 @@ case "fourarps":
   let ok = runFourArps(link)
   print(ok ? "FOUR ARPS AT ONCE: ALL PASS" : "FOUR ARPS AT ONCE: SOMETHING FAILED")
   exit(ok ? 0 : 1)
+case "dive":
+  // Needs a firmware built with -DFW_DIAG. Makes the unit really use the stack, step by step, and reads the depth it reached. Stops at the first step
+  // that gets no answer or after which the unit's stack counter went down (a restart).
+  guard let (source, destination) = findEndpoints(matching: portName), let link = Link(source: source, destination: destination), let start = link.memory() else { print("no port"); exit(2) }
+  let steps = (args.dropFirst().first ?? "10,20,30,40,50,60,70").split(separator: ",").compactMap { UInt8($0) }
+  print("Stack counter at the start: \(start.stackDeepest) bytes. Each step is about 70 bytes a frame on top of the unit's own use")
+  var last = start.stackDeepest
+  for frames in steps {
+    guard let ack = ask(link, 0x7C, [frames], reply: 0x7E, timeout: 2.0) else { print("frames \(frames): NO ANSWER, the unit may have restarted or hung"); exit(1) }
+    _ = ack
+    Thread.sleep(forTimeInterval: 0.2)
+    guard let now = link.memory(timeout: 2.0) else { print("frames \(frames): the unit did not answer the memory read afterwards"); exit(1) }
+    let restarted = now.stackDeepest < last
+    print("frames \(frames): stack deepest \(now.stackDeepest) bytes\(restarted ? "  RESTARTED, the counter went down" : "") (\(now.stackDeepest > 2048 ? "past the 2,048 the linker reserves" : "inside the reserved 2,048")), heap lowest \(now.heapLowest / 1024) KB")
+    if restarted { exit(1) }
+    last = now.stackDeepest
+  }
+  print("The unit survived every step")
+  exit(0)
 case "swingtest":
   guard let (source, destination) = findEndpoints(matching: portName), let link = Link(source: source, destination: destination) else { print("no port"); exit(2) }
   var originals: [UInt8: [UInt8]] = [:]

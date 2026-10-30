@@ -79,6 +79,7 @@ The route struct is 41 bytes → five groups of 7 + one group of 6 → packed to
 | 0x3A   | SELECT_PRESET         | host→dev  | slot (0-15). ACKs once the slot is live, checksum is the active slot, extra the slot count. ERR_BAD_INDEX past the slot count |
 | 0x40   | FW_BEGIN              | host→dev  | size(3) + md5 (32 lowercase hex ASCII characters). Firmware 1.2+ |
 | 0x41   | FW_DATA               | host→dev  | index(2) + pack7(up to 128 firmware bytes → up to 147 bytes). Firmware 1.2+ |
+| 0x7C   | DIAG_STACK_DIVE       | host→dev  | frames(1). Only in a build made with `FW_EXTRA_FLAGS=-DFW_DIAG`, never in a release. Recurses that many 70-byte frames so the stack goes that deep, then ACKs with the stack depth in 16-byte units as extra |
 | 0x42   | FW_END                | host→dev  | (none). Checks size and MD5, stages the install, ACKs, then reboots. Firmware 1.2+ |
 | 0x7E   | ACK                   | dev→host  | originalCmd(1), status(1: 0=OK,1=ERR_BAD_INDEX,2=ERR_BAD_DATA,3=ERR_FULL,4=ERR_UPDATE), checksum(1), extra(2, e.g. assigned index for ADD_ROUTE) |
 
@@ -366,6 +367,7 @@ for Patchling's piano. No reply.
 - 30, 31: the stage the main loop was in at the last watchdog restart, two 7-bit bytes, low first, 0 for none (1.110). The stage numbers are in `DIAGNOSTICS.md`.
 - 32 to 35: the address of the last hard fault, 28 bits in four 7-bit bytes, low first. 36: its top 4 bits, with bit 6 set when the last restart was a hard fault (1.112).
 - 37, 38 and 39, 40: poly aftertouch and channel pressure updates sent to the DIN port, and thinned away, since the last status, each two 7-bit bytes, low first, then reset (1.115).
+- 41, 42: the deepest the main stack has gone, in 16-byte units, two 7-bit bytes, low first (1.122), counted over the whole 8 KB stack area. Byte 29 is the same number cut off at 127 units (2,032 bytes).
 
 **GET_HOST_REPORT (0x35, 1.63):** payload: page (0 or 1). Reply HOST_REPORT_DATA (0x36): page, complete (1 when every piece of the report has arrived from the host brain), then pack7 of that page's 120 bytes. The 240-byte report is the host brain's record of its last recovery restart, layout in `foxwizard_link.h`. All zero until a host brain with firmware 3 or later restarts.
 

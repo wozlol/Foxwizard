@@ -102,7 +102,7 @@ constexpr uint8_t SYSEX_MFR_ID = 0x7D;   // reserved for non-commercial/educatio
 constexpr uint8_t SYSEX_DEVICE_ID = 0x4D; // 'M'
 constexpr uint8_t PROTOCOL_VERSION = 7; // 2: 45-byte routes with port masks, GET_STATUS. 3: clock settings, LEARN. 4: 53-byte routes with feature fields, feature blocks. 5: presets. 6: Round Robin Priority order block. 7: Round Robin Velocity
 constexpr uint8_t FW_VERSION_MAJOR = 1;
-constexpr uint8_t FW_VERSION_MINOR = 121;
+constexpr uint8_t FW_VERSION_MINOR = 122;
 constexpr uint8_t FW_CHUNK_BYTES = 128;          // firmware bytes per FW_DATA message, 147 once packed
 constexpr uint32_t FW_REBOOT_DELAY_MS = 300;     // lets the FW_END ACK reach the host before rebooting
 const char DEVICE_NAME[] = "FoxWizard Mini MIDI Multitool"; // long name sent in the SysEx IDENTITY_REPLY
@@ -152,6 +152,9 @@ enum SysexCmd : uint8_t {
   CMD_FW_BEGIN = 0x40,
   CMD_FW_DATA = 0x41,
   CMD_FW_END = 0x42,
+#ifdef FW_DIAG
+  CMD_DIAG_STACK_DIVE = 0x7C, // test builds only: really uses the stack, payload the number of frames (about 70 bytes each)
+#endif
   CMD_ACK = 0x7E
 };
 
@@ -658,7 +661,10 @@ uint8_t rrOrderPool[fw::kRrOrderPoolBytes]; // 1.108: Round Robin Priority chann
 
 // 1.108: how much room is left. The lowest the free heap has been since power on, and how deep the main stack has gone: the stack is
 // painted with a pattern at power on and the deepest write is what is left of it. Reported in GET_STATUS.
-extern "C" char __StackBottom, __StackTop;
+// The linker script reserves 2 KB for the main stack (__StackBottom to __StackTop), but with only core 0 running, as here, arduino-pico
+// gives core 0 the whole 8 KB scratch block, down to __StackLimit (its docs: "in single core mode, core 0 has the full 8KB of stack space").
+// The readout follows the real floor. A sketch that adds setup1/loop1 splits that 8 KB in two, redo the stack numbers then.
+extern "C" char __StackBottom, __StackTop, __StackLimit;
 uint32_t heapLowestFree = 0xFFFFFFFF;
 
 // 1.110: where the main loop was when the watchdog restarted the unit. Each stage writes its number to a register that survives a
@@ -5973,6 +5979,9 @@ void handleSysexCommand(uint8_t sourcePort, const uint8_t *cmdBuf, uint8_t cmdLe
       appendReply((perfPressureKept >> 7) & 0x7F);
       appendReply(perfPressureThinned & 0x7F);
       appendReply((perfPressureThinned >> 7) & 0x7F);
+      // 1.122: the deepest the main stack has gone in 16-byte units, now past 2 KB, in two 7-bit bytes. Byte 29 above stops at 2,032.
+      appendReply((stackUsedBytes() / 16) & 0x7F);
+      appendReply(((stackUsedBytes() / 16) >> 7) & 0x7F);
       perfPressureKept = perfPressureThinned = 0;
       perfLoopMaxUs = perfLinkLimitHits = perfInputHeldBack = perfLinkHigh = perfTrsHigh = perfUsbHigh = 0;
       perfRepeatOn = perfStrayOff = perfLoopOrphanOff = perfLoopRepeatOn = 0;
@@ -6164,6 +6173,14 @@ void handleSysexCommand(uint8_t sourcePort, const uint8_t *cmdBuf, uint8_t cmdLe
       presetRequestAction(2 + payload[0], sourcePort); // the swap happens at the top of the main loop, then it acknowledges
       break;
     }
+
+#ifdef FW_DIAG
+    case CMD_DIAG_STACK_DIVE: { // built only with -DFW_DIAG: proves how much of the stack is really there
+      const uint8_t sink = diagStackDive(payloadLen ? payload[0] : 0);
+      sendAck(sourcePort, cmd, ACK_OK, sink & 0x7F, stackUsedBytes() / 16);
+      break;
+    }
+#endif
 
     case CMD_COMMIT: {
       commitPending = true; // serviceCommit() saves and sends the ACK, from the top of the loop
@@ -6500,14 +6517,25 @@ extern "C" __attribute__((naked)) void isr_hardfault(void) {
 
 void paintStack() {
   const uint8_t *sp = (const uint8_t *)__builtin_frame_address(0);
-  for (uint8_t *p = (uint8_t *)&__StackBottom; p + 128 < sp; ++p) *p = 0xA5; // below the live stack, with room to spare
+  for (uint8_t *p = (uint8_t *)&__StackLimit; p + 128 < sp; ++p) *p = 0xA5; // below the live stack, with room to spare
 }
 
 uint16_t stackUsedBytes() {
-  const uint8_t *p = (const uint8_t *)&__StackBottom;
+  const uint8_t *p = (const uint8_t *)&__StackLimit;
   while (p < (const uint8_t *)&__StackTop && *p == 0xA5) ++p;
   return (uint16_t)((const uint8_t *)&__StackTop - p);
 }
+
+#ifdef FW_DIAG
+// Test builds only. Recurses with a frame of about 70 bytes a call, so the stack goes as deep as asked and the readout shows it.
+__attribute__((noinline)) uint8_t diagStackDive(uint8_t frames) {
+  volatile uint8_t pad[48];
+  for (uint8_t i = 0; i < sizeof(pad); ++i) pad[i] = (uint8_t)(frames + i);
+  uint8_t sum = pad[frames % sizeof(pad)];
+  if (frames) sum = (uint8_t)(sum + diagStackDive((uint8_t)(frames - 1)));
+  return sum;
+}
+#endif
 
 void sampleMemory() {
   static uint32_t lastMs = 0;

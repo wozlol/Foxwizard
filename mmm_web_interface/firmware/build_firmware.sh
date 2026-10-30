@@ -49,7 +49,12 @@ if [ -z "$TEST_MINOR" ] && { ! grep -q "FOXWIZARD PATCHLING v$MAJOR.$MINOR " ../
   exit 1
 fi
 
-arduino-cli compile --fqbn "$FQBN" --build-path "$BUILD/out" "$SKETCH"
+# FW_EXTRA_FLAGS adds compiler flags, e.g. FW_EXTRA_FLAGS=-DFW_DIAG for the stack dive command. Not for a release build.
+if [ -n "$FW_EXTRA_FLAGS" ]; then
+  arduino-cli compile --fqbn "$FQBN" --build-path "$BUILD/out" --build-property "compiler.cpp.extra_flags=$FW_EXTRA_FLAGS" "$SKETCH"
+else
+  arduino-cli compile --fqbn "$FQBN" --build-path "$BUILD/out" "$SKETCH"
+fi
 
 mkdir -p "$OUT"
 rm -f "$OUT/$PREFIX"-*.bin "$OUT/$PREFIX"-*.uf2
