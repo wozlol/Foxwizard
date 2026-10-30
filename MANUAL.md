@@ -241,7 +241,7 @@ Up to 16 Notes and 16 CCs, each set to an action, with Learn. The same action li
 
 ## Launchpad
 
-Turn Launchpad on for the route a Novation Launchpad (in Programmer mode) plays into. The grid becomes four 4x4 note blocks from note 36. The pads light up with whatever notes play back to them, in each channel's color.
+Turn Launchpad on for the route a Novation Launchpad (in Default/Programmer mode) plays into. The grid becomes four 4x4 note blocks from note 36. The pads light up with whatever notes play back to them, in each channel's color.
 
 | Setting | What it does |
 |---|---|
