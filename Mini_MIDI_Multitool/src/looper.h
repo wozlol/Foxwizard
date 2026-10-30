@@ -211,9 +211,9 @@ class Looper {
     uint32_t startUs = 0;     // when, the low 32 bits of the clock, for telling how long it lasted
   };
   static constexpr uint8_t kHoldCount = 32;
-  // FoxWizard 1.117: Record Quantize puts a note's On and Off on the grid one at a time. A note shorter than the distance to its
-  // next line has both land on the same line, a note of no length, which a loop played after routes loses. So the On is remembered,
-  // where it was played and where it landed, and an Off that lands on the same line is put the played length after it instead.
+  // FoxWizard 1.118: Record Quantize moves a note's On to the grid and the note keeps the length it was played, so the Off is the
+  // snapped On plus that length and is never snapped by itself. The On is remembered, where it was played and where it landed, to
+  // do that. An Off with no On remembered is left where it was played.
   struct NoteStart {
     bool used = false;
     uint8_t channel = 0, note = 0;

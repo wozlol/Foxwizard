@@ -1,4 +1,4 @@
-// Record Quantize on the looper, with swing, and a note shorter than the distance to its next grid line keeping its length.
+// Record Quantize on the looper, with swing: a note's start goes to the grid and the note always keeps the length it was played.
 //   clang++ -std=c++17 -I ../src looper_quantize_test.cpp ../src/looper.cpp -o /tmp/looper_quantize_test && /tmp/looper_quantize_test
 
 #include <cstdio>
@@ -46,7 +46,7 @@ static uint32_t timeOf(const std::vector<Played> &p, uint8_t note, bool on) {
 }
 
 int main() {
-  // Straight, 125 ms grid. A 40 ms note played at 130 snaps to 125 and keeps its 40 ms, instead of ending on the same line.
+  // Straight, 125 ms grid. A 40 ms note played at 130 starts at 125 and keeps its 40 ms, its end is not snapped.
   {
     auto p = record({{0, 40, 60}, {130, 40, 62}, {250, 40, 64}, {370, 40, 65}, {490, 40, 67}}, 0);
     const uint32_t want[] = {0, 125, 250, 375, 500};
@@ -56,11 +56,11 @@ int main() {
       CHECK(timeOf(p, notes[i], false) == want[i] + 40, "note %d Off at %u, wanted %u (it keeps its 40 ms)", notes[i], timeOf(p, notes[i], false), want[i] + 40);
     }
   }
-  // A note longer than half the gap is put on the grid at both ends as before, nothing changes for it.
+  // Longer notes too, the end is never put on a line by itself. A 130 ms note played at 10 starts at 0 and ends at 130, not 125.
   {
-    auto p = record({{0, 130, 60}, {250, 150, 62}}, 0);
-    CHECK(timeOf(p, 60, true) == 0 && timeOf(p, 60, false) == 125, "a 130 ms note stays 0 to 125, got %u to %u", timeOf(p, 60, true), timeOf(p, 60, false));
-    CHECK(timeOf(p, 62, true) == 250 && timeOf(p, 62, false) == 375, "a 150 ms note stays 250 to 375, got %u to %u", timeOf(p, 62, true), timeOf(p, 62, false));
+    auto p = record({{10, 130, 60}, {240, 150, 62}}, 0);
+    CHECK(timeOf(p, 60, true) == 0 && timeOf(p, 60, false) == 130, "a 130 ms note is 0 to 130, got %u to %u", timeOf(p, 60, true), timeOf(p, 60, false));
+    CHECK(timeOf(p, 62, true) == 250 && timeOf(p, 62, false) == 400, "a 150 ms note is 250 to 400, got %u to %u", timeOf(p, 62, true), timeOf(p, 62, false));
   }
   // 75% swing on 125 ms: lines at 0, 187.5, 250, 437.5, 500. A 90 ms note on the first line used to collapse.
   {
@@ -68,6 +68,25 @@ int main() {
     CHECK(timeOf(p, 60, true) == 0 && timeOf(p, 60, false) == 90, "swung: first note 0 to 90, got %u to %u", timeOf(p, 60, true), timeOf(p, 60, false));
     CHECK(timeOf(p, 62, true) == 187 && timeOf(p, 62, false) == 227, "swung: the off-beat note 187 to 227, got %u to %u", timeOf(p, 62, true), timeOf(p, 62, false));
     CHECK(timeOf(p, 67, true) == 500 && timeOf(p, 67, false) == 590, "swung: last note 500 to 590, got %u to %u", timeOf(p, 67, true), timeOf(p, 67, false));
+  }
+  // An overdub put in while the loop plays: a hold keeps its length too.
+  {
+    Looper looper;
+    looper.reset();
+    looper.setRecordQuantizeUs(125000);
+    looper.armRecord(0, 2000000, false);
+    LoopMidiEvent m;
+    m.status = 0x90; m.data1 = 60; m.data2 = 100; looper.capture(1000000, m);
+    m.status = 0x80; m.data2 = 0; looper.capture(1040000, m);
+    looper.finishRecording(3000000);
+    looper.start(5000000);
+    looper.armRecord(0, 0, true);
+    m.status = 0x90; m.data1 = 62; m.data2 = 100; looper.capture(5000000ULL + 4000000ULL + 130000ULL, m);
+    m.status = 0x80; m.data2 = 0; looper.capture(5000000ULL + 4000000ULL + 170000ULL, m);
+    looper.finishRecording(5000000ULL + 4000000ULL + 600000ULL);
+    played.clear();
+    for (uint64_t t = 5000000; t < 5000000 + 2000000; t += 500) looper.tick(t, emit, release, nullptr);
+    CHECK(timeOf(played, 62, true) == 125 && timeOf(played, 62, false) == 165, "an overdub hold is 125 to 165, got %u to %u", timeOf(played, 62, true), timeOf(played, 62, false));
   }
   // The same note pressed twice, the second press replaces the first's memory. Two notes at once, each with its own length.
   {

@@ -399,10 +399,10 @@ uint32_t Looper::keepNoteLength(uint8_t channel, uint8_t note, bool noteOn, uint
   for (NoteStart &n : noteStarts_) {
     if (!n.used || n.channel != channel || n.note != note) continue;
     n.used = false;
-    if (snappedUs <= n.snappedUs && rawUs > n.rawUs) return n.snappedUs + (rawUs - n.rawUs);
-    break;
+    if (rawUs > n.rawUs) return n.snappedUs + (rawUs - n.rawUs);
+    return snappedUs; // the pass wrapped between the two, nothing to measure the length against
   }
-  return snappedUs;
+  return rawUs;
 }
 
 bool Looper::startHold(uint8_t channel, uint8_t note, uint8_t velocity, uint16_t tag, uint32_t positionUs, uint64_t nowUs) {
@@ -448,11 +448,12 @@ void Looper::flushHold(PendingHold &h, uint32_t endPositionUs, uint64_t nowUs) {
     put(last, off, 0);
   } else {
     const uint32_t from = quantized(h.positionUs);
-    uint32_t to = quantized(endPositionUs);
-    // Both ends on one line: the note slides to it with the length it was played, instead of having none (1.117).
-    if (recordQuantizeUs_ > 0 && from == to && endPositionUs > h.positionUs) {
-      const uint32_t slid = from + (endPositionUs - h.positionUs);
-      to = slid >= length ? last : slid;
+    uint32_t to = endPositionUs;
+    if (recordQuantizeUs_ > 0) {
+      // The press goes to the grid and the hold keeps its length, wrapping past the top if it reaches it (1.118).
+      const uint32_t heldLength = endPositionUs >= h.positionUs ? endPositionUs - h.positionUs : length - h.positionUs + endPositionUs;
+      to = from + heldLength;
+      if (to >= length) to -= length;
     }
     if (from <= to) {
       put(from, on, h.velocity);

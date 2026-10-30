@@ -685,9 +685,14 @@ func runLoopSwing(_ link: Link) -> Bool {
       let want = played.map { expected($0.ms, pct) - expected(0, pct) }
       let worst = zip(means, want).map { abs($0 - $1) }.max()!
       let length = (starts.last! - starts.first!) / Double(starts.count - 1) * 1000
-      let ok = notesRight && worst < 3.0 && ons.count == offs.count
+      // each note keeps the length it was played, Quantize moves only its start
+      var lengths: [Double] = []
+      for on in loopOns { if let off = offs.first(where: { $0.note == on.note && $0.time > on.time }) { lengths.append((off.time - on.time) * 1000) } }
+      let meanLength = lengths.isEmpty ? 0 : lengths.reduce(0, +) / Double(lengths.count)
+      let lengthOk = abs(meanLength - noteSeconds * 1000) < 4
+      let ok = notesRight && worst < 3.0 && ons.count == offs.count && lengthOk
       if !ok { allGood = false }
-      print("\(ok ? "PASS" : "FAIL")  \(label): \(passes) passes, notes \(notesRight ? "67 69 71 72 74 (transpose once)" : "WRONG: \(loopOns.prefix(5).map { String($0.note) }.joined(separator: " "))"), at " + means.map { String(format: "%.0f", $0) }.joined(separator: " ") + " ms, wanted " + want.map { String(format: "%.0f", $0) }.joined(separator: " ") + String(format: ", worst %.1f ms, pass %.0f ms, ", worst, length) + "\(ons.count) on / \(offs.count) off")
+      print("\(ok ? "PASS" : "FAIL")  \(label): \(passes) passes, notes \(notesRight ? "67 69 71 72 74 (transpose once)" : "WRONG: \(loopOns.prefix(5).map { String($0.note) }.joined(separator: " "))"), at " + means.map { String(format: "%.0f", $0) }.joined(separator: " ") + " ms, wanted " + want.map { String(format: "%.0f", $0) }.joined(separator: " ") + String(format: ", worst %.1f ms, pass %.0f ms, notes last %.0f ms%@, ", worst, length, meanLength, lengthOk ? "" : " (played " + String(format: "%.0f", noteSeconds * 1000) + ")") + "\(ons.count) on / \(offs.count) off")
     }
   }
   restoreAfterTestSetup(link, originals: originals)

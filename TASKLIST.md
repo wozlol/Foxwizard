@@ -1,10 +1,10 @@
 # FoxWizard task list
 
-Order matters. Finish the item you are on before starting the next. Anything new goes at the end of its section. Version at last edit: firmware 1.117, host brain 8, protocol 6.
+Order matters. Finish the item you are on before starting the next. Anything new goes at the end of its section. Version at last edit: firmware 1.118, host brain 8, protocol 6.
 
 ## Now (needs the hardware)
 
-- [ ] 1.117 looper quantize: `./clock_check loopswing --note-ms 40` and `--note-ms 100`, all 6 pass, no Note On lost with Record After Routes on. Computer test `tests/looper_quantize_test.cpp` passes.
+- [ ] 1.118 looper quantize: `./clock_check loopswing --note-ms 40`, `100` and `150`, all 6 pass each, no Note On lost with Record After Routes on and every note keeps its played length. Computer test `tests/looper_quantize_test.cpp` passes.
 - [ ] Round Robin Priority on the unit: the Priority switch shows (protocol 6), the numbers follow the click order, Save then Load keeps them, two routes keep their own orders. Steps in `~/Desktop/FoxWizard-preset-test/TEST_PROCEDURE.md`, 3c.
 - [ ] Presets, the rest of the kit steps: power cycle comes back in the same slot, factory reset leaves 1 slot, the clock during a switch (`./clock_check out 40 --expect 120` while pressing the front button).
 - [ ] Confirm the 1.93 clock fix against Ableton (does the master clock still fall behind?).
