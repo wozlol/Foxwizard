@@ -796,6 +796,33 @@ case "livetest":
   }
   _ = ask(link, 0x28, reply: 0x7E)
   restoreAfterTestSetup(link, originals: originals)
+case "dinflood":
+  guard let (source, destination) = findEndpoints(matching: portName), let link = Link(source: source, destination: destination) else { print("no port"); exit(2) }
+  var originals: [UInt8: [UInt8]] = [:]
+  for b in testBlocks { if let r = ask(link, 0x17, [b.type], reply: 0x18) { originals[b.type] = unpack7(Array(r.dropFirst())) } }
+  var route = testRoutes[3]
+  route[43] = 1; route[44] = 0 // out ports: TRS/DIN only, which carries about 3 KB a second
+  route[9] = 0b1; route[10] = 0 // out channel 1 only, so each update is one message
+  _ = ask(link, 0x28, reply: 0x7E)
+  _ = ask(link, 0x24, pack7(route), reply: 0x7E)
+  print("One route, channel 3 in to DIN out. Poly aftertouch for a held note, then a Note On and Off to see how long a note waits behind it")
+  for rate in [100.0, 400.0, 800.0, 1600.0] {
+    _ = link.drain()
+    link.send([0x92, 60, 100]); Thread.sleep(forTimeInterval: 0.2)
+    let n = Int(rate * 6)
+    let t0 = mach_absolute_time()
+    for i in 0..<n {
+      mach_wait_until(t0 + secToTicks(Double(i) / rate))
+      link.send([0xA2, 60, UInt8(20 + i % 100)])
+    }
+    link.send([0x82, 60, 0])
+    Thread.sleep(forTimeInterval: 2.0)
+    let st = ask(link, 0x13, reply: 0x14, timeout: 4.0)
+    let held = st.map { Int($0[18]) } ?? -1, trs = st.map { Int($0[20]) * 100 / 127 } ?? -1
+    print("\(Int(rate)) aftertouch per second for 6 s: the DIN queue peaked at \(trs)%, input held back \(held) times")
+  }
+  _ = ask(link, 0x28, reply: 0x7E)
+  restoreAfterTestSetup(link, originals: originals)
 case "atflood":
   guard let (source, destination) = findEndpoints(matching: portName), let link = Link(source: source, destination: destination) else { print("no port"); exit(2) }
   var originals: [UInt8: [UInt8]] = [:]

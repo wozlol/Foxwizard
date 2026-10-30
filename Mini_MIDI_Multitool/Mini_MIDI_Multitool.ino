@@ -101,7 +101,7 @@ constexpr uint8_t SYSEX_MFR_ID = 0x7D;   // reserved for non-commercial/educatio
 constexpr uint8_t SYSEX_DEVICE_ID = 0x4D; // 'M'
 constexpr uint8_t PROTOCOL_VERSION = 6; // 2: 45-byte routes with port masks, GET_STATUS. 3: clock settings, LEARN. 4: 53-byte routes with feature fields, feature blocks. 5: presets. 6: Round Robin Priority order block
 constexpr uint8_t FW_VERSION_MAJOR = 1;
-constexpr uint8_t FW_VERSION_MINOR = 113;
+constexpr uint8_t FW_VERSION_MINOR = 114;
 constexpr uint8_t FW_CHUNK_BYTES = 128;          // firmware bytes per FW_DATA message, 147 once packed
 constexpr uint32_t FW_REBOOT_DELAY_MS = 300;     // lets the FW_END ACK reach the host before rebooting
 const char DEVICE_NAME[] = "FoxWizard Mini MIDI Multitool"; // long name sent in the SysEx IDENTITY_REPLY
@@ -2142,12 +2142,28 @@ uint8_t linkPortsFor(uint16_t mask, uint8_t ports[LINK_PORTS_MAX]) {
   return n;
 }
 
+// 1.114: poly aftertouch and channel pressure are thinned for the DIN port as its queue fills, so a flood of them no longer makes the
+// whole input wait behind it. The DIN port moves about 3 KB a second. With the queue under half full everything goes. Past that
+// every 2nd update goes through, then every 4th, 8th and 16th as it fills, counted for each note on each channel (and channel pressure
+// on its own), so every one keeps coming, with bigger gaps. A pressure of 0 always goes, so a release is never lost.
+uint8_t pressureThinCount[16][17];
+
+bool pressureThinnedForTrs(uint8_t statusHi, uint8_t channel, uint8_t data1, uint8_t data2) {
+  if (statusHi != 0xA0 && statusHi != 0xD0) return false;
+  const uint16_t room = trsFree();
+  const uint8_t every = room >= 1024 ? 1 : room >= 512 ? 2 : room >= 256 ? 4 : room >= 128 ? 8 : 16;
+  if (every == 1 || (statusHi == 0xA0 ? data2 : data1) == 0) return false;
+  uint8_t &count = pressureThinCount[channel & 15][statusHi == 0xA0 ? (data1 & 15) : 16];
+  if (++count >= every) { count = 0; return false; }
+  return true;
+}
+
 void sendToOutputs(uint16_t mask, uint8_t statusHi, uint8_t channel, uint8_t data1, uint8_t data2, uint8_t len) {
   CRUMB(62);
   if (statusHi == 0x90 && data2) { // remembered for the next All Notes Off, see serviceRouteNotesOff
     for (uint8_t b = 0; b < PORT_COUNT; ++b) if ((mask & ~launchpadPorts) & (1u << b)) notedChannels[b] |= 1u << (channel & 0x0F); // lights aren't notes
   }
-  if (mask & PORT_TRS) {
+  if ((mask & PORT_TRS) && !pressureThinnedForTrs(statusHi, channel, data1, data2)) {
     const uint8_t bytes[3] = {(uint8_t)(statusHi | channel), data1, data2};
     trsSend(bytes, len);
     noteActivity(ledOut);

@@ -415,6 +415,10 @@ Up to 16 overdub layers can be stepped back and forth. A layer removed
 with Layer Undo can still come back after newer overdubs. Removed layers
 aren't saved, so only the layers playing survive power off.
 
+## Aftertouch thinning
+
+The DIN output moves about 3 KB a second. When a flood of poly aftertouch or channel pressure fills its queue past half, only every 2nd update goes out, then every 4th, 8th or 16th as it fills, for each note on each channel. Every note keeps getting some, with bigger gaps, instead of the whole input waiting behind them. A pressure of 0 always goes. Below half full nothing is thinned.
+
 ## Presets
 
 The unit keeps up to 16 presets and runs one at a time. A preset is everything Patchling edits: routes, arps, Echo, Stutter, Looper settings, mappings, Launchpad buttons, Scale, clock and button settings. Set **Preset Slots** (1 to 16) next to Button Action.
