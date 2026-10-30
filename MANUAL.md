@@ -6,8 +6,6 @@ USB-C to TRS MIDI adapter and router. Onboard memory for 16 switchable presets, 
 
 NOTE: This manual covers multiple versions and configurations of FoxWizard. The only difference is the number of ins and outs. All features (that don't depend on more ins and outs) work on all versions. The Host Edition series adds support for up to seven USB Host ports (using hubs), 5 more TRS outs, one additional TRS in, or future BLE.
 
-[`Foxwizard Host Edition/README.md`](Foxwizard%20Host%20Edition/README.md).
-
 ## V2 Highlights
 
 - **16 onboard presets.** Each holds its own routes (up to 60), arps, Echo, Stutter, Looper settings, mappings, Launchpad buttons, Scale and clock settings. Switch from Patchling, the front button, or a Note, CC or Launchpad button. A switch silences everything, lets go of held keys, and flashes the slot number without holding anything up. See Presets.
