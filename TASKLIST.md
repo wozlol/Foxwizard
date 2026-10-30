@@ -1,9 +1,10 @@
 # FoxWizard task list
 
-Order matters. Finish the item you are on before starting the next. Anything new goes at the end of its section. Version at last edit: firmware 1.116, host brain 8, protocol 6.
+Order matters. Finish the item you are on before starting the next. Anything new goes at the end of its section. Version at last edit: firmware 1.117, host brain 8, protocol 6.
 
 ## Now (needs the hardware)
 
+- [ ] 1.117 looper quantize: `./clock_check loopswing --note-ms 40` and `--note-ms 100`, all 6 pass, no Note On lost with Record After Routes on. Computer test `tests/looper_quantize_test.cpp` passes.
 - [ ] Round Robin Priority on the unit: the Priority switch shows (protocol 6), the numbers follow the click order, Save then Load keeps them, two routes keep their own orders. Steps in `~/Desktop/FoxWizard-preset-test/TEST_PROCEDURE.md`, 3c.
 - [ ] Presets, the rest of the kit steps: power cycle comes back in the same slot, factory reset leaves 1 slot, the clock during a switch (`./clock_check out 40 --expect 120` while pressing the front button).
 - [ ] Confirm the 1.93 clock fix against Ableton (does the master clock still fall behind?).
@@ -48,7 +49,6 @@ Numbers from `./clock_check version` and `session`, the thresholds are in `DIAGN
 
 ## Parked
 
-- Looper Record Quantize snaps each note's On and Off separately, as ARPnMIDI does. A note shorter than half the gap to its next grid line has both on the same line. With Record After Routes on, the loop's output queue merges that pair and keeps only the Off, so the note does not sound (Record After Routes off plays it, as a zero length note). Seen on 1.116 with swing off too (40 ms notes on a 1/16 grid at 120 BPM). Swing widens it: at 75% on a 1/16 the long gap is 187 ms, so a note starting on the first line of a pair collapses below about 94 ms. Needs your call, it is loop behavior ARPnMIDI does not have a rule for. Options: keep an Off at least one step after its On, or let the queue send a same-instant On then Off.
 
 - Akai MPK mini mk4 on hub 2 (slow, then stuck notes). Isolate it without the hub first.
 - A loop used only through Launchpad buttons may not count as using the clock, so Auto and Loop Lock would not apply.

@@ -211,6 +211,16 @@ class Looper {
     uint32_t startUs = 0;     // when, the low 32 bits of the clock, for telling how long it lasted
   };
   static constexpr uint8_t kHoldCount = 32;
+  // FoxWizard 1.117: Record Quantize puts a note's On and Off on the grid one at a time. A note shorter than the distance to its
+  // next line has both land on the same line, a note of no length, which a loop played after routes loses. So the On is remembered,
+  // where it was played and where it landed, and an Off that lands on the same line is put the played length after it instead.
+  struct NoteStart {
+    bool used = false;
+    uint8_t channel = 0, note = 0;
+    uint32_t rawUs = 0, snappedUs = 0;
+  };
+  static constexpr uint8_t kNoteStartCount = 16;
+  uint32_t keepNoteLength(uint8_t channel, uint8_t note, bool noteOn, uint32_t rawUs, uint32_t snappedUs);
   bool startHold(uint8_t channel, uint8_t note, uint8_t velocity, uint16_t tag, uint32_t positionUs, uint64_t nowUs);
   bool endHold(uint8_t channel, uint8_t note, uint32_t positionUs, uint64_t nowUs);
   void flushHold(PendingHold &hold, uint32_t endPositionUs, uint64_t nowUs);
@@ -258,6 +268,8 @@ class Looper {
   bool importing_[kLoopTrackCount]{};
   uint16_t recordHeld_[16][128]{}; // FoxWizard: the held note's tag + 1, 0 not held
   PendingHold holds_[kHoldCount];
+  NoteStart noteStarts_[kNoteStartCount];
+  uint8_t noteStartNext_ = 0;
   uint8_t layers_[kMaxUndoLayers]{};  // overdub layers, oldest first, hidden ones included
   uint8_t layerCount_ = 0;
   uint8_t hidden_[kMaxUndoLayers]{};  // hidden layers in the order they were hidden

@@ -82,6 +82,7 @@ void Looper::reset() {
   memset(importing_, 0, sizeof(importing_));
   memset(recordHeld_, 0, sizeof(recordHeld_));
   for (PendingHold &h : holds_) h.used = false;
+  for (NoteStart &n : noteStarts_) n.used = false;
   resetLayers();
 }
 
@@ -305,6 +306,7 @@ void Looper::armRecord(uint8_t track, uint32_t fixedLengthUs, bool overdub) {
   if (overdub) startOverdubLayer();
   memset(recordHeld_, 0, sizeof(recordHeld_));
   for (PendingHold &h : holds_) h.used = false;
+  for (NoteStart &n : noteStarts_) n.used = false;
   // Arming stays non-destructive.  A cleared track keeps its undo material
   // until the first captured event actually replaces it, so the armed target
   // can still move to another track without losing anything.
@@ -365,7 +367,9 @@ bool Looper::captureV(uint64_t nowUs, const LoopMidiEvent &input) {
   LoopMidiEvent event = input;
   event.layer = overdubbing_ ? currentLayer_ : 0;
   if (recordQuantizeUs_ > 0) {
+    const uint32_t playedUs = atUs;
     atUs = swingQuantize(atUs, recordQuantizeUs_, recordSwingPercent_);
+    if (type == 0x90 || type == 0x80) atUs = keepNoteLength(input.status & 0x0F, input.data1, noteOn, playedUs, atUs);
     const uint32_t limit = overdubbing_ ? track.lengthUs : recordFixedLengthUs_;
     if (limit > 0 && atUs >= limit) atUs = limit - 1U;
   }
@@ -379,6 +383,26 @@ bool Looper::captureV(uint64_t nowUs, const LoopMidiEvent &input) {
     recordHeld_[channel][input.data1] = noteOn ? static_cast<uint16_t>(input.tag + 1U) : 0;
   }
   return true;
+}
+
+uint32_t Looper::keepNoteLength(uint8_t channel, uint8_t note, bool noteOn, uint32_t rawUs, uint32_t snappedUs) {
+  if (noteOn) {
+    NoteStart *spot = nullptr;
+    for (NoteStart &n : noteStarts_) {
+      if (n.used && n.channel == channel && n.note == note) { spot = &n; break; } // pressed again, the new press replaces it
+      if (!n.used && !spot) spot = &n;
+    }
+    if (!spot) spot = &noteStarts_[noteStartNext_++ % kNoteStartCount]; // no room, the oldest goes
+    *spot = NoteStart{true, channel, note, rawUs, snappedUs};
+    return snappedUs;
+  }
+  for (NoteStart &n : noteStarts_) {
+    if (!n.used || n.channel != channel || n.note != note) continue;
+    n.used = false;
+    if (snappedUs <= n.snappedUs && rawUs > n.rawUs) return n.snappedUs + (rawUs - n.rawUs);
+    break;
+  }
+  return snappedUs;
 }
 
 bool Looper::startHold(uint8_t channel, uint8_t note, uint8_t velocity, uint16_t tag, uint32_t positionUs, uint64_t nowUs) {
@@ -423,7 +447,13 @@ void Looper::flushHold(PendingHold &h, uint32_t endPositionUs, uint64_t nowUs) {
     put(0, on, h.velocity);
     put(last, off, 0);
   } else {
-    const uint32_t from = quantized(h.positionUs), to = quantized(endPositionUs);
+    const uint32_t from = quantized(h.positionUs);
+    uint32_t to = quantized(endPositionUs);
+    // Both ends on one line: the note slides to it with the length it was played, instead of having none (1.117).
+    if (recordQuantizeUs_ > 0 && from == to && endPositionUs > h.positionUs) {
+      const uint32_t slid = from + (endPositionUs - h.positionUs);
+      to = slid >= length ? last : slid;
+    }
     if (from <= to) {
       put(from, on, h.velocity);
       put(to, off, 0);
@@ -491,6 +521,7 @@ bool Looper::finishRecordingV(uint64_t nowUs) {
   overdubbing_ = false;
   memset(recordHeld_, 0, sizeof(recordHeld_));
   for (PendingHold &h : holds_) h.used = false;
+  for (NoteStart &n : noteStarts_) n.used = false;
   // Whether THIS pass captured anything, not just whether the track holds
   // anything at all: an overdub track already had content before the pass
   // began, so track.count alone cannot tell the two apart. A pass that added
@@ -504,6 +535,7 @@ void Looper::cancelRecording() {
   overdubbing_ = false;
   memset(recordHeld_, 0, sizeof(recordHeld_));
   for (PendingHold &h : holds_) h.used = false;
+  for (NoteStart &n : noteStarts_) n.used = false;
 }
 
 // Where a track sits inside the shared transport cycle. Tracks are allowed to

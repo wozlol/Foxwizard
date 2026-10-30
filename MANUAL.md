@@ -329,7 +329,7 @@ use Note/CC to Feature and select Looper, or set a Looper Button trigger
 | Setting | What it does |
 |---|---|
 | Length | Free (the first take sets it) or 1-16 bars |
-| Quantize | Off, or snap recorded notes to a division |
+| Quantize | Off, or snap recorded notes to a division. A note's start and end each snap to the grid. A note shorter than the distance to its next grid line slides onto the line and keeps the length it was played, so staccato notes and drum hits stay short and none is lost |
 | Quantize Swing | Off, or 54 to 75%. Swings the Quantize grid: every second line is later, so notes snap to a swung grid as they are recorded and play back exactly as recorded. Grey while Quantize is Off. A loop recorded without Quantize stays exactly as played |
 | Record After Routes | on: records what the routes send. Off: records the notes coming in, and plays them back through the routes. |
 | Record Unrouted Notes | also records notes that no route matches. It only works when Record After Routes is off. When Record After Routes is on, the loop already records everything the FoxWizard sends, so this switch is grey. |
