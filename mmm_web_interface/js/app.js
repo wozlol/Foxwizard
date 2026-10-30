@@ -850,8 +850,8 @@ const globalCard = document.getElementById('globalSettingsCard');
 
 const BUTTON_ACTIONS = [
   { value: 0, label: 'Panic (default)' },
-  { value: 11, label: 'Looper', protocol: 4 },
   { value: 12, label: 'Preset', protocol: 5 },
+  { value: 11, label: 'Looper', protocol: 4 },
   { value: 1, label: 'Pitch Up' },
   { value: 2, label: 'Pitch Down' },
   { value: 3, label: 'Mod' },

@@ -82,13 +82,13 @@ One action, set in Patchling with Button Action:
 | Action | Settings |
 |---|---|
 | Panic (default) | |
+| Preset | each press switches to the next preset, see Presets |
 | Looper | the looper's one-button control, see Looper |
 | Pitch Up, Pitch Down, Mod | Length (Instant, or a division up to 1/1), Channel |
 | CC Momentary, CC Toggle | CC Number, Channel |
 | Octave Up, Octave Down | Momentary or Toggle, Channel |
 | Note Momentary, Note Toggle | Note, Channel |
 | Tap Tempo | |
-| Preset | each press switches to the next preset, see Presets |
 
 ## Routes
 
