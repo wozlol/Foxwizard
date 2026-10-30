@@ -1,6 +1,6 @@
 # FoxWizard task list
 
-Order matters. Finish the item you are on before starting the next. Anything new goes at the end of its section. Version at last edit: firmware 1.124, host brain 8, protocol 6.
+Order matters. Finish the item you are on before starting the next. Anything new goes at the end of its section. Version at last edit: firmware 1.128, host brain 8, protocol 6.
 
 ## Now (needs the hardware)
 
@@ -33,7 +33,7 @@ Numbers from `./clock_check version` and `session`, the thresholds are in `DIAGN
 
 ## Found by the soak test
 
-- [ ] A two way flood on the USB device port restarts the unit (watchdog, stage 84, in the TinyUSB read), see `DIAGNOSTICS.md`. Old: firmware 1.110, 1.113, 1.121 and 1.123 all do it. It needs about 1,000 messages a second into USB and routes sending them back out over USB. Option: the TinyUSB swap for MIDI 2.0 may fix it, retest then. A cheaper try first: read the USB input in one call per pass instead of four (`usbInBatch`), which halves the endpoint re-arms.
+- [ ] A two way flood on the USB device port, about 3,000 messages a second sustained, still restarts the unit (watchdog, stage 84, in the TinyUSB read), see `DIAGNOSTICS.md`. 1.125 batches controller data for USB (2 ms), which took 1,000 to 2,000 a second from always restarting to 12 of 13 runs holding. A longer wait, paced reads and a 256 byte buffer did not help. Retest after the TinyUSB swap for MIDI 2.0.
 
 ## Waiting for your answer
 

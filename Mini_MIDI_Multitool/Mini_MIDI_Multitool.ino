@@ -63,6 +63,7 @@
 #include "src/loop_lock.h"
 #include "src/rr_priority.h"
 #include "src/swing.h"
+#include "src/usb_coalesce.h"
 #include "hardware/watchdog.h"
 
 // ============================================================================================
@@ -102,7 +103,7 @@ constexpr uint8_t SYSEX_MFR_ID = 0x7D;   // reserved for non-commercial/educatio
 constexpr uint8_t SYSEX_DEVICE_ID = 0x4D; // 'M'
 constexpr uint8_t PROTOCOL_VERSION = 7; // 2: 45-byte routes with port masks, GET_STATUS. 3: clock settings, LEARN. 4: 53-byte routes with feature fields, feature blocks. 5: presets. 6: Round Robin Priority order block. 7: Round Robin Velocity
 constexpr uint8_t FW_VERSION_MAJOR = 1;
-constexpr uint8_t FW_VERSION_MINOR = 124;
+constexpr uint8_t FW_VERSION_MINOR = 128;
 constexpr uint8_t FW_CHUNK_BYTES = 128;          // firmware bytes per FW_DATA message, 147 once packed
 constexpr uint32_t FW_REBOOT_DELAY_MS = 300;     // lets the FW_END ACK reach the host before rebooting
 const char DEVICE_NAME[] = "FoxWizard Mini MIDI Multitool"; // long name sent in the SysEx IDENTITY_REPLY
@@ -1899,8 +1900,11 @@ uint16_t usbQueueFree() {
 constexpr uint8_t USB_BATCH_PACKETS = 16;
 uint8_t usbBatch[USB_BATCH_PACKETS][4];
 
+fw::UsbCoalescer usbCoalescer; // 1.125: controller data waits up to 2 ms so it goes out in fewer transfers, see src/usb_coalesce.h
+
 void pumpUsbOut() {
   CRUMB(63);
+  if (!usbCoalescer.mayWrite(micros(), usbRtHead != usbRtTail)) return;
   for (;;) {
     uint8_t n = 0;
     uint8_t rt = usbRtTail;
@@ -1908,7 +1912,7 @@ void pumpUsbOut() {
     const uint8_t rtCount = n;
     uint16_t nt = usbTail;
     while (n < USB_BATCH_PACKETS && nt != usbHead) { memcpy(usbBatch[n++], usbQueue[nt], 4); nt = (nt + 1) % USB_QUEUE_PACKETS; }
-    if (n == 0) return;
+    if (n == 0) { usbCoalescer.queueEmptied(); return; }
     CRUMB(65);
     const uint8_t written = (uint8_t)tud_midi_n_packet_write_n(0, &usbBatch[0][0], n); // how many it took
     CRUMB(66);
@@ -1931,8 +1935,9 @@ void usbSend(const uint8_t packet[4]) {
     if (next == usbTail) { ++usbDropped; return; } // only if inputs ignored the headroom
     memcpy(usbQueue[usbHead], packet, 4);
     usbHead = next;
+    usbCoalescer.packetQueued(fw::usbPacketIsContinuous(packet), micros());
   }
-  pumpUsbOut(); // straight out when TinyUSB has room, so nothing waits for the next loop
+  pumpUsbOut(); // straight out when TinyUSB has room, so nothing waits for the next loop, except controller data, which waits up to 2 ms
   CRUMB(83);
 }
 
