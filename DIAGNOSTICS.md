@@ -23,12 +23,18 @@ How to see what the main brain is doing, and how much room it has left. Needs a 
 | Number | Now | Keep |
 |---|---|---|
 | Free heap, lowest since power on (of about 44 KB at start) | 29 KB | at least 20 KB, the MIDI 2.0 floor |
-| Main stack, deepest (of 2,048 bytes) | 1,200 | at least 500 bytes free, so under 1,500 |
+| Main stack, deepest (of 8,192 bytes, the linker reserves 2,048) | 1,328 (Save to Device with 2 presets) | Green up to 4,096, Yellow up to 6,144, Red beyond |
 | Saved settings image, worst case (60 routes) | 4,024 of 4,096 | the build fails if it does not fit |
 | Longest main loop pass | about 2 ms | well under 5 ms, the watchdog is 4 s |
 | Program flash | 18% of 1 MB | firmware staging needs the image plus 16 KB free in the filesystem |
 
-The stack is the one to watch: it is 2 KB and the note path nests deep (input, route, mapped action, live channel replay, route, output, USB). Run `./clock_check session 100` after a change that adds calls or locals and read the stack line.
+The stack is the one to watch. The note path nests deep (input, route, mapped action, live channel replay, route, output, USB) and Save to Device is the deepest path, a LittleFS write under the flash. Run `./clock_check session 100` and `./clock_check commit` after a change that adds calls or locals and read the stack line.
+
+The main stack is 8 KB. With only core 0 running, arduino-pico gives core 0 the whole scratch block, down to `__StackLimit`, and the linker script only reserves 2 KB of it. The readout paints and reads all 8 KB (status bytes 41 and 42, byte 29 stops at 2,032). A test build made with `FW_EXTRA_FLAGS=-DFW_DIAG ./build_firmware.sh --test-channel` has a dive command, and `./clock_check dive 10,20,30,40,50,60,70,80,90` made the unit use 6,192 bytes of stack and carry on. Never in a release build. Adding `setup1` or `loop1` splits the 8 KB into two 4 KB stacks, redo these numbers then. `-fstack-usage` lists frame sizes: `arduino-cli compile --build-property compiler.cpp.extra_flags=-fstack-usage` (and `compiler.c.extra_flags` for LittleFS), read the `.su` files.
+
+## Known limit: a two way flood on the USB device port
+
+A sustained flood into the USB port, about 1,000 messages a second or more, with routes sending the result back out over USB, makes the unit stall inside the TinyUSB read until the watchdog restarts it (crash stage 84, about 4 s of dropout, then it comes back). It happens at random after 9 to 20 s, and in every firmware tried back to 1.110. It does not happen with 600 messages a second, with the same flood into an unrouted channel or the arp route, in adaptor mode, or with the routes sending to the DIN jack only. A flood coming in over a host port and out over USB is one way and not affected. Repeat it with `./clock_check soak a 0.4 --no-looper --no-extra-arps --flood-types a --flood-triples 20 --flood-channels 3`, a restart prints `RESTART seen`. Retest it after the TinyUSB swap for MIDI 2.0.
 
 ## The crash tracker (1.110)
 

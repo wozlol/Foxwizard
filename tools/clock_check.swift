@@ -426,6 +426,12 @@ struct Lcg {
   mutating func double(_ lo: Double, _ hi: Double) -> Double { lo + Double(next() % 100000) / 100000.0 * (hi - lo) }
 }
 
+// The main stack is 8,192 bytes with only core 0 running (arduino-pico), the linker reserves 2,048 of them. The dive test in firmware 1.123
+// used 6,192 and the unit carried on. Green up to half of it, Yellow up to 6,144 (the depth proven), Red beyond.
+let stackSize = 8192
+func stackLevel(_ used: Int) -> String { used <= 4096 ? "Green" : (used <= 6144 ? "Yellow" : "RED") }
+func stackText(_ used: Int) -> String { "\(used) bytes of \(stackSize) (the linker reserves 2048), \(stackSize - used) free: \(stackLevel(used))" }
+
 struct TimedEvent { let at: Double; let bytes: [UInt8]; let kind: String }
 
 func buildSession(seconds: Double, channels: [UInt8], slots: Int, active: Int, routes: Int, seed: UInt64, live: Bool, liveKeys: [UInt8] = [120, 121, 122], skip: Set<String> = []) -> [TimedEvent] {
@@ -828,10 +834,152 @@ func runFourArps(_ link: Link) -> Bool {
   return allGood
 }
 
+// Soak test, two phases run separately so the TRS loopback can be plugged in for the second.
+//   a: the deep path. Every feature at once, from a RAM-only setup: Priority and Round Robin routes, scale and chord, four arps, the looper recording
+//      and clearing, floods of aftertouch, CC and bend. No saves and no preset switches, since a save would write the test routes into the unit.
+//   b: saves and preset switches under flood, on the unit's own state, in adaptor mode, nothing of ours loaded. With the TRS loopback in, the DIN
+//      input also hears the unit's own output, extra receive interrupts while it saves. Not for phase a, the loopback feeds routes and clock back.
+// Each minute one line: stack deepest, heap lowest, longest main loop pass, restarts seen, stuck notes. Ends with a verdict.
+func runSoak(_ link: Link, phase: String, minutes: Double) -> Bool {
+  guard let before = link.memory() else { print("No answer from the unit"); return false }
+  var originals: [UInt8: [UInt8]] = [:]
+  let heavy = phase == "a"
+  if heavy {
+    guard loadTestSetup(link, originals: &originals, subset: args.contains("--out-trs") ? [] : [0, 1, 2, 3, 4]) else { print("could not load the test setup"); return false }
+    if args.contains("--out-trs") { // the same five routes, their output on the DIN jack only, so nothing flows back out over USB
+      for r in testRoutes { var t = r; t[8] = 1; t[43] = 1; t[44] = 0; _ = ask(link, 0x24, pack7(t), reply: 0x7E) }
+    }
+    // three more arps on input channels 5 to 7, out on 11 to 13, and the looper with its trigger note on channel 16
+    for (k, slot) in ((args.contains("--no-extra-arps") ? [] : [UInt8(2), 3, 4]) as [UInt8]).enumerated() {
+      var block = testBlocks[0].bytes
+      block[0] = UInt8(k % 2); block[1] = [12, 9, 14][k]; block[2] = UInt8(k + 1)
+      _ = ask(link, 0x19, [3 + slot] + pack7(block), reply: 0x7E)
+      var route = testRoutes[1]
+      route[1] = UInt8(1 << (4 + k)); route[2] = 0
+      route[9] = 0; route[10] = UInt8(1 << (2 + k))
+      route[47] = slot
+      _ = ask(link, 0x24, pack7(route), reply: 0x7E)
+    }
+    if let saved = ask(link, 0x17, [10], reply: 0x18) { originals[10] = unpack7(Array(saved.dropFirst())) }
+    if !args.contains("--no-looper") { _ = ask(link, 0x19, [10] + pack7([1, 12, 0, 0, 0, 0, 1, 15, 120, 0, 0, 66] + [UInt8](repeating: 0, count: 36)), reply: 0x7E) }
+    print("Phase a: the deep path. Test setup in memory only, nothing is saved")
+  } else {
+    print("Phase b: saves and preset switches under flood, on the unit's own state. Nothing of ours is loaded")
+  }
+  var outstanding: [Int: Int] = [:]
+  var ons = 0, offs = 0, slots = 1, statusReplies = 0, restarts = 0, noAnswer = 0, saves = 0, switches = 0
+  var stack = before.stackDeepest, heapKB = before.heapLowest / 1024, loopUs = 0, heldBack = 0, worstLoopUs = 0, minHeapKB = before.heapLowest / 1024
+  var crash = 0, fault = false
+  var routesExpected = heavy ? (args.contains("--no-extra-arps") ? 5 : 8) : 0
+  var lastStatusAt = Date()
+  func pump() {
+    for r in link.drain() {
+      let b = r.bytes
+      if b.first == 0xF0 {
+        guard b.count > 5, b[1] == 0x7D else { continue }
+        if b[3] == 0x38, b.count > 8 { slots = Int(b[4]) }
+        if b[3] == 0x21, b.count > 6 { // the route count: a restart wipes the RAM-only test routes, which the counter alone can miss
+          let n = Int(b[4]) | (Int(b[5]) << 7)
+          if heavy && n < routesExpected { restarts += 1; routesExpected = n; print(String(format: "  RESTART seen %.1f s in, the test routes are gone (%d left)", Date().timeIntervalSince(start), n)) }
+        }
+        if b[3] == 0x14, b.count > 4 + 42 {
+          let p = Array(b[4..<(b.count - 1)])
+          statusReplies += 1; lastStatusAt = Date()
+          let deep = (Int(p[41]) | (Int(p[42]) << 7)) * 16
+          if deep < stack { restarts += 1; print(String(format: "  RESTART seen %.1f s in, the stack counter went from %d to %d, last watchdog stage %d", Date().timeIntervalSince(start), stack, deep, Int(p[30]) | (Int(p[31]) << 7))) } // the counter only goes up, unless the unit restarted
+          stack = deep
+          heapKB = Int(p[28]) * 512 / 1024; minHeapKB = min(minHeapKB, heapKB)
+          loopUs = Int(p[15]) | (Int(p[16]) << 7); worstLoopUs = max(worstLoopUs, loopUs); heldBack += Int(p[18])
+          crash = Int(p[30]) | (Int(p[31]) << 7); fault = p[36] & 0x40 != 0
+        }
+      } else if b.count == 3, (b[0] & 0xE0) == 0x80 {
+        let key = Int(b[0] & 0x0F) * 128 + Int(b[1])
+        if (b[0] & 0xF0) == 0x90, b[2] > 0 { outstanding[key, default: 0] += 1; ons += 1 } else { outstanding[key, default: 0] -= 1; offs += 1 }
+      }
+    }
+  }
+  func wait(_ seconds: Double) { let until = Date().addingTimeInterval(seconds); while Date() < until { pump(); Thread.sleep(forTimeInterval: 0.002) } }
+  func tap(_ hold: Double = 0.05) { link.send([0x9F, 120, 100]); wait(hold); link.send([0x8F, 120, 0]) }
+  var tick = 0
+  let floodChannels = option("--flood-channels").map { $0.split(separator: ",").compactMap { UInt8($0) }.map { $0 - 1 } } // 1 based
+  let floodTypes = option("--flood-types") ?? "abc" // a poly aftertouch, c channel pressure, b pitch bend, m CC
+  // A flood into the USB port with routes sending it back out over USB restarts the unit at about 1,000 messages a second and up, in every firmware
+  // tried back to 1.110. Phase a stays under that by default, 4 of each every 20 ms is 600 a second. Phase b's flood goes to the DIN jack only.
+  let floodTriples = option("--flood-triples").flatMap(Int.init) ?? (heavy ? 4 : 20)
+  // one 20 ms slice of flood
+  func floodSlice(_ channels: [UInt8]) {
+    tick += 1
+    for k in 0..<floodTriples {
+      let ch = channels[(tick + k) % channels.count]
+      if floodTypes.contains("a") { link.send([0xA0 | ch, UInt8(36 + (tick + k) % 60), UInt8(1 + (tick * 7 + k * 13) % 126)]) }
+      if floodTypes.contains("c") { link.send([0xD0 | ch, UInt8(1 + (tick * 5 + k * 3) % 126)]) }
+      if floodTypes.contains("b") { link.send([0xE0 | ch, UInt8((tick * 11 + k) % 128), UInt8((tick + k * 3) % 128)]) }
+      if floodTypes.contains("m") { link.send([0xB0 | ch, UInt8(1 + (tick + k) % 30), UInt8((tick * 3 + k) % 128)]) }
+    }
+  }
+  let chords: [(ch: UInt8, notes: [UInt8])] = [(0, [60, 64, 67]), (9, [48, 52, 55]), (1, [62, 65, 69]), (2, [50, 54, 57, 61]), (3, [40, 44, 47]), (4, [60, 64, 67]), (5, [48, 52, 55, 59]), (6, [72, 76, 79])]
+  let start = Date()
+  let end = start.addingTimeInterval(minutes * 60)
+  var nextLine = start.addingTimeInterval(60), nextStatusAsk = start
+  var cycle = 0
+  print("Running for \(Int(minutes)) minutes. Each line: minutes in, stack deepest, heap lowest, longest main loop pass, restarts, notes heard, stuck")
+  link.send([0xF0, 0x7D, 0x4D, 0x37, 0xF7]); wait(0.5)
+  func line() {
+    let stuck = outstanding.filter { $0.value > 0 }.count
+    print(String(format: "%4.1f min  stack %5d  heap %2d KB  loop %5d us  restarts %d  notes %d  stuck %d  saves %d  switches %d", Date().timeIntervalSince(start) / 60, stack, minHeapKB, worstLoopUs, restarts, ons, stuck, saves, switches))
+  }
+  while Date() < end {
+    cycle += 1
+    let cycleStart = Date()
+    let length: Double = heavy ? 60 : 30
+    var done: Set<Int> = []
+    var floodOn = false
+    func at(_ t: Double, _ id: Int, _ action: () -> Void) { if !done.contains(id), Date().timeIntervalSince(cycleStart) >= t { done.insert(id); action() } }
+    while Date().timeIntervalSince(cycleStart) < length && Date() < end {
+      if Date() >= nextStatusAsk { link.send([0xF0, 0x7D, 0x4D, 0x13, 0xF7]); link.send([0xF0, 0x7D, 0x4D, 0x20, 0xF7]); nextStatusAsk = Date().addingTimeInterval(2) } // as Patchling polls
+      if heavy {
+        at(0.2, 1) { for c in chords { for n in c.notes { link.send([0x90 | c.ch, n, 90]) } } }
+        at(0.5, 2) { floodOn = !args.contains("--no-flood") }
+        at(8, 3) { if !args.contains("--no-looper") { tap() } }                                                    // arm the looper, the next note starts the take
+        at(9, 4) { if !args.contains("--no-looper") { for n in [60, 62, 64, 65, 67] as [UInt8] { link.send([0x90, n, 100]); wait(0.18); link.send([0x80, n, 0]); wait(0.08) } } }
+        at(38, 5) { if !args.contains("--no-looper") { link.send([0x9F, 120, 100]); wait(1.0); link.send([0x8F, 120, 0]) } } // hold clears the loop
+        at(50, 6) { floodOn = false; for c in chords { for n in c.notes { link.send([0x80 | c.ch, n, 0]) } } }
+      } else {
+        at(0.2, 1) { floodOn = true }
+        at(5, 2) { if slots > 1 { _ = ask(link, 0x3A, [1], reply: 0x7E, timeout: 3.0); switches += 1 } }
+        at(10, 3) { let a = ask(link, 0x31, reply: 0x7E, timeout: 5.0); if a == nil { noAnswer += 1 } else { saves += 1 } }
+        at(15, 4) { if slots > 1 { _ = ask(link, 0x3A, [0], reply: 0x7E, timeout: 3.0); switches += 1 } }
+        at(20, 5) { let a = ask(link, 0x31, reply: 0x7E, timeout: 5.0); if a == nil { noAnswer += 1 } else { saves += 1 } }
+        at(25, 6) { for t in [3, 4, 5, 8, 9, 10, 11, 14, 15] as [UInt8] { _ = ask(link, 0x17, [t], reply: 0x18, timeout: 1.0) } } // reads blocks like Patchling on connect
+        at(27, 7) { floodOn = false }
+      }
+      if floodOn { floodSlice(floodChannels ?? (heavy ? [0, 1, 2, 3, 9] : [0, 1, 2])) }
+      wait(0.02)
+      if Date() >= nextLine { line(); nextLine = nextLine.addingTimeInterval(60) }
+      if Date().timeIntervalSince(lastStatusAt) > 8 && statusReplies > 0 { noAnswer += 1; lastStatusAt = Date() }
+    }
+    floodOn = false
+    wait(2.0)
+  }
+  if heavy { for c in chords { for n in c.notes { link.send([0x80 | c.ch, n, 0]) } } }
+  wait(3.0)
+  line()
+  let stuck = outstanding.filter { $0.value > 0 }
+  if heavy, let rc = ask(link, 0x20, reply: 0x21, timeout: 1.0), rc.count > 1, (Int(rc[0]) | (Int(rc[1]) << 7)) < routesExpected { restarts += 1; print("  RESTART seen at the end, the test routes are gone") }
+  if heavy { restoreAfterTestSetup(link, originals: originals) }
+  if let g = link.memory() {
+    if g.stackDeepest < stack { restarts += 1; print("  RESTART seen at the end, the stack counter went from \(stack) to \(g.stackDeepest)") }
+    stack = max(stack, g.stackDeepest)
+  }
+  let ok = restarts == 0 && stuck.isEmpty && noAnswer == 0 && crash == 0 && !fault && stack <= 6144 && minHeapKB >= 20
+  print("SOAK PHASE \(phase.uppercased()): \(ok ? "PASS" : "LOOK AT THE LINES ABOVE"). \(Int(minutes)) minutes, \(cycle) cycles, notes heard \(ons), stuck \(stuck.count), restarts \(restarts), no answer \(noAnswer), watchdog stage \(crash), hard fault \(fault ? "YES" : "no"), longest loop pass \(worstLoopUs) us, input held back \(heldBack) times, stack \(stackText(stack)), heap lowest \(minHeapKB) KB")
+  return ok
+}
+
 func runSession(_ link: Link, seconds: Double, channels: [UInt8], useSetup: Bool) {
   guard let id = link.identity() else { print("No answer from the FoxWizard"); exit(1) }
   guard let before = link.memory() else { print("This firmware has no memory readout, update to 1.108 or later"); exit(1) }
-  print("FoxWizard firmware \(id.major).\(id.minor). Memory before: free heap lowest \(before.heapLowest / 1024) KB, main stack deepest \(before.stackDeepest) bytes")
+  print("FoxWizard firmware \(id.major).\(id.minor). Memory before: free heap lowest \(before.heapLowest / 1024) KB, main stack deepest \(stackText(before.stackDeepest))")
   // which presets there are
   _ = link.drain()
   link.send([0xF0, 0x7D, 0x4D, 0x37, 0xF7])
@@ -959,9 +1107,8 @@ func runSession(_ link: Link, seconds: Double, channels: [UInt8], useSetup: Bool
   print("Longest pass of the main loop: \(maxLoopUs) microseconds. Input held back \(heldBack) times. Fullest queues: link \(maxLinkPct)%, TRS \(maxTrsPct)%, USB \(maxUsbPct)%")
   if after.faultPc != 0 { print("The unit's last restart was a HARD FAULT at address 0x\(String(after.faultPc, radix: 16)), in stage \(after.crash)") }
   else if after.crash != 0 { print("The unit's last watchdog restart was in stage \(after.crash)") }
-  let stackFree = 2048 - deepStack
-  let stackLevel = stackFree >= 700 ? "Green" : (stackFree >= 500 ? "Yellow" : "RED")
-  print("Memory after: free heap lowest \(lowHeap / 1024) KB (it was \(before.heapLowest / 1024) KB before), main stack deepest \(deepStack) of 2048 bytes, \(stackFree) free: \(stackLevel)")
+  let stackFree = stackSize - deepStack
+  print("Memory after: free heap lowest \(lowHeap / 1024) KB (it was \(before.heapLowest / 1024) KB before), main stack deepest \(stackText(deepStack))")
   // A restart gives the unit's stack counter a fresh start, so a counter that went down is the sign of one. Test routes that are gone are
   // not, when the unit has more than one preset: every preset switch loads that slot over the RAM-only test routes.
   let restarted = after.stackDeepest < before.stackDeepest
@@ -969,7 +1116,7 @@ func runSession(_ link: Link, seconds: Double, channels: [UInt8], useSetup: Bool
   if restarted { print("THE UNIT RESTARTED DURING THE SESSION: its stack counter went from \(before.stackDeepest) to \(after.stackDeepest)") }
   else if routesGone && slots > 1 { print("The test routes are gone, as expected: the unit has \(slots) presets and the session switched between them, each switch loads that slot's routes.") }
   else if routesGone { print("THE TEST ROUTES ARE GONE with no preset switch to explain it: it had \(subset.count) and has \(routesLeft) now") }
-  let healthy = stuck.isEmpty && !restarted && (!setupLoaded || routesLeft == subset.count || slots > 1) && stackFree >= 500 && lowHeap > 20 * 1024
+  let healthy = stuck.isEmpty && !restarted && (!setupLoaded || routesLeft == subset.count || slots > 1) && deepStack <= 6144 && lowHeap > 20 * 1024
   print(healthy ? "RESULT: healthy" : "RESULT: look at the lines above")
   exit(healthy ? 0 : 1)
 }
@@ -995,7 +1142,7 @@ case "version":
   }
   if let id = link.identity() { print("FoxWizard main brain: firmware \(id.major).\(id.minor), protocol \(id.protocolVersion)") } else { print("No answer") ; exit(1) }
   if let st = link.status() { print("Sidecar: \(st.host ? "present, firmware \(st.fw)" : "not present")") }
-  if let m = link.memory() { print("Memory: the free heap has been as low as \(m.heapLowest / 1024) KB since power on (of about 44 KB at start), the main stack has gone \(m.stackDeepest) bytes deep (of 2048)"); if m.crash != 0 { print("The last watchdog restart was in stage \(m.crash)") } }
+  if let m = link.memory() { print("Memory: the free heap has been as low as \(m.heapLowest / 1024) KB since power on (of about 44 KB at start), the main stack has gone \(stackText(m.stackDeepest))"); if m.crash != 0 { print("The last watchdog restart was in stage \(m.crash)") } }
 case "livetest":
   guard let (source, destination) = findEndpoints(matching: portName), let link = Link(source: source, destination: destination) else { print("no port"); exit(2) }
   var originals: [UInt8: [UInt8]] = [:]
@@ -1069,6 +1216,38 @@ case "dive":
     last = now.stackDeepest
   }
   print("The unit survived every step")
+  exit(0)
+case "soak":
+  guard let (source, destination) = findEndpoints(matching: portName), let link = Link(source: source, destination: destination) else { print("no port"); exit(2) }
+  let phase = (args.dropFirst().first ?? "a").lowercased()
+  let minutes = args.dropFirst(2).first.flatMap(Double.init) ?? 30
+  guard phase == "a" || phase == "b" else { print("clock_check soak a|b MINUTES"); exit(2) }
+  exit(runSoak(link, phase: phase, minutes: minutes) ? 0 : 1)
+case "update":
+  // Flashes a firmware .bin over MIDI the way Patchling does: FW_BEGIN with the size and MD5, 128 byte chunks each confirmed by its checksum,
+  // FW_END, which checks the MD5 of the whole file and restarts the unit into it. Nothing is installed if any step fails.
+  guard let (source, destination) = findEndpoints(matching: portName), let link = Link(source: source, destination: destination), let path = args.dropFirst().first, let file = FileManager.default.contents(atPath: path) else { print("clock_check update FILE.bin"); exit(2) }
+  let md5Task = Process(); md5Task.executableURL = URL(fileURLWithPath: "/sbin/md5"); md5Task.arguments = ["-q", path]
+  let md5Pipe = Pipe(); md5Task.standardOutput = md5Pipe
+  try? md5Task.run(); md5Task.waitUntilExit()
+  let md5 = (String(data: md5Pipe.fileHandleForReading.readDataToEndOfFile(), encoding: .utf8) ?? "").trimmingCharacters(in: .whitespacesAndNewlines)
+  guard md5.count == 32 else { print("could not take the MD5 of the file"); exit(2) }
+  let bytes = [UInt8](file)
+  func sum7(_ b: [UInt8]) -> UInt8 { UInt8(b.reduce(0) { $0 + Int($1) } % 128) }
+  let begin: [UInt8] = [UInt8(bytes.count & 0x7F), UInt8((bytes.count >> 7) & 0x7F), UInt8((bytes.count >> 14) & 0x7F)] + Array(md5.utf8)
+  guard let b = ask(link, 0x40, begin, reply: 0x7E, timeout: 10.0), b.count > 2, b[1] == 0, b[2] == sum7(begin) else { print("the unit did not accept the start of the update"); exit(1) }
+  let chunks = (bytes.count + 127) / 128
+  for i in 0..<chunks {
+    let raw = Array(bytes[(i * 128)..<min(bytes.count, (i + 1) * 128)])
+    var ok = false
+    for _ in 0..<4 {
+      if let d = ask(link, 0x41, [UInt8(i & 0x7F), UInt8((i >> 7) & 0x7F)] + pack7(raw), reply: 0x7E, timeout: 3.0), d.count > 2, d[1] == 0, d[2] == sum7(raw) { ok = true; break }
+    }
+    guard ok else { print("chunk \(i) of \(chunks) was not confirmed, the update was not installed"); exit(1) }
+    if i % max(1, chunks / 10) == 0 { print("  \(i * 100 / chunks)%") }
+  }
+  guard let e = ask(link, 0x42, [], reply: 0x7E, timeout: 10.0), e.count > 1, e[1] == 0 else { print("the unit did not confirm the end of the update"); exit(1) }
+  print("Update sent and confirmed, the unit restarts into it now")
   exit(0)
 case "swingtest":
   guard let (source, destination) = findEndpoints(matching: portName), let link = Link(source: source, destination: destination) else { print("no port"); exit(2) }
