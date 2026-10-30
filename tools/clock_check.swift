@@ -796,6 +796,37 @@ case "livetest":
   }
   _ = ask(link, 0x28, reply: 0x7E)
   restoreAfterTestSetup(link, originals: originals)
+case "swingtest":
+  guard let (source, destination) = findEndpoints(matching: portName), let link = Link(source: source, destination: destination) else { print("no port"); exit(2) }
+  var originals: [UInt8: [UInt8]] = [:]
+  guard loadTestSetup(link, originals: &originals, subset: [1]) else { print("could not load the test setup"); exit(1) }
+  print("Arp on channel 10, one held note, 1/16 steps at the unit's tempo. Measures the share of each pair the first step takes")
+  let scenarios: [(String, UInt8, UInt8)] = [("straight", 0, 0), ("54% on a 16th", 54, 0), ("62% on a 16th", 62, 0), ("66% on a 16th", 66, 0), ("75% on a 16th", 75, 0), ("66% on an 8th", 66, 1), ("75% on an 8th", 75, 1)]
+  for (label, pct, base) in scenarios {
+    var arp = testBlocks[0].bytes
+    arp[15] = pct; arp[44] = base
+    _ = ask(link, 0x19, [4] + pack7(arp), reply: 0x7E)
+    _ = link.drain()
+    link.send([0x99, 60, 100])
+    var times: [Double] = []
+    let until = Date().addingTimeInterval(11.0)
+    while Date() < until { for r in link.drain() where r.bytes.count == 3 && r.bytes[0] == 0x99 && r.bytes[2] > 0 { times.append(r.time) }; Thread.sleep(forTimeInterval: 0.002) }
+    link.send([0x89, 60, 0])
+    Thread.sleep(forTimeInterval: 0.5)
+    times = Array(times.dropFirst(2)) // let it settle
+    guard times.count > 24 else { print("\(label): only \(times.count) steps heard"); continue }
+    let gaps = (0..<(times.count - 1)).map { times[$0 + 1] - times[$0] }
+    let per = base == 1 ? 4 : 2 // steps in a pair
+    var best = 0.0, bestShare = 0.5, pair = 0.0
+    for offset in 0..<per {
+      var first = 0.0, whole = 0.0, n = 0
+      var i = offset
+      while i + per <= gaps.count { first += gaps[i..<(i + per / 2)].reduce(0, +); whole += gaps[i..<(i + per)].reduce(0, +); i += per; n += 1 }
+      if n > 3, first / whole > best { best = first / whole; bestShare = first / whole; pair = whole / Double(n) }
+    }
+    print(String(format: "%@: the first half of a pair takes %.1f%%, a pair lasts %.1f ms, %d steps", label, bestShare * 100, pair * 1000, times.count))
+  }
+  restoreAfterTestSetup(link, originals: originals)
 case "dinflood":
   guard let (source, destination) = findEndpoints(matching: portName), let link = Link(source: source, destination: destination) else { print("no port"); exit(2) }
   var originals: [UInt8: [UInt8]] = [:]
