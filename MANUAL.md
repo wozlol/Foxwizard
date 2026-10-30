@@ -13,7 +13,7 @@ The Host Edition adds seven USB Host ports and more TRS/DIN ports. See
 ## Highlights
 
 - **16 onboard presets.** Each holds its own routes (up to 60), arps, Echo, Stutter, Looper settings, mappings, Launchpad buttons, Scale and clock settings. Switch from Patchling, the front button, or a Note, CC or Launchpad button. A switch silences everything, lets go of held keys, and flashes the slot number without holding anything up. See Presets.
-- **Round Robin Priority.** Each new note takes the first free output channel by rank, and the oldest note gives up its channel when all are down. Set the rank by the order you select the channels.
+- **Round Robin Priority and Velocity.** Priority gives each new note the first free output channel by rank, and the oldest note gives up its channel when all are down. Velocity sends each note to a channel by how hard it is played, the softest to rank 1. Set the rank by the order you select the channels.
 - **Swing.** On each arp (54 to 75%, every second 16th or 8th), and on the Looper's Record Quantize grid. The MIDI clock stays straight.
 - **Live Ch changes that keep your notes.** Held notes end on the old channel and start again on the new one. One extra stop between channel 16 and 1 brings back the route's own channels and its arp. The Launchpad buttons light by how far you have moved.
 - **Auto clock.** Follows an external clock, takes over with its own when that stops, and locks back on. Loop Lock keeps a loop in the beat. Restart on Clock Start is a switch.
@@ -106,8 +106,9 @@ Each route filters and transforms MIDI by:
 | Velocity % | 10-200% |
 | CC Map Start | shift the CC range to begin at this CC |
 | Mono Retrig | poly to mono, last-note priority |
-| Round Robin | each new note to the next selected output channel, a random one (Rand), or the first free one (Priority) |
+| Round Robin | each new note to the next selected output channel, a random one (Rand), the first free one (Priority), or one chosen by its velocity (Velocity) |
 | Round Robin: Priority | each new note takes the first free selected output channel, lowest number first. If that one is already sounding, the next one up, and so on, and with every channel down the oldest note gives up its channel. To rank the channels differently, clear them and select them again in the order you want: each shows its rank in its corner. A route you leave in the default order costs nothing in a preset, and a handful of routes can each have their own order |
+| Round Robin: Velocity | each new note goes to a selected output channel by its velocity. The velocity range is cut into equal parts, one per selected channel, and the softest part goes to the channel ranked 1 (ranked as in Priority). 2 channels split at 64, 4 channels by quarters. Route Velocity % is applied first, so above 100% pushes notes into the higher channels and below 100% into the lower ones. It does not rotate, notes of the same part share a channel. |
 | Looper | whether this route's notes are recorded (shown once the looper is set up) |
 
 Routes are evaluated top to bottom. Later routes override earlier ones

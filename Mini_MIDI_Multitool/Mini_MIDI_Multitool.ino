@@ -100,9 +100,9 @@ constexpr uint32_t BRIGHTNESS_PREVIEW_HOLD_MS = 400;
 
 constexpr uint8_t SYSEX_MFR_ID = 0x7D;   // reserved for non-commercial/educational use
 constexpr uint8_t SYSEX_DEVICE_ID = 0x4D; // 'M'
-constexpr uint8_t PROTOCOL_VERSION = 6; // 2: 45-byte routes with port masks, GET_STATUS. 3: clock settings, LEARN. 4: 53-byte routes with feature fields, feature blocks. 5: presets. 6: Round Robin Priority order block
+constexpr uint8_t PROTOCOL_VERSION = 7; // 2: 45-byte routes with port masks, GET_STATUS. 3: clock settings, LEARN. 4: 53-byte routes with feature fields, feature blocks. 5: presets. 6: Round Robin Priority order block. 7: Round Robin Velocity
 constexpr uint8_t FW_VERSION_MAJOR = 1;
-constexpr uint8_t FW_VERSION_MINOR = 118;
+constexpr uint8_t FW_VERSION_MINOR = 119;
 constexpr uint8_t FW_CHUNK_BYTES = 128;          // firmware bytes per FW_DATA message, 147 once packed
 constexpr uint32_t FW_REBOOT_DELAY_MS = 300;     // lets the FW_END ACK reach the host before rebooting
 const char DEVICE_NAME[] = "FoxWizard Mini MIDI Multitool"; // long name sent in the SysEx IDENTITY_REPLY
@@ -1170,7 +1170,9 @@ void sendRouteNote(uint16_t routeIndex, const RouteData &r, bool on, uint8_t not
   // Priority (1.108): the first free channel in rank order, and when every one is down the oldest note gives its up. The slot
   // remembers where each note sounds, so its Note Off lands there. Without a slot (more keys held than the route can track)
   // a note is not played, since its Note Off could not be placed.
-  if (r.flags2 & 0x40) {
+  // Velocity (1.119, flags2 bit7) picks the channel by the note's velocity instead, from the same ranked channels and with the same
+  // slots, so the route's velocity control, applied above, moves the split.
+  if (r.flags2 & 0xC0) {
     auto emit = [&](uint8_t channel, bool noteOn, int16_t pitch) {
       if (pitch < 0 || pitch > 127) return;
       PendingMsg msg;
@@ -1187,7 +1189,8 @@ void sendRouteNote(uint16_t routeIndex, const RouteData &r, bool on, uint8_t not
     if (on) {
       uint8_t ranked[16];
       const uint8_t n = fw::rrRanked(outMask, rrOrderPool, routeIndex, ranked);
-      fw::rrNoteOn(t.slots, ROUTE_NOTE_TRACK_DEPTH, t.orderCounter, slot, !(r.flags2 & 0x01), ranked, n, transpose, emit);
+      if (r.flags2 & 0x80) fw::rrVelocityNoteOn(slot, ranked, n, data2, transpose, emit);
+      else fw::rrNoteOn(t.slots, ROUTE_NOTE_TRACK_DEPTH, t.orderCounter, slot, !(r.flags2 & 0x01), ranked, n, transpose, emit);
     } else {
       fw::rrNoteOff(slot, transpose, emit);
     }

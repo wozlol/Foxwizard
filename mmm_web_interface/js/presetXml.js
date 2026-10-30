@@ -216,7 +216,7 @@ export function serializePreset(state) {
     lines.push(`      <passthrough programChange="${!!(r.typeFlags & DATA_TYPE_BITS.programChange)}" pitchBend="${!!(r.typeFlags & DATA_TYPE_BITS.pitchBend)}" aftertouch="${!!(r.typeFlags & DATA_TYPE_BITS.aftertouch)}" aftertouchMapEnabled="${!!(r.typeFlags & DATA_TYPE_BITS.aftertouchMap)}" aftertouchMapCC="${r.atMapCC}" pressure="${!!(r.typeFlags & DATA_TYPE_BITS.pressure)}" pressureMapEnabled="${!!r.cpMapEnabled}" pressureMapCC="${r.cpMapCC}" sysex="${!!(r.typeFlags & DATA_TYPE_BITS.sysex)}" common="${!!r.commonEnabled}" realtime="${!!r.realtimeEnabled}" clock="${!!r.clockEnabled}"/>`);
     lines.push(`      <noteRange enabled="${!!(r.typeFlags & DATA_TYPE_BITS.note)}" start="${r.noteStart}" end="${r.noteEnd}"/>`);
     lines.push(`      <ccRange enabled="${!!(r.typeFlags & DATA_TYPE_BITS.cc)}" start="${r.ccStart}" end="${r.ccEnd}"/>`);
-    lines.push(`      <output ports="${portsToString(r.outPorts)}" device="${legacyDeviceName(r.outPorts, OUT_DEVICE_NAMES)}" channels="${channelsToRangeString(r.outputChannels)}" transpose="${r.transpose}" velocityScale="${r.velocityScale}" ccMapStart="${r.ccMapStart}" monoRetrig="${!!r.monoRetrig}" roundRobin="${!!r.roundRobin}" roundRobinRandom="${!!r.roundRobinRandom}" roundRobinPriority="${!!r.roundRobinPriority}"${priorityOrderAttr(r)} noteToCc="${!!(r.features & FEATURE.NOTE_TO_CC)}" launchpad="${!!(r.features & FEATURE.LAUNCHPAD)}" launchpadOctave="${r.lpOctave || 0}" quadEnabled="${!!(r.lpQuad || defaultLpQuad()).enabled}" quadBlock="${(r.lpQuad || defaultLpQuad()).block}" quadChannel="${(r.lpQuad || defaultLpQuad()).channel}" quadStartNote="${(r.lpQuad || defaultLpQuad()).startNote}" scale="${!!(r.features & FEATURE.SCALE)}" layout="${esc(LAYOUTS[r.scaleLayout || 0])}" autoChord="${!!(r.features & FEATURE.AUTO_CHORD)}" chord="${Array.from({ length: 12 }, (_, k) => k).filter((k) => (r.chordMask || 0) & (1 << k)).map((k) => k + 1).join(',')}" arp="${r.arpSlot || 0}" echo="${!!(r.features & FEATURE.ECHO)}" stutter="${!!(r.features & FEATURE.STUTTER)}" ccToFeature="${!!(r.features & FEATURE.CC_MAP)}" parameterLock="${!!(r.features & FEATURE.PLOCK)}" looperEnabled="${r.looperEnabled !== false}"/>`);
+    lines.push(`      <output ports="${portsToString(r.outPorts)}" device="${legacyDeviceName(r.outPorts, OUT_DEVICE_NAMES)}" channels="${channelsToRangeString(r.outputChannels)}" transpose="${r.transpose}" velocityScale="${r.velocityScale}" ccMapStart="${r.ccMapStart}" monoRetrig="${!!r.monoRetrig}" roundRobin="${!!r.roundRobin}" roundRobinRandom="${!!r.roundRobinRandom}" roundRobinPriority="${!!r.roundRobinPriority}" roundRobinVelocity="${!!r.roundRobinVelocity}"${priorityOrderAttr(r)} noteToCc="${!!(r.features & FEATURE.NOTE_TO_CC)}" launchpad="${!!(r.features & FEATURE.LAUNCHPAD)}" launchpadOctave="${r.lpOctave || 0}" quadEnabled="${!!(r.lpQuad || defaultLpQuad()).enabled}" quadBlock="${(r.lpQuad || defaultLpQuad()).block}" quadChannel="${(r.lpQuad || defaultLpQuad()).channel}" quadStartNote="${(r.lpQuad || defaultLpQuad()).startNote}" scale="${!!(r.features & FEATURE.SCALE)}" layout="${esc(LAYOUTS[r.scaleLayout || 0])}" autoChord="${!!(r.features & FEATURE.AUTO_CHORD)}" chord="${Array.from({ length: 12 }, (_, k) => k).filter((k) => (r.chordMask || 0) & (1 << k)).map((k) => k + 1).join(',')}" arp="${r.arpSlot || 0}" echo="${!!(r.features & FEATURE.ECHO)}" stutter="${!!(r.features & FEATURE.STUTTER)}" ccToFeature="${!!(r.features & FEATURE.CC_MAP)}" parameterLock="${!!(r.features & FEATURE.PLOCK)}" looperEnabled="${r.looperEnabled !== false}"/>`);
     lines.push('    </route>');
   }
   lines.push('  </routes>');
@@ -257,9 +257,9 @@ export function serializePreset(state) {
   return lines.join('\n');
 }
 
-// Round Robin Priority's channel order, 1-16 as in the file, only when it is not the default lowest first.
+// Round Robin Priority's and Velocity's channel order, 1-16 as in the file, only when it is not the default lowest first.
 function priorityOrderAttr(r) {
-  if (!r.roundRobin || !r.roundRobinPriority) return '';
+  if (!r.roundRobin || !(r.roundRobinPriority || r.roundRobinVelocity)) return '';
   const order = routeChannelOrder(r);
   if (order.every((c, k) => k === 0 || order[k - 1] < c)) return '';
   return ` rrOrder="${order.map((c) => c + 1).join(',')}"`;
@@ -378,6 +378,7 @@ export function parsePreset(xmlText) {
       roundRobin: boolAttr(outputEl || document.createElement('x'), 'roundRobin'),
       roundRobinRandom: boolAttr(outputEl || document.createElement('x'), 'roundRobinRandom'),
       roundRobinPriority: boolAttr(outputEl || document.createElement('x'), 'roundRobinPriority'),
+      roundRobinVelocity: boolAttr(outputEl || document.createElement('x'), 'roundRobinVelocity'),
       outChOrder: parseChannelOrder(outputEl?.getAttribute('rrOrder')),
       // Presets saved before Common/Realtime existed have no opinion on these attributes at all —
       // default to on (matching a freshly-added route) rather than off, only respecting an explicit

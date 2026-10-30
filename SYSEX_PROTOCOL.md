@@ -416,7 +416,7 @@ from being confused with each other.
 | 13    | ccMapStart (0–127)       | destination start CC for the mapped cc range; must satisfy `ccMapStart + (ccRangeEnd-ccRangeStart) <= 127` (enforced by the web UI) |
 | 14    | atMapCC (0–127)          | destination CC number for remapped poly aftertouch, only meaningful if bit7 of byte3 is set (see below) |
 | 15    | cpMapCC: bit7=channel pressure remapped to CC, bits6-0=destination CC number | same remap idea as byte14, but self-contained (its own enable bit) since channel pressure isn't one of the byte3 dataType flags' bit-per-flag scheme |
-| 16    | flags2: bit0=Mono Retrig, bit1=Round Robin, bit2=System Common, bit3=System Realtime (Transport, everything but Clock), bit4=MIDI Clock, bit5=Round Robin Random, bit6=Round Robin Priority (1.108) | see "Mono Retrig / Round Robin" and "System Common / Realtime / Clock" below |
+| 16    | flags2: bit0=Mono Retrig, bit1=Round Robin, bit2=System Common, bit3=System Realtime (Transport, everything but Clock), bit4=MIDI Clock, bit5=Round Robin Random, bit6=Round Robin Priority (1.108), bit7=Round Robin Velocity (1.119) | see "Mono Retrig / Round Robin" and "System Common / Realtime / Clock" below |
 | 17-40 | name (24 bytes)          | ASCII, zero-padded (not necessarily NUL-terminated if it fills all 24 bytes). The device stores and returns this verbatim but never interprets it — it's purely a label. The web UI enforces the 24-character limit and restricts input to printable ASCII before ever building the wire bytes. |
 | 41-42 | inPorts, little endian (protocol 2) | port mask, used when byte0 bit6 is set. Inputs are bits 0-6 |
 | 43-44 | outPorts, little endian (protocol 2) | port mask, used when byte0 bit6 is set |
@@ -473,6 +473,10 @@ mono synths, applied here to a single CC lane instead of a single voice.
 With Round Robin (bit1) and bit6 on, a new Note On takes the first free channel of the route's selected output channels in rank order, and when all are down the oldest note's channel is taken (its Note Off is sent, and its own Note Off later does nothing). The note's channel is kept in its slot so its Note Off lands there. Bit6 wins over Random (bit5). The rank is the lowest channel first, unless the route has an entry in feature block 15.
 
 Feature block 15 (RR_ORDER) is one 96-byte block for all routes: entries of route index + 1 (0 ends the list), a channel count (1-16), then (count + 1) / 2 bytes of channels, 4 bits each, the first in the high nibble. Channels the route no longer selects are skipped, and selected ones the entry doesn't name come last, lowest first. The saved settings hold only the used bytes, and nothing when no route has an entry. DELETE_ROUTE, MOVE_ROUTE and CLEAR_ALL_ROUTES keep the entries with their routes. `src/rr_priority.h` is the logic, tested in `tests/rr_priority_test.cpp`.
+
+## Round Robin Velocity (flags2 bit7, protocol 7, firmware 1.119)
+
+With Round Robin (bit1) and bit7 on, a new Note On goes to a channel chosen by its velocity from the route's selected output channels in the same rank order as Priority (feature block 15, the lowest channel first without an entry). The velocity is the one after the route's velocity scale. The range 1-127 is cut into one equal band per channel, band = (velocity - 1) * count / 127, and band 0 is rank 1. Notes in one band share a channel, there is no rotation and no note is given up. A Note Off goes to the channel its note sounds on, and a key pressed again while down is released there first. A note with no free tracking slot is not played, as in Priority. Bit7 wins over Priority (bit6) and Random (bit5). Protocol 7 is this bit, a protocol 6 firmware ignores it and plays plain Round Robin.
 
 ## Mono Retrig / Round Robin (flags2 bits 0-1)
 

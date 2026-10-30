@@ -1,9 +1,10 @@
 # FoxWizard task list
 
-Order matters. Finish the item you are on before starting the next. Anything new goes at the end of its section. Version at last edit: firmware 1.118, host brain 8, protocol 6.
+Order matters. Finish the item you are on before starting the next. Anything new goes at the end of its section. Version at last edit: firmware 1.119, host brain 8, protocol 6.
 
 ## Now (needs the hardware)
 
+- [ ] Round Robin Velocity on the unit (1.119, protocol 7): 3 channels, soft, middle and hard notes land on ranks 1, 2 and 3, Route Velocity % 200 and 50 move them, a held key pressed again moves, no stuck notes. `./clock_check version` shows protocol 7.
 - [ ] Round Robin Priority on the unit: the Priority switch shows (protocol 6), the numbers follow the click order, Save then Load keeps them, two routes keep their own orders. Steps in `~/Desktop/FoxWizard-preset-test/TEST_PROCEDURE.md`, 3c.
 - [ ] Presets, the rest of the kit steps: power cycle comes back in the same slot, factory reset leaves 1 slot, the clock during a switch (`./clock_check out 40 --expect 120` while pressing the front button).
 - [ ] Confirm the 1.93 clock fix against Ableton (does the master clock still fall behind?).

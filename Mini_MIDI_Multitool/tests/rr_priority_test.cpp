@@ -8,6 +8,7 @@
 #include <iterator>
 #include <map>
 #include <set>
+#include <string>
 #include <vector>
 
 #include "rr_priority.h"
@@ -269,7 +270,61 @@ static void testLowestFree() {
   }
 }
 
+// Velocity: the range cut into equal bands, harder notes further along the rank, a key pressed again moves, Note Off finds its channel.
+static void testVelocity() {
+  CHECK(fw::rrVelocityBand(1, 2) == 0 && fw::rrVelocityBand(64, 2) == 0 && fw::rrVelocityBand(65, 2) == 1 && fw::rrVelocityBand(127, 2) == 1, "two channels split at 64/65");
+  CHECK(fw::rrVelocityBand(32, 4) == 0 && fw::rrVelocityBand(33, 4) == 1 && fw::rrVelocityBand(64, 4) == 1 && fw::rrVelocityBand(65, 4) == 2 && fw::rrVelocityBand(96, 4) == 2 && fw::rrVelocityBand(97, 4) == 3, "four channels by quarters");
+  CHECK(fw::rrVelocityBand(100, 1) == 0 && fw::rrVelocityBand(0, 3) == 0 && fw::rrVelocityBand(200, 3) == 2, "one channel, and out of range velocities stay inside");
+  for (uint8_t n = 1; n <= 16; ++n) {
+    uint8_t last = 0, size[16] = {0};
+    for (int v = 1; v <= 127; ++v) {
+      const uint8_t b = fw::rrVelocityBand((uint8_t)v, n);
+      CHECK(b >= last && b < n, "n %u: band %u at %d must not go back and stay under %u", n, b, v, n);
+      last = b; ++size[b];
+    }
+    CHECK(last == n - 1, "n %u: the hardest band is the last channel", n);
+    uint8_t lo = 255, hi = 0;
+    for (uint8_t b = 0; b < n; ++b) { lo = std::min(lo, size[b]); hi = std::max(hi, size[b]); }
+    CHECK(hi - lo <= 1, "n %u: bands differ by more than one velocity (%u to %u)", n, lo, hi);
+  }
+  // The routing: ranked channels 5, 2, 9 (the route's own order), notes land by velocity and their Offs follow.
+  uint8_t pool[fw::kRrOrderPoolBytes] = {0};
+  addEntry(pool, 0, {5, 2, 9});
+  const auto order = ranked((1u << 5) | (1u << 2) | (1u << 9), pool, 0);
+  Slot slots[16];
+  for (int i = 0; i < 5; ++i) slots[i].note = (uint8_t)(60 + i);
+  std::vector<std::string> log;
+  auto emit = [&](uint8_t ch, bool on, int16_t pitch) { log.push_back(std::string(on ? "+" : "-") + std::to_string(ch) + ":" + std::to_string(pitch)); };
+  const uint8_t n = (uint8_t)order.size();
+  fw::rrVelocityNoteOn(&slots[0], order.data(), n, 20, 0, emit);   // soft: rank 1, channel 5
+  CHECK(log.size() == 1 && log[0] == "+5:60" && slots[0].channel == 5, "soft note on channel 5, got %s", log.empty() ? "nothing" : log[0].c_str());
+  log.clear();
+  fw::rrVelocityNoteOn(&slots[1], order.data(), n, 127, 0, emit);  // hard: rank 3, channel 9
+  CHECK(log.size() == 1 && log[0] == "+9:61", "hard note on channel 9, got %s", log.empty() ? "nothing" : log[0].c_str());
+  log.clear();
+  fw::rrVelocityNoteOn(&slots[2], order.data(), n, 64, 0, emit);   // middle: rank 2, channel 2
+  CHECK(log.size() == 1 && log[0] == "+2:62", "middle note on channel 2, got %s", log.empty() ? "nothing" : log[0].c_str());
+  log.clear();
+  fw::rrVelocityNoteOn(&slots[3], order.data(), n, 10, 0, emit);   // no rotation: another soft note shares channel 5
+  CHECK(log.size() == 1 && log[0] == "+5:63", "another soft note shares channel 5, got %s", log.empty() ? "nothing" : log[0].c_str());
+  // pressed again while down, harder: it lets go where it was and sounds on its new channel
+  log.clear();
+  fw::rrVelocityNoteOn(&slots[0], order.data(), n, 120, 2, emit);
+  CHECK(log.size() == 2 && log[0] == "-5:62" && log[1] == "+9:62", "pressed again: off on 5, on on 9 with transpose, got %s %s", log.empty() ? "" : log[0].c_str(), log.size() > 1 ? log[1].c_str() : "");
+  log.clear();
+  fw::rrNoteOff(&slots[1], 0, emit);
+  CHECK(log.size() == 1 && log[0] == "-9:61" && slots[1].channel == 0xFF, "Note Off lands on the channel it sounds on");
+  log.clear();
+  fw::rrNoteOff(&slots[1], 0, emit);
+  CHECK(log.empty(), "a second Note Off does nothing");
+  log.clear();
+  fw::rrVelocityNoteOn((Slot *)nullptr, order.data(), n, 100, 0, emit);
+  fw::rrVelocityNoteOn(&slots[4], order.data(), 0, 100, 0, emit);
+  CHECK(log.empty(), "no slot or no channel, no note");
+}
+
 int main() {
+  testVelocity();
   testRanking();
   testPatchlingBytes();
   testPoolMaintenance();

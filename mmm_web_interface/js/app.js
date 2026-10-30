@@ -117,6 +117,7 @@ function defaultRoute() {
     roundRobin: false,
     roundRobinRandom: false,
     roundRobinPriority: false, // 1.108
+    roundRobinVelocity: false, // 1.119
     outChOrder: [], // UI and the order block: the output channels in the order they were added, see routeChannelOrder
     commonEnabled: true,
     realtimeEnabled: true,
@@ -1731,10 +1732,11 @@ function selectOptions(options, selected) {
 
 // Round Robin Priority (1.108): the firmware has to be new enough, and each selected output channel shows its rank in the corner.
 function priorityRobinSupported() { return !device.connected || device.protocolVersion >= 6; }
+function velocityRobinSupported() { return !device.connected || device.protocolVersion >= 7; } // 1.119
 
 function rankOf(route, c) { return routeChannelOrder(route).indexOf(c) + 1; }
 
-function showsRank(route) { return !!(route?.roundRobin && route.roundRobinPriority); }
+function showsRank(route) { return !!(route?.roundRobin && (route.roundRobinPriority || route.roundRobinVelocity)); }
 
 // Redraws the rank numbers on a route's output channels without redrawing the card, which would move the click that made the change.
 function paintRankBadges(index) {
@@ -1818,7 +1820,7 @@ function routeSummary(route) {
     ? `, Velocity ${route.velocityScale}%` : '';
   const monoRobin = [];
   if (route.monoRetrig) monoRobin.push('Mono');
-  if (route.roundRobin) monoRobin.push(route.roundRobinPriority ? 'Priority Robin' : (route.roundRobinRandom ? 'Rand Robin' : 'Round Robin'));
+  if (route.roundRobin) monoRobin.push(route.roundRobinVelocity ? 'Velocity Robin' : (route.roundRobinPriority ? 'Priority Robin' : (route.roundRobinRandom ? 'Rand Robin' : 'Round Robin')));
   const monoRobinText = monoRobin.length ? `, ${monoRobin.join(', ')}` : '';
   return `${portsShort(route.inPorts)} ${inCh} → ${portsShort(route.outPorts)} ${outCh} · ${typesText}${transposeText}${velocityText}${monoRobinText}`;
 }
@@ -2522,8 +2524,9 @@ function toggleRowsHtml(route, index) {
                 ${switchHtml(index, 'roundRobin', !!route.roundRobin, 'Round Robin')}
                 ${route.roundRobin ? switchHtml(index, 'roundRobinRandom', !!route.roundRobinRandom, 'Rand', 'cc-map-row-indent') : ''}
                 ${route.roundRobin && priorityRobinSupported() ? switchHtml(index, 'roundRobinPriority', !!route.roundRobinPriority, 'Priority', 'cc-map-row-indent') : ''}
+                ${route.roundRobin && velocityRobinSupported() ? switchHtml(index, 'roundRobinVelocity', !!route.roundRobinVelocity, 'Velocity', 'cc-map-row-indent') : ''}
               </div>
-              ${route.roundRobin ? `<p class="note-hint">Mono to Poly. ${route.roundRobinPriority ? 'Each new note takes the first free selected channel, numbered in the order you added them. When all are down the oldest note gives up its channel.' : (route.roundRobinRandom ? 'Picks a random selected channel for each new note.' : 'Cycles each new note to a different selected channel.')}</p>` : ''}
+              ${route.roundRobin ? `<p class="note-hint">Mono to Poly. ${route.roundRobinVelocity ? 'Each new note goes to a selected channel by how hard it is played, the softest to the channel numbered 1 and the hardest to the last. Route Velocity % moves the split.' : route.roundRobinPriority ? 'Each new note takes the first free selected channel, numbered in the order you added them. When all are down the oldest note gives up its channel.' : (route.roundRobinRandom ? 'Picks a random selected channel for each new note.' : 'Cycles each new note to a different selected channel.')}</p>` : ''}
             </div>`]);
   if (featuresSupported()) {
     const sections = [mapSectionHtml(route, index, 'note'), mapSectionHtml(route, index, 'cc'), launchpadSectionHtml(route, index),
@@ -2564,7 +2567,7 @@ function refreshRouteCard(index, animateStaple) {
 }
 
 // Structural changes (need a re-render): checkboxes that reveal/hide fields, staple toggle, delete
-const STRUCTURAL_FIELDS = new Set(['note', 'cc', 'ccMapEnabled', 'aftertouch', 'aftertouchMap', 'pressure', 'pressureMap', 'allInputTypes', 'allInputChannels', 'allInPorts', 'allOutPorts', 'monoRetrig', 'roundRobin', 'roundRobinRandom', 'roundRobinPriority', 'noteToCc', 'ccMapOn', 'launchpad', 'scaleOn', 'autoChord', 'arpOn', 'echoOn', 'stutterOn', 'lpQuadEnabled', 'stutterGlobal', 'echoGlobal', 'echoLatching', 'plockOn']);
+const STRUCTURAL_FIELDS = new Set(['note', 'cc', 'ccMapEnabled', 'aftertouch', 'aftertouchMap', 'pressure', 'pressureMap', 'allInputTypes', 'allInputChannels', 'allInPorts', 'allOutPorts', 'monoRetrig', 'roundRobin', 'roundRobinRandom', 'roundRobinPriority', 'roundRobinVelocity', 'noteToCc', 'ccMapOn', 'launchpad', 'scaleOn', 'autoChord', 'arpOn', 'echoOn', 'stutterOn', 'lpQuadEnabled', 'stutterGlobal', 'echoGlobal', 'echoLatching', 'plockOn']);
 
 routesContainer.addEventListener('click', (e) => {
   const actionEl = e.target.closest('[data-action]');
@@ -2687,8 +2690,10 @@ function applyRouteFieldChange(route, field, el) {
   if (field === 'monoRetrig') { route.monoRetrig = el.checked; return; }
   if (field === 'looperEnabled') { route.looperEnabled = el.checked; renderLooperRow(); return; }
   if (field === 'roundRobin') { route.roundRobin = el.checked; return; }
-  if (field === 'roundRobinRandom') { route.roundRobinRandom = el.checked; if (el.checked) route.roundRobinPriority = false; return; }
-  if (field === 'roundRobinPriority') { route.roundRobinPriority = el.checked; if (el.checked) route.roundRobinRandom = false; return; }
+  // Rand, Priority and Velocity are three ways to pick the channel, only one at a time.
+  if (field === 'roundRobinRandom') { route.roundRobinRandom = el.checked; if (el.checked) route.roundRobinPriority = route.roundRobinVelocity = false; return; }
+  if (field === 'roundRobinPriority') { route.roundRobinPriority = el.checked; if (el.checked) route.roundRobinRandom = route.roundRobinVelocity = false; return; }
+  if (field === 'roundRobinVelocity') { route.roundRobinVelocity = el.checked; if (el.checked) route.roundRobinRandom = route.roundRobinPriority = false; return; }
   if (field === 'ccMapEnabled') {
     route._ccMapEnabled = el.checked;
     if (!el.checked) route.ccMapStart = route.ccStart; // switching off: snap back to "no remap"

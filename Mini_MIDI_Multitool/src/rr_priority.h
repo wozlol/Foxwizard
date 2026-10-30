@@ -150,4 +150,23 @@ void rrNoteOff(Slot *slot, int16_t transpose, Emit emit) {
   emit(channel, false, (int16_t)(slot->note + transpose));
 }
 
+// Round Robin Velocity (1.119). The same ranked channels, but a note goes where its velocity says: the range 1-127 is cut into n equal
+// bands and the harder the note the further along the rank it goes, rank 1 taking the softest band. The velocity is the one after
+// the route's velocity control, so that control moves the split.
+inline uint8_t rrVelocityBand(uint8_t velocity, uint8_t n) {
+  if (n <= 1) return 0;
+  const uint8_t v = velocity < 1 ? 1 : (velocity > 127 ? 127 : velocity);
+  return (uint8_t)(((uint16_t)(v - 1) * n) / 127);
+}
+
+// A Note On under Velocity. A key pressed again while down first releases where it was. Its Note Off is rrNoteOff, the slot knows
+// where it sounds.
+template <typename Slot, typename Emit>
+void rrVelocityNoteOn(Slot *slot, const uint8_t *ranked, uint8_t n, uint8_t velocity, int16_t transpose, Emit emit) {
+  if (!slot || n == 0) return;
+  if (slot->channel < 16) emit(slot->channel, false, (int16_t)(slot->note + transpose));
+  slot->channel = ranked[rrVelocityBand(velocity, n)];
+  emit(slot->channel, true, (int16_t)(slot->note + transpose));
+}
+
 }  // namespace fw

@@ -85,7 +85,7 @@ export const FEATURE = { NOTE_TO_CC: 1 << 0, LAUNCHPAD: 1 << 1, SCALE: 1 << 2, A
 // Feature blocks, shared by the routes that switch a feature on. Same as FEATURE_TYPE_* in the firmware.
 export const FEATURE_TYPE = { NOTE_TO_CC: 1, LAUNCHPAD: 2, SCALE: 3, ARP_1: 4, ECHO: 8, STUTTER: 9, LOOPER: 10, NOTE_MAP: 11, CC_MAP: 12, LP_ACTIONS: 13, PLOCK: 14, RR_ORDER: 15 }; // arp slots 1-4 are 4-7
 
-// Round Robin Priority (1.108, protocol 6). A route with Round Robin and Priority on gives each new note the first free channel of its
+// Round Robin Priority (1.108, protocol 6) and Velocity (1.119, protocol 7, flags2 bit7) share this order. A route with Round Robin and Priority on gives each new note the first free channel of its
 // output channels in rank order. The rank is the lowest channel first, unless the order the channels were added in differs from
 // that: those orders live in one block shared by every route, 96 bytes. An entry is the route's index + 1, the channel count, then
 // the channels 4 bits each, the first in the high nibble. A route in the default order has no entry. The firmware keeps the same
@@ -112,7 +112,7 @@ export function rrOrderToBytes(routes) {
   const bytes = [];
   let dropped = 0;
   routes.forEach((r, i) => {
-    if (!r.roundRobin || !r.roundRobinPriority) return;
+    if (!r.roundRobin || !(r.roundRobinPriority || r.roundRobinVelocity)) return;
     const order = routeChannelOrder(r);
     if (order.length < 2 || order.every((c, k) => k === 0 || order[k - 1] < c)) return; // lowest first is the default
     const entry = [i + 1, order.length];
@@ -456,7 +456,7 @@ export function routeToBytes(r, protocolVersion = 2) {
     // one-off event, so worth gating independently), bit5=Round Robin Random (true random channel
     // pick instead of cycling — only meaningful with bit1 set).
     (r.monoRetrig ? 0x01 : 0) | (r.roundRobin ? 0x02 : 0) | (r.commonEnabled ? 0x04 : 0) |
-      (r.realtimeEnabled ? 0x08 : 0) | (r.clockEnabled ? 0x10 : 0) | (r.roundRobinRandom ? 0x20 : 0) | (r.roundRobinPriority ? 0x40 : 0),
+      (r.realtimeEnabled ? 0x08 : 0) | (r.clockEnabled ? 0x10 : 0) | (r.roundRobinRandom ? 0x20 : 0) | (r.roundRobinPriority ? 0x40 : 0) | (r.roundRobinVelocity ? 0x80 : 0),
     ...encodeName(r.name)
   ];
   if (v2) bytes.push(r.inPorts & 0xFF, (r.inPorts >> 8) & 0xFF, r.outPorts & 0xFF, (r.outPorts >> 8) & 0xFF);
@@ -497,6 +497,7 @@ export function bytesToRoute(b) {
     clockEnabled: !!(b[16] & 0x10),
     roundRobinRandom: !!(b[16] & 0x20),
     roundRobinPriority: !!(b[16] & 0x40), // 1.108
+    roundRobinVelocity: !!(b[16] & 0x80), // 1.119
     outChOrder: [], // filled from the order block, see applyRrOrder
     name: decodeName(b.slice(17, ROUTE_BYTES_V1)),
     features: b.length >= ROUTE_BYTES_V4 ? b[ROUTE_BYTES_V2] | (b[ROUTE_BYTES_V2 + 1] << 8) : 0,
