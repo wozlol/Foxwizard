@@ -102,7 +102,7 @@ constexpr uint8_t SYSEX_MFR_ID = 0x7D;   // reserved for non-commercial/educatio
 constexpr uint8_t SYSEX_DEVICE_ID = 0x4D; // 'M'
 constexpr uint8_t PROTOCOL_VERSION = 7; // 2: 45-byte routes with port masks, GET_STATUS. 3: clock settings, LEARN. 4: 53-byte routes with feature fields, feature blocks. 5: presets. 6: Round Robin Priority order block. 7: Round Robin Velocity
 constexpr uint8_t FW_VERSION_MAJOR = 1;
-constexpr uint8_t FW_VERSION_MINOR = 122;
+constexpr uint8_t FW_VERSION_MINOR = 123;
 constexpr uint8_t FW_CHUNK_BYTES = 128;          // firmware bytes per FW_DATA message, 147 once packed
 constexpr uint32_t FW_REBOOT_DELAY_MS = 300;     // lets the FW_END ACK reach the host before rebooting
 const char DEVICE_NAME[] = "FoxWizard Mini MIDI Multitool"; // long name sent in the SysEx IDENTITY_REPLY
@@ -153,10 +153,13 @@ enum SysexCmd : uint8_t {
   CMD_FW_DATA = 0x41,
   CMD_FW_END = 0x42,
 #ifdef FW_DIAG
-  CMD_DIAG_STACK_DIVE = 0x7C, // test builds only: really uses the stack, payload the number of frames (about 70 bytes each)
+  CMD_DIAG_STACK_DIVE = 0x7C, // test builds only: really uses the stack, payload the number of frames (64 bytes each)
 #endif
   CMD_ACK = 0x7E
 };
+#ifdef FW_DIAG
+uint8_t diagStackDive(uint8_t frames); // defined with the stack readout below
+#endif
 
 enum AckStatus : uint8_t {
   ACK_OK = 0,
@@ -6528,11 +6531,12 @@ uint16_t stackUsedBytes() {
 
 #ifdef FW_DIAG
 // Test builds only. Recurses with a frame of about 70 bytes a call, so the stack goes as deep as asked and the readout shows it.
+uint8_t (*volatile diagStackDivePtr)(uint8_t) = diagStackDive; // called through a pointer, or the compiler turns the recursion into a loop that uses no stack
 __attribute__((noinline)) uint8_t diagStackDive(uint8_t frames) {
   volatile uint8_t pad[48];
   for (uint8_t i = 0; i < sizeof(pad); ++i) pad[i] = (uint8_t)(frames + i);
   uint8_t sum = pad[frames % sizeof(pad)];
-  if (frames) sum = (uint8_t)(sum + diagStackDive((uint8_t)(frames - 1)));
+  if (frames) sum = (uint8_t)(diagStackDivePtr((uint8_t)(frames - 1)) * 3 + sum);
   return sum;
 }
 #endif

@@ -79,7 +79,7 @@ The route struct is 41 bytes → five groups of 7 + one group of 6 → packed to
 | 0x3A   | SELECT_PRESET         | host→dev  | slot (0-15). ACKs once the slot is live, checksum is the active slot, extra the slot count. ERR_BAD_INDEX past the slot count |
 | 0x40   | FW_BEGIN              | host→dev  | size(3) + md5 (32 lowercase hex ASCII characters). Firmware 1.2+ |
 | 0x41   | FW_DATA               | host→dev  | index(2) + pack7(up to 128 firmware bytes → up to 147 bytes). Firmware 1.2+ |
-| 0x7C   | DIAG_STACK_DIVE       | host→dev  | frames(1). Only in a build made with `FW_EXTRA_FLAGS=-DFW_DIAG`, never in a release. Recurses that many 70-byte frames so the stack goes that deep, then ACKs with the stack depth in 16-byte units as extra |
+| 0x7C   | DIAG_STACK_DIVE       | host→dev  | frames(1). Only in a build made with `FW_EXTRA_FLAGS=-DFW_DIAG`, never in a release. Recurses that many 64-byte frames so the stack goes that deep, then ACKs with the stack depth in 16-byte units as extra |
 | 0x42   | FW_END                | host→dev  | (none). Checks size and MD5, stages the install, ACKs, then reboots. Firmware 1.2+ |
 | 0x7E   | ACK                   | dev→host  | originalCmd(1), status(1: 0=OK,1=ERR_BAD_INDEX,2=ERR_BAD_DATA,3=ERR_FULL,4=ERR_UPDATE), checksum(1), extra(2, e.g. assigned index for ADD_ROUTE) |
 

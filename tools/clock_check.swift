@@ -1060,7 +1060,7 @@ case "dive":
   var last = start.stackDeepest
   for frames in steps {
     guard let ack = ask(link, 0x7C, [frames], reply: 0x7E, timeout: 2.0) else { print("frames \(frames): NO ANSWER, the unit may have restarted or hung"); exit(1) }
-    _ = ack
+    if ack.count > 1, ack[1] != 0 { print("frames \(frames): the unit answered with error \(ack[1]), this is not a -DFW_DIAG build"); exit(1) }
     Thread.sleep(forTimeInterval: 0.2)
     guard let now = link.memory(timeout: 2.0) else { print("frames \(frames): the unit did not answer the memory read afterwards"); exit(1) }
     let restarted = now.stackDeepest < last

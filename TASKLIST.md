@@ -1,10 +1,10 @@
 # FoxWizard task list
 
-Order matters. Finish the item you are on before starting the next. Anything new goes at the end of its section. Version at last edit: firmware 1.122, host brain 8, protocol 6.
+Order matters. Finish the item you are on before starting the next. Anything new goes at the end of its section. Version at last edit: firmware 1.123, host brain 8, protocol 6.
 
 ## Now (needs the hardware)
 
-- [ ] Stack proof, 1.122 DIAG build (`NEW-main-1.122-DIAG-stack-dive.uf2`, a test build with the dive command, not a release): flash, `./clock_check version` should still read about 960 after boot (the stack area is now painted over its whole 8 KB, a high reading at boot means something else lives there), then `./clock_check dive 10,20,30,40,50,60,70`. arduino-pico's docs say a single core sketch has the full 8 KB for core 0, the linker reserves only 2 KB. Then the soak test (`clock_check soak`, two phases, see the notes in that command).
+- [ ] Stack proof, 1.123 DIAG build (`NEW-main-1.123-DIAG-stack-dive.uf2`, 1.122's dive was optimized into a loop, a test build with the dive command, not a release): flash, `./clock_check version` should still read about 960 after boot (the stack area is now painted over its whole 8 KB, a high reading at boot means something else lives there), then `./clock_check dive 10,20,30,40,50,60,70`. arduino-pico's docs say a single core sketch has the full 8 KB for core 0, the linker reserves only 2 KB. Then the soak test (`clock_check soak`, two phases, see the notes in that command).
 
 - [ ] Round Robin Velocity on the unit (1.119, protocol 7): 3 channels, soft, middle and hard notes land on ranks 1, 2 and 3, Route Velocity % 200 and 50 move them, a held key pressed again moves, no stuck notes. `./clock_check version` shows protocol 7.
 - [ ] Round Robin Priority on the unit: the Priority switch shows (protocol 6), the numbers follow the click order, Save then Load keeps them, two routes keep their own orders. Steps in `~/Desktop/FoxWizard-preset-test/TEST_PROCEDURE.md`, 3c.
