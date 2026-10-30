@@ -101,7 +101,7 @@ constexpr uint8_t SYSEX_MFR_ID = 0x7D;   // reserved for non-commercial/educatio
 constexpr uint8_t SYSEX_DEVICE_ID = 0x4D; // 'M'
 constexpr uint8_t PROTOCOL_VERSION = 6; // 2: 45-byte routes with port masks, GET_STATUS. 3: clock settings, LEARN. 4: 53-byte routes with feature fields, feature blocks. 5: presets. 6: Round Robin Priority order block
 constexpr uint8_t FW_VERSION_MAJOR = 1;
-constexpr uint8_t FW_VERSION_MINOR = 112;
+constexpr uint8_t FW_VERSION_MINOR = 113;
 constexpr uint8_t FW_CHUNK_BYTES = 128;          // firmware bytes per FW_DATA message, 147 once packed
 constexpr uint32_t FW_REBOOT_DELAY_MS = 300;     // lets the FW_END ACK reach the host before rebooting
 const char DEVICE_NAME[] = "FoxWizard Mini MIDI Multitool"; // long name sent in the SysEx IDENTITY_REPLY
@@ -6334,13 +6334,24 @@ void handleUsbMidiPacket(uint8_t inputDevice, SysexState &sysex, const uint8_t p
   }
 }
 
+// Read from TinyUSB up to 16 packets at a time (1.113), as the output is written: one packet per call re-armed the USB receive
+// transfer for every 4 bytes, and under a flood the unit stalled in there until the watchdog restarted it.
+uint8_t usbInBatch[16][4];
+
 void pumpUsbIn() {
-  uint8_t packet[4];
   uint8_t budget = INPUT_BUDGET; // a flood (a feedback loop in a DAW) can't starve everything else
   if (!outputsHaveRoom()) return; // an output backed up: the computer waits, nothing is dropped
-  while (budget-- && usb_midi.readPacket(packet)) {
-    if ((budget & 0x0F) == 0x0F) serviceTiming(); // every 16 packets
-    handleUsbMidiPacket(DEV_USB, usbSysex, packet);
+  while (budget) {
+    const uint8_t want = budget < 16 ? budget : 16;
+    CRUMB(84);
+    const uint8_t got = (uint8_t)tud_midi_packet_read_n(&usbInBatch[0][0], want);
+    CRUMB(85);
+    if (got == 0) return;
+    budget -= got;
+    for (uint8_t i = 0; i < got; ++i) handleUsbMidiPacket(DEV_USB, usbSysex, usbInBatch[i]);
+    CRUMB(86);
+    serviceTiming(); // every 16 packets
+    if (got < want) return;
   }
 }
 
