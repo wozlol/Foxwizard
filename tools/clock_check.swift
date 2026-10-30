@@ -698,6 +698,60 @@ func runLoopSwing(_ link: Link) -> Bool {
   return allGood
 }
 
+// Round Robin Velocity (1.119, protocol 7): a route with three output channels, ranked 3, 6 and 10, sends each note to a channel by its velocity.
+// Played softest to hardest at three Velocity % settings, and a key pressed again while down. Loaded into memory only, put back after.
+func runRrVelocity(_ link: Link) -> Bool {
+  var originals: [UInt8: [UInt8]] = [:]
+  guard loadTestSetup(link, originals: &originals, subset: []) else { print("could not load the test setup"); return false }
+  let order: [UInt8] = [2, 5, 9] // 0 based channels in rank order, 3, 6, 10
+  func band(_ v: Int) -> Int { ((max(1, min(127, v)) - 1) * order.count) / 127 }
+  var allGood = true
+  func setUp(scale: Int) {
+    _ = ask(link, 0x28, reply: 0x7E)
+    var route = testRoutes[3]
+    route[1] = 1; route[2] = 0 // in on channel 1
+    route[9] = 36; route[10] = 2 // out on channels 3, 6 and 10
+    route[11] = 64; route[12] = UInt8(scale)
+    route[16] = 158 // Round Robin, Velocity, the usual pass through bits
+    _ = ask(link, 0x24, pack7(route), reply: 0x7E)
+    _ = ask(link, 0x19, [15] + pack7([1, 3, 0x25, 0x90]), reply: 0x7E) // the rank order 3, 6, 10
+  }
+  func play(_ bytes: [UInt8], wait: Double = 0.06) -> [(on: Bool, ch: UInt8, note: UInt8, vel: UInt8)] {
+    _ = link.drain()
+    link.send(bytes)
+    Thread.sleep(forTimeInterval: wait)
+    return link.drain().filter { $0.bytes.count == 3 && ($0.bytes[0] & 0xE0) == 0x80 }.map { (($0.bytes[0] & 0xF0) == 0x90 && $0.bytes[2] > 0, $0.bytes[0] & 0x0F, $0.bytes[1], $0.bytes[2]) }
+  }
+  for scale in [100, 200, 50] {
+    setUp(scale: scale)
+    var wrong: [String] = []
+    var landed: [String] = []
+    for vel in [1, 10, 43, 44, 64, 85, 86, 100, 127] {
+      let on = play([0x90, 60, UInt8(vel)])
+      let off = play([0x80, 60, 0])
+      let scaled = max(1, min(127, vel * scale / 100))
+      let want = order[band(scaled)]
+      let ok = on.count == 1 && on[0].on && on[0].ch == want && Int(on[0].vel) == scaled && off.count == 1 && !off[0].on && off[0].ch == want
+      landed.append("\(vel)>ch\(on.first.map { Int($0.ch) + 1 } ?? 0)")
+      if !ok { wrong.append("vel \(vel) wanted ch\(want + 1) at \(scaled), got \(on.map { "\($0.on ? "on" : "off") ch\(Int($0.ch) + 1) v\($0.vel)" })") }
+    }
+    if !wrong.isEmpty { allGood = false }
+    print("\(wrong.isEmpty ? "PASS" : "FAIL")  Velocity % \(scale): " + landed.joined(separator: " ") + (wrong.isEmpty ? "" : "   " + wrong.joined(separator: "; ")))
+  }
+  // a key pressed again while down: it lets go where it was, then sounds on its new channel, and its Off follows
+  setUp(scale: 100)
+  _ = link.drain()
+  link.send([0x90, 60, 20]); Thread.sleep(forTimeInterval: 0.05)
+  link.send([0x90, 60, 120]); Thread.sleep(forTimeInterval: 0.05)
+  link.send([0x80, 60, 0]); Thread.sleep(forTimeInterval: 0.08)
+  let seq = link.drain().filter { $0.bytes.count == 3 && ($0.bytes[0] & 0xE0) == 0x80 }.map { "\(($0.bytes[0] & 0xF0) == 0x90 && $0.bytes[2] > 0 ? "+" : "-")ch\(Int($0.bytes[0] & 0x0F) + 1)" }
+  let again = seq == ["+ch3", "-ch3", "+ch10", "-ch10"]
+  if !again { allGood = false }
+  print("\(again ? "PASS" : "FAIL")  pressed again while down: \(seq.joined(separator: " ")) (wanted +ch3 -ch3 +ch10 -ch10)")
+  restoreAfterTestSetup(link, originals: originals)
+  return allGood
+}
+
 func runSession(_ link: Link, seconds: Double, channels: [UInt8], useSetup: Bool) {
   guard let id = link.identity() else { print("No answer from the FoxWizard"); exit(1) }
   guard let before = link.memory() else { print("This firmware has no memory readout, update to 1.108 or later"); exit(1) }
@@ -891,6 +945,11 @@ case "setbpm":
   _ = ask(link, 0x12, changed, reply: 0x7E)
   print("Tempo set to \(bpm) BPM in memory")
   exit(0)
+case "rrvelocity":
+  guard let (source, destination) = findEndpoints(matching: portName), let link = Link(source: source, destination: destination) else { print("no port"); exit(2) }
+  let ok = runRrVelocity(link)
+  print(ok ? "ROUND ROBIN VELOCITY: ALL PASS" : "ROUND ROBIN VELOCITY: SOMETHING FAILED")
+  exit(ok ? 0 : 1)
 case "swingtest":
   guard let (source, destination) = findEndpoints(matching: portName), let link = Link(source: source, destination: destination) else { print("no port"); exit(2) }
   var originals: [UInt8: [UInt8]] = [:]
