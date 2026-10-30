@@ -417,7 +417,7 @@ aren't saved, so only the layers playing survive power off.
 
 ## Aftertouch thinning
 
-The DIN output moves about 3 KB a second. When a flood of poly aftertouch or channel pressure fills its queue past half, only every 2nd update goes out, then every 4th, 8th or 16th as it fills, for each note on each channel. Every note keeps getting some, with bigger gaps, instead of the whole input waiting behind them. A pressure of 0 always goes. Below half full nothing is thinned.
+The DIN output moves about 3 KB a second. When a flood of poly aftertouch or channel pressure fills its queue past a quarter, only every 2nd update goes out, then every 4th, 8th or 16th as it fills, for each note on each channel. Every note keeps getting some, with bigger gaps, instead of the whole input waiting behind them. A pressure of 0 always goes. Below a quarter full nothing is thinned.
 
 ## Presets
 

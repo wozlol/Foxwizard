@@ -39,7 +39,6 @@ Plan, from the research and the clock code:
 ## Waiting for your answer
 
 - [ ] Clock rounding (carry the leftover microsecond between ticks): about 16 ppm at 120 BPM. Cheap, can wait.
-- [ ] Stutter and Echo "After Route": grey out instead of hide, like the new Looper switch.
 - [ ] USB 2.0: high-speed USB (not possible on the RP2040) or MIDI 2.0 over USB (in the plan)?
 
 ## MIDI 2.0 (status and plan in `MIDI_2_PLAN.md`)

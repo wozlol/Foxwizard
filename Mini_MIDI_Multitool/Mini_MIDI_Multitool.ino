@@ -2143,9 +2143,10 @@ uint8_t linkPortsFor(uint16_t mask, uint8_t ports[LINK_PORTS_MAX]) {
 }
 
 // 1.114: poly aftertouch and channel pressure are thinned for the DIN port as its queue fills, so a flood of them no longer makes the
-// whole input wait behind it. The DIN port moves about 3 KB a second. With the queue under half full everything goes. Past that
-// every 2nd update goes through, then every 4th, 8th and 16th as it fills, counted for each note on each channel (and channel pressure
-// on its own), so every one keeps coming, with bigger gaps. A pressure of 0 always goes, so a release is never lost.
+// whole input wait behind it. The DIN port moves about 3 KB a second. With the queue under a quarter full everything goes. Past that
+// every 2nd update goes through, then every 4th, 8th and 16th as it fills, reaching 16 at 70% full, before the input is held back at
+// 75%. Counted for each note on each channel (and channel pressure on its own), so every one keeps coming, with bigger gaps. A pressure
+// of 0 always goes, so a release is never lost.
 uint8_t pressureThinCount[16][17];
 uint32_t perfPressureThinned = 0; // since the last GET_STATUS
 uint32_t perfPressureKept = 0;    // pressure updates that went out to the DIN port since the last GET_STATUS, thinned or not
@@ -2153,7 +2154,7 @@ uint32_t perfPressureKept = 0;    // pressure updates that went out to the DIN p
 bool pressureThinnedForTrs(uint8_t statusHi, uint8_t channel, uint8_t data1, uint8_t data2) {
   if (statusHi != 0xA0 && statusHi != 0xD0) return false;
   const uint16_t room = trsFree();
-  const uint8_t every = room >= 1024 ? 1 : room >= 512 ? 2 : room >= 256 ? 4 : room >= 128 ? 8 : 16;
+  const uint8_t every = room >= 1536 ? 1 : room >= 1024 ? 2 : room >= 768 ? 4 : room >= 640 ? 8 : 16;
   if (every == 1 || (statusHi == 0xA0 ? data2 : data1) == 0) { ++perfPressureKept; return false; }
   uint8_t &count = pressureThinCount[channel & 15][statusHi == 0xA0 ? (data1 & 15) : 16];
   if (++count >= every) { count = 0; ++perfPressureKept; return false; }

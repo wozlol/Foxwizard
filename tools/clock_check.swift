@@ -816,10 +816,11 @@ case "dinflood":
       link.send([0xA2, 60, UInt8(20 + i % 100)])
     }
     link.send([0x82, 60, 0])
+    // asked for the moment the flood ends: anything else that asks the unit for its status (Patchling every 2 s) resets these counts
     var onUsb = 0
+    let st = ask(link, 0x13, reply: 0x14, timeout: 4.0)
     let untilBack = Date().addingTimeInterval(2.0)
     while Date() < untilBack { for r in link.drain() where r.bytes.count == 3 && r.bytes[0] & 0xF0 == 0xA0 { onUsb += 1 }; Thread.sleep(forTimeInterval: 0.01) }
-    let st = ask(link, 0x13, reply: 0x14, timeout: 4.0)
     let held = st.map { Int($0[18]) } ?? -1, trs = st.map { Int($0[20]) * 100 / 127 } ?? -1
     let kept = st.map { $0.count >= 41 ? Int($0[37]) | (Int($0[38]) << 7) : -1 } ?? -1, thinned = st.map { $0.count >= 41 ? Int($0[39]) | (Int($0[40]) << 7) : -1 } ?? -1
     print("\(Int(rate)) aftertouch per second for 6 s: the DIN queue peaked at \(trs)%, input held back \(held) times, \(kept) updates went out to DIN and \(thinned) were thinned away, \(onUsb) aftertouch messages came back on USB (with a cable from DIN out to DIN in, that is what the DIN port sent)")
