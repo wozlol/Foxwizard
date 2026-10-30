@@ -101,7 +101,7 @@ constexpr uint8_t SYSEX_MFR_ID = 0x7D;   // reserved for non-commercial/educatio
 constexpr uint8_t SYSEX_DEVICE_ID = 0x4D; // 'M'
 constexpr uint8_t PROTOCOL_VERSION = 6; // 2: 45-byte routes with port masks, GET_STATUS. 3: clock settings, LEARN. 4: 53-byte routes with feature fields, feature blocks. 5: presets. 6: Round Robin Priority order block
 constexpr uint8_t FW_VERSION_MAJOR = 1;
-constexpr uint8_t FW_VERSION_MINOR = 114;
+constexpr uint8_t FW_VERSION_MINOR = 115;
 constexpr uint8_t FW_CHUNK_BYTES = 128;          // firmware bytes per FW_DATA message, 147 once packed
 constexpr uint32_t FW_REBOOT_DELAY_MS = 300;     // lets the FW_END ACK reach the host before rebooting
 const char DEVICE_NAME[] = "FoxWizard Mini MIDI Multitool"; // long name sent in the SysEx IDENTITY_REPLY
@@ -2147,14 +2147,17 @@ uint8_t linkPortsFor(uint16_t mask, uint8_t ports[LINK_PORTS_MAX]) {
 // every 2nd update goes through, then every 4th, 8th and 16th as it fills, counted for each note on each channel (and channel pressure
 // on its own), so every one keeps coming, with bigger gaps. A pressure of 0 always goes, so a release is never lost.
 uint8_t pressureThinCount[16][17];
+uint32_t perfPressureThinned = 0; // since the last GET_STATUS
+uint32_t perfPressureKept = 0;    // pressure updates that went out to the DIN port since the last GET_STATUS, thinned or not
 
 bool pressureThinnedForTrs(uint8_t statusHi, uint8_t channel, uint8_t data1, uint8_t data2) {
   if (statusHi != 0xA0 && statusHi != 0xD0) return false;
   const uint16_t room = trsFree();
   const uint8_t every = room >= 1024 ? 1 : room >= 512 ? 2 : room >= 256 ? 4 : room >= 128 ? 8 : 16;
-  if (every == 1 || (statusHi == 0xA0 ? data2 : data1) == 0) return false;
+  if (every == 1 || (statusHi == 0xA0 ? data2 : data1) == 0) { ++perfPressureKept; return false; }
   uint8_t &count = pressureThinCount[channel & 15][statusHi == 0xA0 ? (data1 & 15) : 16];
-  if (++count >= every) { count = 0; return false; }
+  if (++count >= every) { count = 0; ++perfPressureKept; return false; }
+  ++perfPressureThinned;
   return true;
 }
 
@@ -5928,6 +5931,12 @@ void handleSysexCommand(uint8_t sourcePort, const uint8_t *cmdBuf, uint8_t cmdLe
       appendReply((lastFaultPc >> 14) & 0x7F);
       appendReply((lastFaultPc >> 21) & 0x7F);
       appendReply((uint8_t)((lastFaultSeen ? 0x40 : 0) | ((lastFaultPc >> 28) & 0x0F)));
+      // 1.115: pressure updates sent to the DIN port and thinned away since the last status, each in two 7-bit bytes (up to 16383), then reset.
+      appendReply(perfPressureKept & 0x7F);
+      appendReply((perfPressureKept >> 7) & 0x7F);
+      appendReply(perfPressureThinned & 0x7F);
+      appendReply((perfPressureThinned >> 7) & 0x7F);
+      perfPressureKept = perfPressureThinned = 0;
       perfLoopMaxUs = perfLinkLimitHits = perfInputHeldBack = perfLinkHigh = perfTrsHigh = perfUsbHigh = 0;
       perfRepeatOn = perfStrayOff = perfLoopOrphanOff = perfLoopRepeatOn = 0;
       sendReply(sourcePort);

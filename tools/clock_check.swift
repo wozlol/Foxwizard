@@ -806,7 +806,7 @@ case "dinflood":
   _ = ask(link, 0x28, reply: 0x7E)
   _ = ask(link, 0x24, pack7(route), reply: 0x7E)
   print("One route, channel 3 in to DIN out. Poly aftertouch for a held note, then a Note On and Off to see how long a note waits behind it")
-  for rate in [100.0, 400.0, 800.0, 1600.0] {
+  for rate in (option("--rates") ?? "100,400,800,1600").split(separator: ",").compactMap({ Double($0) }) {
     _ = link.drain()
     link.send([0x92, 60, 100]); Thread.sleep(forTimeInterval: 0.2)
     let n = Int(rate * 6)
@@ -819,7 +819,8 @@ case "dinflood":
     Thread.sleep(forTimeInterval: 2.0)
     let st = ask(link, 0x13, reply: 0x14, timeout: 4.0)
     let held = st.map { Int($0[18]) } ?? -1, trs = st.map { Int($0[20]) * 100 / 127 } ?? -1
-    print("\(Int(rate)) aftertouch per second for 6 s: the DIN queue peaked at \(trs)%, input held back \(held) times")
+    let kept = st.map { $0.count > 41 ? Int($0[37]) | (Int($0[38]) << 7) : -1 } ?? -1, thinned = st.map { $0.count > 41 ? Int($0[39]) | (Int($0[40]) << 7) : -1 } ?? -1
+    print("\(Int(rate)) aftertouch per second for 6 s: the DIN queue peaked at \(trs)%, input held back \(held) times, \(kept) updates went out to DIN and \(thinned) were thinned away")
   }
   _ = ask(link, 0x28, reply: 0x7E)
   restoreAfterTestSetup(link, originals: originals)
