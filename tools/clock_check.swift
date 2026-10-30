@@ -614,6 +614,86 @@ func restoreAfterTestSetup(_ link: Link, originals: [UInt8: [UInt8]]) {
   for (type, bytes) in originals { _ = ask(link, 0x19, [type] + pack7(bytes), reply: 0x7E) }
 }
 
+// Records a loop through a route that transposes by +7 and measures where its notes play back, to check the Looper's Quantize Swing
+// and that the route's transpose still comes out right, on both sides of Record After Routes. Loaded into memory only, put back after.
+// The loop is one bar, recorded with the looper's trigger note on channel 16, five notes played off the grid, quantized to 1/16.
+func runLoopSwing(_ link: Link) -> Bool {
+  // A fixed 1 bar loop never changes the tempo (a Free take would), the test runs at 120 BPM and puts the unit's own tempo back after
+  guard let globalBefore = ask(link, 0x10, reply: 0x11), globalBefore.count >= 15 else { print("No answer for the global settings"); return false }
+  var globalTest = globalBefore
+  globalTest[7] = 120; globalTest[8] = 0
+  _ = ask(link, 0x12, globalTest, reply: 0x7E)
+  defer { _ = ask(link, 0x12, globalBefore, reply: 0x7E) }
+  let bpm = 120
+  guard let saved = ask(link, 0x17, [10], reply: 0x18) else { print("No answer for the looper settings"); return false }
+  var originals: [UInt8: [UInt8]] = [10: unpack7(Array(saved.dropFirst()))]
+  guard loadTestSetup(link, originals: &originals, subset: []) else { print("could not load the test setup"); return false }
+  var route = testRoutes[3]
+  route[1] = 1; route[2] = 0 // in on channel 1
+  route[9] = 4; route[10] = 0 // out on channel 3
+  route[11] = 64 + 7 // transpose +7
+  route[16] = 0 // no round robin
+  _ = ask(link, 0x24, pack7(route), reply: 0x7E)
+  let quantumMs = 60000.0 / Double(bpm) / 4 // 1/16
+  let played: [(ms: Double, note: UInt8)] = [(0, 60), (130, 62), (250, 64), (370, 65), (490, 67)]
+  let heard: [UInt8] = [67, 69, 71, 72, 74]
+  func expected(_ ms: Double, _ pct: Int) -> Double { // the nearest line of the grid, lines at 0, the swung off-beat, and the pair's end
+    let pair = 2 * quantumMs, base = (ms / pair).rounded(.down) * pair, x = ms - base
+    let swung = Double(pct == 0 ? 50 : pct) * quantumMs / 50
+    return base + [0, swung, pair].min { abs($0 - x) < abs($1 - x) }!
+  }
+  func wait(_ until: Date) { while Date() < until { Thread.sleep(forTimeInterval: 0.0005) } }
+  let noteSeconds = (option("--note-ms").flatMap(Double.init) ?? 100) / 1000 // how long each played note is held
+  var allGood = true
+  print("Loop of 1 bar, quantize 1/16 (\(String(format: "%.1f", quantumMs)) ms at \(bpm) BPM), route in 1 to out 3 with transpose +7. Offsets are from the first note of each pass")
+  for recordInputs: UInt8 in [0, 1] {
+    for pct in [0, 66, 75] {
+      let block: [UInt8] = [1, args.contains("--no-quantize") ? 0 : 12, 0, recordInputs, 0, 0, 1, 15, 120, 0, 0, UInt8(pct)] + [UInt8](repeating: 0, count: 36)
+      _ = ask(link, 0x19, [10] + pack7(block), reply: 0x7E)
+      _ = link.drain()
+      link.send([0x9F, 120, 100]); Thread.sleep(forTimeInterval: 0.05); link.send([0x8F, 120, 0]) // arm
+      Thread.sleep(forTimeInterval: 1.3)
+      let start = Date()
+      for n in played {
+        wait(start.addingTimeInterval(n.ms / 1000)); link.send([0x90, n.note, 100])
+        wait(start.addingTimeInterval(n.ms / 1000 + noteSeconds)); link.send([0x80, n.note, 0])
+      }
+      // the bar ends the take by itself, 2 s after the first note at 120 BPM, and the loop plays
+      var events: [(time: Double, note: UInt8, on: Bool)] = []
+      var until = Date().addingTimeInterval(10.0)
+      while Date() < until { for r in link.drain() where r.bytes.count == 3 && (r.bytes[0] == 0x92 || r.bytes[0] == 0x82) { events.append((r.time, r.bytes[1], r.bytes[0] == 0x92 && r.bytes[2] > 0)) }; Thread.sleep(forTimeInterval: 0.002) }
+      Thread.sleep(forTimeInterval: 0.3)
+      link.send([0x9F, 120, 100]); Thread.sleep(forTimeInterval: 1.0); link.send([0x8F, 120, 0]) // hold: clears the loop
+      until = Date().addingTimeInterval(1.5)
+      while Date() < until { for r in link.drain() where r.bytes.count == 3 && (r.bytes[0] == 0x92 || r.bytes[0] == 0x82) { events.append((r.time, r.bytes[1], r.bytes[0] == 0x92 && r.bytes[2] > 0)) }; Thread.sleep(forTimeInterval: 0.002) }
+      if args.contains("--verbose"), let t0 = events.first?.time {
+        print("  \(recordInputs == 1 ? "inputs" : "after routes") \(pct)%: " + events.prefix(40).map { String(format: "%@%d@%.0f", $0.on ? "+" : "-", $0.note, ($0.time - t0) * 1000) }.joined(separator: " "))
+      }
+      let ons = events.filter { $0.on }, offs = events.filter { !$0.on }
+      let loopOns = Array(ons.dropFirst(5)) // the first five are the notes as played, passing through
+      var offsets = [[Double]](repeating: [], count: 5), notesRight = true, passes = 0, starts: [Double] = []
+      var i = 0
+      while i + 5 <= loopOns.count {
+        let chunk = Array(loopOns[i..<(i + 5)])
+        if chunk.map({ $0.note }) != heard { notesRight = false }
+        for k in 0..<5 { offsets[k].append((chunk[k].time - chunk[0].time) * 1000) }
+        starts.append(chunk[0].time); passes += 1; i += 5
+      }
+      let label = "\(recordInputs == 1 ? "records inputs" : "records after routes"), swing \(pct == 0 ? "off" : "\(pct)%")"
+      guard passes >= 3 else { print("FAIL  \(label): only \(passes) full passes heard (\(ons.count) Note Ons)"); allGood = false; continue }
+      let means = offsets.map { $0.reduce(0, +) / Double($0.count) }
+      let want = played.map { expected($0.ms, pct) - expected(0, pct) }
+      let worst = zip(means, want).map { abs($0 - $1) }.max()!
+      let length = (starts.last! - starts.first!) / Double(starts.count - 1) * 1000
+      let ok = notesRight && worst < 3.0 && ons.count == offs.count
+      if !ok { allGood = false }
+      print("\(ok ? "PASS" : "FAIL")  \(label): \(passes) passes, notes \(notesRight ? "67 69 71 72 74 (transpose once)" : "WRONG: \(loopOns.prefix(5).map { String($0.note) }.joined(separator: " "))"), at " + means.map { String(format: "%.0f", $0) }.joined(separator: " ") + " ms, wanted " + want.map { String(format: "%.0f", $0) }.joined(separator: " ") + String(format: ", worst %.1f ms, pass %.0f ms, ", worst, length) + "\(ons.count) on / \(offs.count) off")
+    }
+  }
+  restoreAfterTestSetup(link, originals: originals)
+  return allGood
+}
+
 func runSession(_ link: Link, seconds: Double, channels: [UInt8], useSetup: Bool) {
   guard let id = link.identity() else { print("No answer from the FoxWizard"); exit(1) }
   guard let before = link.memory() else { print("This firmware has no memory readout, update to 1.108 or later"); exit(1) }
@@ -796,6 +876,17 @@ case "livetest":
   }
   _ = ask(link, 0x28, reply: 0x7E)
   restoreAfterTestSetup(link, originals: originals)
+case "loopswing":
+  guard let (source, destination) = findEndpoints(matching: portName), let link = Link(source: source, destination: destination) else { print("no port"); exit(2) }
+  let ok = runLoopSwing(link)
+  print(ok ? "LOOP SWING AND TRANSPOSE: ALL PASS" : "LOOP SWING AND TRANSPOSE: SOMETHING FAILED")
+  exit(ok ? 0 : 1)
+case "setbpm":
+  guard let (source, destination) = findEndpoints(matching: portName), let link = Link(source: source, destination: destination), let g = ask(link, 0x10, reply: 0x11), g.count >= 15, let bpm = args.dropFirst().first.flatMap({ Int($0) }), bpm >= 20, bpm <= 300 else { print("clock_check setbpm 120   (memory only, power cycle undoes it)"); exit(2) }
+  var changed = g; changed[7] = UInt8(bpm & 0x7F); changed[8] = UInt8(bpm >> 7)
+  _ = ask(link, 0x12, changed, reply: 0x7E)
+  print("Tempo set to \(bpm) BPM in memory")
+  exit(0)
 case "swingtest":
   guard let (source, destination) = findEndpoints(matching: portName), let link = Link(source: source, destination: destination) else { print("no port"); exit(2) }
   var originals: [UInt8: [UInt8]] = [:]
@@ -958,10 +1049,11 @@ case "out", "in", "all":
   if withArp {
     if loadTestSetup(link, originals: &arpOriginals, subset: [1]) {
       var arp = testBlocks[0].bytes
-      arp[15] = 66; arp[44] = 0
+      let swingPercent = option("--arp-swing").flatMap(UInt8.init) ?? 66
+      arp[15] = swingPercent; arp[44] = 0
       _ = ask(link, 0x19, [4] + pack7(arp), reply: 0x7E)
       link.send([0x99, 60, 100])
-      print("An arp with 66% swing is playing on channel 10 while the clock is checked")
+      print("An arp with \(swingPercent == 0 ? "no" : "\(swingPercent)%") swing is playing on channel 10 while the clock is checked")
     } else { print("could not load the arp") }
   }
   // --send-clock: Send Clock is turned on in memory only for the check, and put back after
@@ -986,5 +1078,5 @@ case "out", "in", "all":
   if let g = globalOriginal { _ = ask(link, 0x12, g, reply: 0x7E) }
   exit(summary())
 default:
-  print("clock_check list | version | session [seconds] | all | out [seconds] | in [bpm] [seconds] | selftest   (--port NAME, --expect BPM)")
+  print("clock_check list | version | session [seconds] | all | out [seconds] | in [bpm] [seconds] | selftest   (--port NAME, --expect BPM, --with-arp, --arp-swing PERCENT, --send-clock)")
 }
