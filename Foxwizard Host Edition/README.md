@@ -230,6 +230,23 @@ The host brain reports its total drop count in its port map frame. The main brai
 | TRS 2 | yes | yes | Sidecar DIN IN and DIN OUT 1 |
 | TRS 3-6 | | yes | Sidecar DIN OUT 2-5 |
 
+### Port maximums
+
+Everything fitted: a Host Edition board with the TRS board added on top.
+
+| | Count | Which |
+|---|---|---|
+| Inputs | 10 | TRS/DIN, USB Device, USB Host 1-7, TRS 2 |
+| Outputs | 14 | TRS/DIN, USB Device, USB Host 1-7, TRS 2-6 |
+| DIN/TRS outs | 6 | TRS/DIN on the main brain, TRS 2-6 on the sidecar |
+| DIN/TRS ins | 2 | TRS/DIN on the main brain, TRS 2 on the sidecar |
+| USB Host devices at once | 7 | 4 on the board's own jacks, up to 3 more through a hub plugged into one of them |
+
+- Every port has its own switch in Patchling, as an input and as an output, and a route picks any combination of each. A route's ports are 16 bits, 14 used, 2 kept for BLE MIDI.
+- The ports do not trade against each other. Each has its own fixed bit, so fewer USB Host devices does not free a bit for more DIN outs, and 7 USB Host with 6 DIN/TRS outs works at once. 5 sidecar DIN outs is the limit, there is no bit for a sixth.
+- Grounding GP14 only shows TRS 2-6 in Patchling and sends nothing else. It takes no USB Host slot, the pins are separate (DIN/TRS GP4-GP9, hub lights GP10-GP13, USB Host is the native USB port).
+- Fewer ports are not a gain today. Letting an empty USB Host slot lend its bit to more TRS or BLE ports is the Planned shared slots below, a route format change.
+
 Sidecar ports exist only while a sidecar is present. Without routes:
 
 - **USB Adaptor Mode:** every input goes to every other port, never back to the port it came in on. A device on USB Host 1 reaches USB Host 2-4 but never hears itself.
