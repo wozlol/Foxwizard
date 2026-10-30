@@ -844,6 +844,7 @@ func runSoak(_ link: Link, phase: String, minutes: Double) -> Bool {
   guard let before = link.memory() else { print("No answer from the unit"); return false }
   var originals: [UInt8: [UInt8]] = [:]
   let heavy = phase == "a"
+  var globalBeforeB: [UInt8]? = nil
   if heavy {
     guard loadTestSetup(link, originals: &originals, subset: args.contains("--out-trs") ? [] : [0, 1, 2, 3, 4]) else { print("could not load the test setup"); return false }
     if args.contains("--out-trs") { // the same five routes, their output on the DIN jack only, so nothing flows back out over USB
@@ -865,7 +866,16 @@ func runSoak(_ link: Link, phase: String, minutes: Double) -> Bool {
     print("Phase a: the deep path. Test setup in memory only, nothing is saved")
   } else {
     print("Phase b: saves and preset switches under flood, on the unit's own state. Nothing of ours is loaded")
+    // With the TRS loopback in, Router mode and no routes send everything the unit hears straight back out its own port, an endless loop that
+    // holds the USB input back and makes the unit look dead. Adaptor mode never sends an input back to its own port. Set in memory, put back after.
+    if let g = ask(link, 0x10, reply: 0x11), g.count >= 15, g[0] != 0 {
+      globalBeforeB = g
+      var adaptor = g; adaptor[0] = 0
+      _ = ask(link, 0x12, adaptor, reply: 0x7E)
+      print("The unit was in Router mode, set to Adaptor in memory for this test and put back after")
+    }
   }
+  defer { if let g = globalBeforeB { _ = ask(link, 0x12, g, reply: 0x7E) } }
   var outstanding: [Int: Int] = [:]
   var ons = 0, offs = 0, slots = 1, statusReplies = 0, restarts = 0, noAnswer = 0, saves = 0, switches = 0
   var stack = before.stackDeepest, heapKB = before.heapLowest / 1024, loopUs = 0, heldBack = 0, worstLoopUs = 0, minHeapKB = before.heapLowest / 1024
