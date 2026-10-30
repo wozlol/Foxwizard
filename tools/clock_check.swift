@@ -654,10 +654,9 @@ func runLoopSwing(_ link: Link) -> Bool {
       link.send([0x9F, 120, 100]); Thread.sleep(forTimeInterval: 0.05); link.send([0x8F, 120, 0]) // arm
       Thread.sleep(forTimeInterval: 1.3)
       let start = Date()
-      for n in played {
-        wait(start.addingTimeInterval(n.ms / 1000)); link.send([0x90, n.note, 100])
-        wait(start.addingTimeInterval(n.ms / 1000 + noteSeconds)); link.send([0x80, n.note, 0])
-      }
+      // Ons and Offs in time order, so notes that overlap are each played at their own time and length
+      let sends = played.flatMap { n in [(n.ms / 1000, [UInt8(0x90), n.note, 100]), (n.ms / 1000 + noteSeconds, [UInt8(0x80), n.note, 0])] }.sorted { $0.0 < $1.0 }
+      for (at, bytes) in sends { wait(start.addingTimeInterval(at)); link.send(bytes) }
       // the bar ends the take by itself, 2 s after the first note at 120 BPM, and the loop plays
       var events: [(time: Double, note: UInt8, on: Bool)] = []
       var until = Date().addingTimeInterval(10.0)
