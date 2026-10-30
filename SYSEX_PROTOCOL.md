@@ -71,7 +71,7 @@ The route struct is 41 bytes → five groups of 7 + one group of 6 → packed to
 | 0x27   | MOVE_ROUTE            | host→dev  | fromIndex(2) + toIndex(2) — same semantics as `Array.splice` reorder |
 | 0x28   | CLEAR_ALL_ROUTES      | host→dev  | (none)                                                          |
 | 0x30   | PREVIEW_BRIGHTNESS    | host→dev  | step(1, 0–9) — temporary, not persisted, LEDs flash then fade   |
-| 0x31   | COMMIT                | host→dev  | (none) — writes current RAM state (global + all routes) to flash |
+| 0x31   | COMMIT                | host→dev  | (none) — writes current RAM state (global + all routes) to flash. The write runs at the top of the next main loop pass and the ACK follows it (1.121) |
 | 0x32   | FACTORY_RESET         | host→dev  | (none) — software-triggered equivalent of the boot-time button hold |
 | 0x37   | GET_PRESETS           | host→dev  | (none). Protocol 5 |
 | 0x38   | PRESET_DATA           | dev→host  | slotCount (1-16), activeSlot (0-15), slots holding a saved preset as a 16-bit mask in three 7-bit bytes, low first |

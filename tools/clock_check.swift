@@ -752,6 +752,80 @@ func runRrVelocity(_ link: Link) -> Bool {
   return allGood
 }
 
+// Four arps at once. Each arp slot gets its own route, input channel, chord and output channel. Each is first played alone for a reference,
+// then all four together, and every one must play the same pattern as alone, with its own steps the same distance apart. This is the check
+// that the arps do not share anything they should not (scratch buffers, state). Loaded into memory only, put back after.
+func runFourArps(_ link: Link) -> Bool {
+  var originals: [UInt8: [UInt8]] = [:]
+  guard loadTestSetup(link, originals: &originals, subset: []) else { print("could not load the test setup"); return false }
+  struct Arp { let slot: UInt8, inCh: UInt8, outCh: UInt8, chord: [UInt8], mode: UInt8, division: UInt8, octaves: UInt8 }
+  // modes 0 Up, 1 Down, 5 Random is left out, it has no pattern. Divisions are fw::MusicalDivision + 1: 12 a 16th, 9 an 8th, 14 a 16th triplet.
+  let arps = [
+    Arp(slot: 1, inCh: 0, outCh: 10, chord: [60, 64, 67], mode: 0, division: 12, octaves: 1),
+    Arp(slot: 2, inCh: 1, outCh: 11, chord: [48, 52, 55, 59], mode: 1, division: 9, octaves: 2),
+    Arp(slot: 3, inCh: 2, outCh: 12, chord: [72, 76, 79], mode: 0, division: 12, octaves: 3),
+    Arp(slot: 4, inCh: 3, outCh: 13, chord: [36, 43, 40, 47, 41], mode: 1, division: 14, octaves: 1),
+  ]
+  func load(_ active: [Arp]) {
+    _ = ask(link, 0x28, reply: 0x7E)
+    for a in arps {
+      var block = testBlocks[0].bytes
+      block[0] = a.mode; block[1] = a.division; block[2] = a.octaves
+      _ = ask(link, 0x19, [3 + a.slot] + pack7(block), reply: 0x7E)
+    }
+    for a in active {
+      var route = testRoutes[1]
+      let inMask = UInt16(1) << UInt16(a.inCh), outMask = UInt16(1) << UInt16(a.outCh)
+      route[1] = UInt8(inMask & 0xFF); route[2] = UInt8(inMask >> 8)
+      route[9] = UInt8(outMask & 0xFF); route[10] = UInt8(outMask >> 8)
+      route[47] = a.slot
+      _ = ask(link, 0x24, pack7(route), reply: 0x7E)
+    }
+  }
+  // plays the chords of the given arps for a while and returns each output channel's Note Ons with their times
+  func play(_ active: [Arp], seconds: Double) -> [UInt8: [(time: Double, note: UInt8)]] {
+    load(active)
+    _ = link.drain()
+    for a in active { for n in a.chord { link.send([0x90 | a.inCh, n, 100]) } }
+    var got: [UInt8: [(time: Double, note: UInt8)]] = [:]
+    let until = Date().addingTimeInterval(seconds)
+    while Date() < until { for r in link.drain() where r.bytes.count == 3 && (r.bytes[0] & 0xF0) == 0x90 && r.bytes[2] > 0 { got[r.bytes[0] & 0x0F, default: []].append((r.time, r.bytes[1])) }; Thread.sleep(forTimeInterval: 0.002) }
+    for a in active { for n in a.chord { link.send([0x80 | a.inCh, n, 0]) } }
+    Thread.sleep(forTimeInterval: 0.4)
+    _ = link.drain()
+    return got
+  }
+  func period(_ s: [UInt8]) -> Int { (1...max(1, s.count / 2)).first { p in (0..<(s.count - p)).allSatisfy { s[$0] == s[$0 + p] } } ?? s.count }
+  var allGood = true
+  var solo: [UInt8: [UInt8]] = [:], soloGap: [UInt8: Double] = [:]
+  for a in arps {
+    let r = play([a], seconds: 6.0)[a.outCh] ?? []
+    let notes = r.dropFirst(2).map { $0.note }
+    guard notes.count >= 12 else { print("FAIL  arp \(a.slot) alone: only \(notes.count) notes heard"); allGood = false; continue }
+    solo[a.outCh] = Array(notes)
+    let times = r.dropFirst(2).map { $0.time }
+    soloGap[a.outCh] = (times.last! - times.first!) / Double(times.count - 1)
+  }
+  let together = play(arps, seconds: 8.0)
+  for a in arps {
+    guard let ref = solo[a.outCh], let gap = soloGap[a.outCh] else { continue }
+    let p = period(ref)
+    let cycle = Array(ref.prefix(p))
+    let r = Array((together[a.outCh] ?? []).dropFirst(2))
+    guard r.count >= 12 else { print("FAIL  arp \(a.slot) with the others: only \(r.count) notes heard"); allGood = false; continue }
+    let k = cycle.firstIndex(of: r[0].note) ?? 0
+    let wrong = r.enumerated().filter { $0.element.note != cycle[(k + $0.offset) % p] }.count
+    let gaps = (0..<(r.count - 1)).map { r[$0 + 1].time - r[$0].time }
+    let mean = gaps.reduce(0, +) / Double(gaps.count)
+    let worstGap = gaps.map { abs($0 - mean) }.max()!
+    let ok = wrong == 0 && abs(mean - gap) < 0.003 && worstGap < 0.006
+    if !ok { allGood = false }
+    print(String(format: "%@  arp %d (ch %d, %@ pattern of %d notes): %d steps, %d off pattern, steps %.1f ms apart (alone %.1f), worst %.1f ms", ok ? "PASS" : "FAIL", Int(a.slot), Int(a.outCh) + 1, "repeating", p, r.count, wrong, mean * 1000, gap * 1000, worstGap * 1000))
+  }
+  restoreAfterTestSetup(link, originals: originals)
+  return allGood
+}
+
 func runSession(_ link: Link, seconds: Double, channels: [UInt8], useSetup: Bool) {
   guard let id = link.identity() else { print("No answer from the FoxWizard"); exit(1) }
   guard let before = link.memory() else { print("This firmware has no memory readout, update to 1.108 or later"); exit(1) }
@@ -962,6 +1036,11 @@ case "getblock":
   let r = ask(link, 0x17, [type], reply: 0x18, timeout: 2.0)
   print(r == nil ? "block \(type): no answer" : "block \(type): \(unpack7(Array(r!.dropFirst())).count) bytes")
   exit(0)
+case "fourarps":
+  guard let (source, destination) = findEndpoints(matching: portName), let link = Link(source: source, destination: destination) else { print("no port"); exit(2) }
+  let ok = runFourArps(link)
+  print(ok ? "FOUR ARPS AT ONCE: ALL PASS" : "FOUR ARPS AT ONCE: SOMETHING FAILED")
+  exit(ok ? 0 : 1)
 case "swingtest":
   guard let (source, destination) = findEndpoints(matching: portName), let link = Link(source: source, destination: destination) else { print("no port"); exit(2) }
   var originals: [UInt8: [UInt8]] = [:]

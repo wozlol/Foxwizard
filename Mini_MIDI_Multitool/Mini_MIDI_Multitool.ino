@@ -102,7 +102,7 @@ constexpr uint8_t SYSEX_MFR_ID = 0x7D;   // reserved for non-commercial/educatio
 constexpr uint8_t SYSEX_DEVICE_ID = 0x4D; // 'M'
 constexpr uint8_t PROTOCOL_VERSION = 7; // 2: 45-byte routes with port masks, GET_STATUS. 3: clock settings, LEARN. 4: 53-byte routes with feature fields, feature blocks. 5: presets. 6: Round Robin Priority order block. 7: Round Robin Velocity
 constexpr uint8_t FW_VERSION_MAJOR = 1;
-constexpr uint8_t FW_VERSION_MINOR = 120;
+constexpr uint8_t FW_VERSION_MINOR = 121;
 constexpr uint8_t FW_CHUNK_BYTES = 128;          // firmware bytes per FW_DATA message, 147 once packed
 constexpr uint32_t FW_REBOOT_DELAY_MS = 300;     // lets the FW_END ACK reach the host before rebooting
 const char DEVICE_NAME[] = "FoxWizard Mini MIDI Multitool"; // long name sent in the SysEx IDENTITY_REPLY
@@ -1489,6 +1489,11 @@ size_t serializeSettings() {
   eepromImageLen = saveFeatureBlocks(addr);
   return eepromImageLen;
 }
+
+// Save to Device asks for the write and the top of the main loop does it (1.121). The write goes through LittleFS and the flash, the
+// deepest chain of calls the firmware has, and done inside the sysex handler it sat under the USB reader and the handler as well.
+bool commitPending = false;
+uint8_t commitPort = 0;
 
 void saveToFlash() {
   const size_t len = serializeSettings();
@@ -5802,6 +5807,13 @@ void sendReply(uint8_t sourcePort) {
   }
 }
 
+void serviceCommit() {
+  if (!commitPending) return;
+  commitPending = false;
+  saveToFlash();
+  sendAck(commitPort, CMD_COMMIT, ACK_OK, 0, 0);
+}
+
 void sendAck(uint8_t sourcePort, uint8_t originalCmd, uint8_t status, uint8_t checksum, uint16_t extra) {
   beginReply(CMD_ACK);
   appendReply(originalCmd);
@@ -6154,8 +6166,8 @@ void handleSysexCommand(uint8_t sourcePort, const uint8_t *cmdBuf, uint8_t cmdLe
     }
 
     case CMD_COMMIT: {
-      saveToFlash();
-      sendAck(sourcePort, cmd, ACK_OK, 0, 0);
+      commitPending = true; // serviceCommit() saves and sends the ACK, from the top of the loop
+      commitPort = sourcePort;
       break;
     }
 
@@ -7037,6 +7049,7 @@ void loop() {
   serviceStuckNoteGuard();
   serviceButton();
   servicePresets(); // after every input of this pass, before anything that reads the routes
+  serviceCommit();
   serviceRamp();
   serviceLeds();
   serviceClock();

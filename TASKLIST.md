@@ -1,6 +1,6 @@
 # FoxWizard task list
 
-Order matters. Finish the item you are on before starting the next. Anything new goes at the end of its section. Version at last edit: firmware 1.120, host brain 8, protocol 6.
+Order matters. Finish the item you are on before starting the next. Anything new goes at the end of its section. Version at last edit: firmware 1.121, host brain 8, protocol 6.
 
 ## Now (needs the hardware)
 
@@ -24,7 +24,7 @@ Order matters. Finish the item you are on before starting the next. Anything new
 
 Numbers from `./clock_check version` and `session`, the thresholds are in `DIAGNOSTICS.md`.
 
-- Main stack: tests top out at 1,200 and a save or reading every block at 1,392. One unexplained read of 1,744 (304 free, Red) on 1.119 after a flash, with Patchling in use, not reproduced. 1.120 moves 640 bytes of scratch (arpStep 384, stutterUpdate 256) off the stack, the biggest frame in the firmware went from 504 to 216 bytes. Heap cost 640 bytes. `-fstack-usage` lists frame sizes: `arduino-cli compile --build-property compiler.cpp.extra_flags=-fstack-usage`, read the `.su` files. Levels by bytes free: Green 700 or more, Yellow 500 to 700, Red under 500. One earlier read of 1,488 did not repeat. **Keep an eye on it.** Re-measure after anything that adds nesting or locals in the note path, and before the TinyUSB swap.
+- Main stack: tests top out at 1,200 and a save or reading every block at 1,392. One unexplained read of 1,744 (304 free, Red) on 1.119 after a flash, with Patchling in use, not reproduced. 1.120 moves 640 bytes of scratch (arpStep 384, stutterUpdate 256) off the stack, the biggest frame in the firmware went from 504 to 216 bytes. Heap cost 640 bytes. The deepest path is Save to Device with 2 or more preset slots, 1,616 on 1.120: the settings image, then the preset file through LittleFS (its commit chain is 5 frames of 130 to 220 bytes), then the flash, all inside the sysex handler inside the USB reader. 1.121 runs the save from the top of the main loop. The real stack is 2 KB at the top of a 4 KB block, the lower 2 KB is unused, so an overflow would not reach a variable at once, but the readout stops at 2,048 and does not see it. `SET_PRESET_SLOTS` and Factory Reset still write inside the handler. `-fstack-usage` lists frame sizes: `arduino-cli compile --build-property compiler.cpp.extra_flags=-fstack-usage`, read the `.su` files. Levels by bytes free: Green 700 or more, Yellow 500 to 700, Red under 500. One earlier read of 1,488 did not repeat. **Keep an eye on it.** Re-measure after anything that adds nesting or locals in the note path, and before the TinyUSB swap.
 - Heap: lowest 29 KB of 44 KB. Keep at least 20 KB for MIDI 2.0.
 - Saved settings image: 4,024 of 4,096 bytes at the worst case, 72 bytes of padding. Swing used 2 spare bytes (arp 15 and 44, looper 11), no growth. A per-route field does not fit.
 - RAM at build: 83% used. Program flash 18%. Filesystem 1 MB, nearly empty.
