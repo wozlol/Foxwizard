@@ -957,9 +957,17 @@ func runSession(_ link: Link, seconds: Double, channels: [UInt8], useSetup: Bool
   print("Longest pass of the main loop: \(maxLoopUs) microseconds. Input held back \(heldBack) times. Fullest queues: link \(maxLinkPct)%, TRS \(maxTrsPct)%, USB \(maxUsbPct)%")
   if after.faultPc != 0 { print("The unit's last restart was a HARD FAULT at address 0x\(String(after.faultPc, radix: 16)), in stage \(after.crash)") }
   else if after.crash != 0 { print("The unit's last watchdog restart was in stage \(after.crash)") }
-  print("Memory after: free heap lowest \(lowHeap / 1024) KB (it was \(before.heapLowest / 1024) KB before), main stack deepest \(deepStack) of 2048 bytes")
-  if setupLoaded && routesLeft != subset.count { print("THE UNIT RESTARTED DURING THE SESSION: it had \(subset.count) test routes and has \(routesLeft) now") }
-  let healthy = stuck.isEmpty && (!setupLoaded || routesLeft == subset.count) && deepStack < 1600 && lowHeap > 20 * 1024
+  let stackFree = 2048 - deepStack
+  let stackLevel = stackFree >= 700 ? "Green" : (stackFree >= 500 ? "Yellow" : "RED")
+  print("Memory after: free heap lowest \(lowHeap / 1024) KB (it was \(before.heapLowest / 1024) KB before), main stack deepest \(deepStack) of 2048 bytes, \(stackFree) free: \(stackLevel)")
+  // A restart gives the unit's stack counter a fresh start, so a counter that went down is the sign of one. Test routes that are gone are
+  // not, when the unit has more than one preset: every preset switch loads that slot over the RAM-only test routes.
+  let restarted = after.stackDeepest < before.stackDeepest
+  let routesGone = setupLoaded && routesLeft != subset.count
+  if restarted { print("THE UNIT RESTARTED DURING THE SESSION: its stack counter went from \(before.stackDeepest) to \(after.stackDeepest)") }
+  else if routesGone && slots > 1 { print("The test routes are gone, as expected: the unit has \(slots) presets and the session switched between them, each switch loads that slot's routes.") }
+  else if routesGone { print("THE TEST ROUTES ARE GONE with no preset switch to explain it: it had \(subset.count) and has \(routesLeft) now") }
+  let healthy = stuck.isEmpty && !restarted && (!setupLoaded || routesLeft == subset.count || slots > 1) && stackFree >= 500 && lowHeap > 20 * 1024
   print(healthy ? "RESULT: healthy" : "RESULT: look at the lines above")
   exit(healthy ? 0 : 1)
 }
