@@ -361,7 +361,11 @@ for Patchling's piano. No reply.
 
 **CLEAR_PLOCKS (0x34, 1.59):** no payload. Forgets every Per-Note Parameter Lock. No reply.
 
-**STATUS_DATA memory bytes (1.108):** bytes 28 and 29 of STATUS_DATA: the lowest the free heap has been since power on, in 512-byte units, and the deepest the main stack has gone, in 16-byte units. Both stop at 127.
+**STATUS_DATA diagnostic bytes (1.108 to 1.115):** after the active slot and slot count (26, 27):
+- 28, 29: the lowest the free heap has been since power on, in 512-byte units, and the deepest the main stack has gone, in 16-byte units. Both stop at 127.
+- 30, 31: the stage the main loop was in at the last watchdog restart, two 7-bit bytes, low first, 0 for none (1.110). The stage numbers are in `DIAGNOSTICS.md`.
+- 32 to 35: the address of the last hard fault, 28 bits in four 7-bit bytes, low first. 36: its top 4 bits, with bit 6 set when the last restart was a hard fault (1.112).
+- 37, 38 and 39, 40: poly aftertouch and channel pressure updates sent to the DIN port, and thinned away, since the last status, each two 7-bit bytes, low first, then reset (1.115).
 
 **GET_HOST_REPORT (0x35, 1.63):** payload: page (0 or 1). Reply HOST_REPORT_DATA (0x36): page, complete (1 when every piece of the report has arrived from the host brain), then pack7 of that page's 120 bytes. The 240-byte report is the host brain's record of its last recovery restart, layout in `foxwizard_link.h`. All zero until a host brain with firmware 3 or later restarts.
 

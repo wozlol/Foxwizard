@@ -2,6 +2,33 @@
 
 How the FoxWizard gets to MIDI 2.0 without breaking MIDI 1.0 gear.
 
+## Where we are (firmware 1.115, host brain 8)
+
+**What we can say: MIDI 2.0 ready, not MIDI 2.0 compatible.** The groundwork is in and tested. The USB port still reports MIDI 1.0, and nothing a MIDI 2.0 computer sees has changed.
+
+| Step | Status |
+|---|---|
+| `ump.h`: UMP lengths, scaling, USB MIDI 1.0 to UMP and back, MIDI 2.0 to 1.0 translation (`Mini_MIDI_Multitool/tests/ump_test.cpp`) | Done, tested on a computer |
+| The link between the brains carries UMP, 6-byte frames, a message is 1 to 4 words (`foxwizard_link.h`, `tests/link_test.cpp`) | Done, on hardware since 1.99 (host brain 8) |
+| Each brain converts at its own edge, so everything inside stays MIDI 1.0 | Done |
+| A MIDI 2.0 message arriving over the link for a MIDI 1.0 port is translated down by the spec's scaling | Done in the library, nothing sends one yet |
+| Main brain USB device MIDI 2.0 class | Not started. Needs the vendored upstream TinyUSB, Adafruit 3.7.7 has no MIDI 2.0 classes |
+| Sidecar MIDI 2.0 host class for MIDI 2.0 devices | Not started. The sidecar's TinyUSB has `midi2_host`. Needs a MIDI 2.0 device to test |
+| Internal events at 16-bit velocity and 32-bit controllers | Not started. Everything inside is MIDI 1.0 (7-bit), the looper slot is 12 bytes |
+| Groups in routes, per-port protocol display, MIDI-CI | Not started |
+
+**Rules that keep MIDI 1.0 safe** (the fear is a unit that says MIDI 2.0 and then breaks MIDI 1.0 features):
+- Inside the FoxWizard stays MIDI 1.0 until it is changed on purpose, one step at a time.
+- The USB MIDI 2.0 device mode is a switch, off by default. Alt setting 0 stays byte-identical to today.
+- The first MIDI 2.0 mode declares only the MIDI 1.0 protocol inside UMP.
+- Holding the front button at power-up forces plain MIDI 1.0 USB, since Patchling needs USB MIDI to reach the unit.
+- TRS and DIN are MIDI 1.0 only. The claim is MIDI 2.0 over USB, never over DIN.
+- Branding: the specs are free to build against. The MIDI 2.0 logo needs the MIDI Association's logo license and its checklist. Until then the words are "MIDI 1.0 today, MIDI 2.0 planned", and "MIDI 2.0 ready" for the groundwork above.
+
+**What the main brain can still spare** (measured, see `DIAGNOSTICS.md`): RAM 83% used with 44 KB of heap free and the lowest it has been 29 KB. The main stack is 2 KB and has reached 1,200 bytes. The saved settings image is 4,024 of 4,096 bytes at the worst case. Flash is 18% used. The upstream TinyUSB swap and wider events each need a fresh measurement before and after, and a floor of 20 KB free heap and 500 bytes of free stack.
+
+**A lesson that applies to the MIDI 2.0 USB code:** call TinyUSB in batches. One call per 4-byte packet starts a USB transfer each time, and under a flood the unit stalled for 4 seconds until its watchdog restarted it (fixed in 1.111 and 1.113 with `tud_midi_n_packet_write_n` and `tud_midi_n_packet_read_n`). The UMP streams of the MIDI 2.0 class must be read and written the same way.
+
 ## What MIDI 2.0 adds
 
 - **UMP (Universal MIDI Packet):** 32, 64 and 128-bit packets in place of MIDI 1.0 bytes.
@@ -65,10 +92,10 @@ How the FoxWizard gets to MIDI 2.0 without breaking MIDI 1.0 gear.
 
 ## Order
 
-1. Internal events at full resolution, MIDI 1.0 everywhere still. Testable with today's gear.
+1. Internal events at full resolution, MIDI 1.0 everywhere still. Testable with today's gear. **Not started.**
 2. Vendored upstream TinyUSB on the main brain, MIDI 1.0 class only. Same behavior, new stack.
 3. USB MIDI 2.0 device class on the main brain.
-4. UMP over the link, and USB MIDI 2.0 host on the sidecar.
+4. UMP over the link (**done**), and USB MIDI 2.0 host on the sidecar (not started).
 5. Groups on routes, in firmware and Patchling.
 6. MIDI-CI discovery and negotiation.
 
