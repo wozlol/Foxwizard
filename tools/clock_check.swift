@@ -1300,6 +1300,12 @@ case "ident":
     print(String(format: "try %d: ", tries) + (got.isEmpty ? "nothing in 5 s" : String(format: "%.2f s: ", Date().timeIntervalSince(sent)) + got.prefix(3).joined(separator: " | ")))
   }
   exit(0)
+case "setslots":
+  // Sets how many preset slots the unit has, the same as Patchling's Number of Preset Slots Total. This is saved by the unit.
+  guard let (source, destination) = findEndpoints(matching: portName), let link = Link(source: source, destination: destination), let n = args.dropFirst().first.flatMap({ UInt8($0) }), n >= 1, n <= 16 else { print("clock_check setslots N   (1 to 16)"); exit(2) }
+  let r = ask(link, 0x39, [n], reply: 0x7E, timeout: 8.0)
+  print(r == nil ? "No answer" : "Preset slots set to \(n)")
+  exit(r == nil ? 1 : 0)
 case "swingtest":
   guard let (source, destination) = findEndpoints(matching: portName), let link = Link(source: source, destination: destination) else { print("no port"); exit(2) }
   var originals: [UInt8: [UInt8]] = [:]
