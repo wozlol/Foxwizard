@@ -23,7 +23,7 @@ Order matters. Finish the item you are on before starting the next. Anything new
 
 Numbers from `./clock_check version` and `session`, the thresholds are in `DIAGNOSTICS.md`.
 
-- Main stack: 1,488 of 2,048 bytes deepest on 1.116 (it was 1,200 on 1.115 and 1,328 after the first 1.116 session). **Keep an eye on it.** Keep at least 500 free, 560 are. Find what moved it before adding more, power cycle, then read after `session`, after `swingtest`, after `setbpm`. Re-measure after anything that adds nesting or locals in the note path, and before the TinyUSB swap.
+- Main stack: Green. 1,328 of 2,048 bytes deepest on 1.116 after a power cycle and every test (session, swing, full clock check, loop test), 720 free. Levels by bytes free: Green 700 or more, Yellow 500 to 700, Red under 500. One earlier read of 1,488 did not repeat. **Keep an eye on it.** Re-measure after anything that adds nesting or locals in the note path, and before the TinyUSB swap.
 - Heap: lowest 29 KB of 44 KB. Keep at least 20 KB for MIDI 2.0.
 - Saved settings image: 4,024 of 4,096 bytes at the worst case, 72 bytes of padding. Swing used 2 spare bytes (arp 15 and 44, looper 11), no growth. A per-route field does not fit.
 - RAM at build: 83% used. Program flash 18%. Filesystem 1 MB, nearly empty.
