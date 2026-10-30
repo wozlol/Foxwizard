@@ -655,6 +655,7 @@ async function runFirmwareUpdate() {
 // Red: not connected, click to try again.
 // ============================================================================================
 const connectionPill = document.getElementById('connectionPill');
+const factoryResetBtn = document.getElementById('factoryResetBtn'); // shows while connected, see its handler
 const connectionLabel = document.getElementById('connectionLabel');
 let connectionState = 'disconnected';
 
@@ -764,7 +765,9 @@ setInterval(refreshSidecarStatus, SIDECAR_POLL_MS);
 
 function renderConnectionPill() {
   connectionPill.className = 'connection-pill';
+  factoryResetBtn.hidden = connectionState !== 'connected';
   const s = connectionState;
+  connectionPill.dataset.state = s;
   if (s === 'connected') {
     const status = firmwareStatus();
     const version = versionText(deviceVersion());
@@ -1490,6 +1493,23 @@ function applyModeVisual(animate) {
     knob.addEventListener('animationend', () => knob.classList.remove('jiggle'), { once: true });
   }
 }
+
+// Factory Reset of the unit itself (its routes, presets and settings), only from here. Holding the button while plugging in used to do it, which an
+// accidental press could. A small button that shows while connected, and one plain question.
+factoryResetBtn.addEventListener('click', async () => {
+  if (connectionState !== 'connected' || !confirm('Factory reset the FoxWizard? This clears its routes, presets and settings.')) return;
+  showOverlay('Resetting the FoxWizard…');
+  try {
+    await device.factoryReset();
+  } catch (err) {
+    hideOverlay();
+    toast('Factory reset failed', 'error');
+    return;
+  }
+  hideOverlay();
+  await loadFromDevice(true);
+  toast('FoxWizard reset to factory settings', 'success');
+});
 
 function wireGlobalHeader() {
   document.getElementById('resetAllBtn').addEventListener('click', resetEverything);

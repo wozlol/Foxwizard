@@ -1,6 +1,6 @@
 # FoxWizard task list
 
-Order matters. Finish the item you are on before starting the next. Anything new goes at the end of its section. Version at last edit: firmware 2.0 (test build), host brain 8, protocol 6.
+Order matters. Finish the item you are on before starting the next. Anything new goes at the end of its section. Version at last edit: firmware 2.1 (test build), host brain 8, protocol 6.
 
 ## Now (needs the hardware)
 

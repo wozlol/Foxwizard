@@ -105,7 +105,7 @@ constexpr uint8_t PROTOCOL_VERSION = 7; // 2: 45-byte routes with port masks, GE
 // Both go out as single bytes in the identity reply, a SysEx data byte, so neither may pass 127. 1.128 did: the byte went out as 0x80, a Note Off
 // status that cut the reply in two, and Patchling called the unit old firmware. The major number moved to 2 for that reason.
 constexpr uint8_t FW_VERSION_MAJOR = 2;
-constexpr uint8_t FW_VERSION_MINOR = 0;
+constexpr uint8_t FW_VERSION_MINOR = 1;
 static_assert(FW_VERSION_MAJOR <= 127 && FW_VERSION_MINOR <= 127, "a firmware version number goes out as a 7-bit SysEx data byte, 127 at most");
 constexpr uint8_t FW_CHUNK_BYTES = 128;          // firmware bytes per FW_DATA message, 147 once packed
 constexpr uint32_t FW_REBOOT_DELAY_MS = 300;     // lets the FW_END ACK reach the host before rebooting
@@ -7018,7 +7018,7 @@ void setup() {
   pinMode(PIN_BUTTON, INPUT_PULLUP);
   setAllLedLevels(0, 0, 0);
 
-  const bool factoryResetRequested = digitalRead(PIN_BUTTON) == LOW;
+  // A button held while plugging in no longer resets the unit (2.1), an accidental press could. Patchling's Factory Reset button does it.
 
   // Manufacturer/product descriptors must be set before TinyUSBDevice.begin() — that's when USB
   // enumeration happens, and it's what makes the OS/DAW show "FoxWizard" instead of a generic
@@ -7048,17 +7048,11 @@ void setup() {
   linkSerial.begin(LINK_BAUD);
   gpio_pull_up(PIN_LINK_RX); // holds the line idle with no host brain attached, so it reads nothing
 
-  if (factoryResetRequested) {
-    EEPROM.begin(EEPROM_SIZE); // without it the writes below go nowhere, and the saved settings would survive the reset
-    setFactoryDefaults();
-    saveToFlash();
-  } else {
-    loadFromFlash();
-  }
+  loadFromFlash();
   applyBrightnessToLeds();
   resetButtonRuntimeState();
   looperStorageBegin();
-  presetBegin(factoryResetRequested);
+  presetBegin(false);
   routeNotesOffArmed = true;
 
   clockEngine.begin(clockConfig(), time_us_64());

@@ -473,9 +473,8 @@ Nothing is sent to the device until it's saved.
 
 ## Factory Reset
 
-Hold the button down, then plug in the USB-C cable while still holding
-it. Resets Mode, button action, brightness, features, all routes and all presets to
-factory defaults, and writes that to flash.
+Patchling's small Factory Reset button, at the bottom of the page while connected, asks once and then resets Mode, button action, brightness,
+features, all routes and all presets to factory defaults, and writes that to flash. Holding the button while plugging in does nothing.
 
 ## Firmware Update
 

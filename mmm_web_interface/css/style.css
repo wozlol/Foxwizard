@@ -166,7 +166,8 @@ a { color: var(--accent); }
    reliably either way). */
 .header-actions { display: flex; align-items: center; gap: 10px; margin-left: auto; }
 
-.install-row { display: flex; justify-content: center; margin-top: 8px; }
+.install-row { display: flex; justify-content: center; align-items: center; gap: 12px; margin-top: 8px; }
+.install-row .btn[hidden] { display: none; }
 
 /* Second "+ Add Route" entry point — sits after #routesContainer in the HTML, so it naturally lands
    right under the Main Mode card (before the empty-routes placeholder) when there are no routes
