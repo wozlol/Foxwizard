@@ -10,6 +10,10 @@ hide it inside old gear for an easy USB upgrade.
 
 ## Features
 
+- 16 onboard presets, each with up to 60 routes and all its settings. Switch from the web app, the front button, or a Note, CC or Launchpad button.
+- Round Robin Priority, swing on the arp and on the looper's quantize, and Live Ch changes that keep held notes.
+- Auto clock that follows, takes over and locks back on, with Loop Lock.
+- MIDI 2.0 ready, and steady under heavy aftertouch.
 - So small the board fits in a GBA game case. Break off the sides to make
   it even smaller. Add USB to old gear.
 - Super easy web interface to program it (FoxWizard Patchling). Route any

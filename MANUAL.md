@@ -10,6 +10,19 @@ from a web app called FoxWizard Patchling.
 The Host Edition adds seven USB Host ports and more TRS/DIN ports. See
 [`Foxwizard Host Edition/README.md`](Foxwizard%20Host%20Edition/README.md).
 
+## Highlights
+
+- **16 onboard presets.** Each holds its own routes (up to 60), arps, Echo, Stutter, Looper settings, mappings, Launchpad buttons, Scale and clock settings. Switch from Patchling, the front button, or a Note, CC or Launchpad button. A switch silences everything, lets go of held keys, and flashes the slot number without holding anything up. See Presets.
+- **Round Robin Priority.** Each new note takes the first free output channel by rank, and the oldest note gives up its channel when all are down. Set the rank by the order you select the channels.
+- **Swing.** On each arp (54 to 75%, every second 16th or 8th), and on the Looper's Record Quantize grid. The MIDI clock stays straight.
+- **Live Ch changes that keep your notes.** Held notes end on the old channel and start again on the new one. One extra stop between channel 16 and 1 brings back the route's own channels and its arp. The Launchpad buttons light by how far you have moved.
+- **Auto clock.** Follows an external clock, takes over with its own when that stops, and locks back on. Loop Lock keeps a loop in the beat. Restart on Clock Start is a switch.
+- **A looper that keeps your performance.** Layer Undo and Redo, Double and Half, Note Delete, held notes carried across layers and the loop top.
+- **Aftertouch that cannot jam the DIN port.** Poly aftertouch and channel pressure thin out gracefully when a flood is more than DIN can carry, and USB stays steady under 1,600 aftertouch messages a second.
+- **MIDI 2.0 ready.** The link between the main board and the Host Edition board carries MIDI 2.0 packets. USB MIDI 2.0 is next. See `MIDI_2_PLAN.md`.
+- **Patchling keeps up with the unit.** It follows presets switched on the unit, asks before dropping unsaved changes, and has Autosave.
+- **Built to be measured.** `DIAGNOSTICS.md` and the `clock_check` tool test the clock, memory, stuck notes and restarts on a real unit.
+
 ## Connections
 
 - USB-C: connects to a computer or USB MIDI host.

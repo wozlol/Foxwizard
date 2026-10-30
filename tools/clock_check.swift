@@ -952,6 +952,26 @@ case "out", "in", "all":
   guard let (source, destination) = findEndpoints(matching: portName), let link = Link(source: source, destination: destination) else {
     print("No MIDI port with \"\(portName)\" in its name. Try: clock_check list"); exit(2)
   }
+  // --with-arp: an arp with 66% swing plays on channel 10 while the clock is measured, loaded into memory only and restored after
+  var arpOriginals: [UInt8: [UInt8]] = [:]
+  let withArp = args.contains("--with-arp")
+  if withArp {
+    if loadTestSetup(link, originals: &arpOriginals, subset: [1]) {
+      var arp = testBlocks[0].bytes
+      arp[15] = 66; arp[44] = 0
+      _ = ask(link, 0x19, [4] + pack7(arp), reply: 0x7E)
+      link.send([0x99, 60, 100])
+      print("An arp with 66% swing is playing on channel 10 while the clock is checked")
+    } else { print("could not load the arp") }
+  }
+  // --send-clock: Send Clock is turned on in memory only for the check, and put back after
+  var globalOriginal: [UInt8]? = nil
+  if args.contains("--send-clock"), let g = ask(link, 0x10, reply: 0x11), g.count >= 15, g[11] == 0 {
+    globalOriginal = g
+    var on = g; on[11] = 1
+    _ = ask(link, 0x12, on, reply: 0x7E)
+    print("Send Clock turned on for the check, memory only")
+  }
   if command == "all" { runAll(link, expectArg: expectArg) }
   else if command == "out" {
     let secs = Double(args.dropFirst().first ?? "") ?? 20
@@ -962,6 +982,8 @@ case "out", "in", "all":
     let secs = args.count > 2 ? (Double(args[2]) ?? 10) : 10
     checkIn(link, bpm: bpm, seconds: secs, start: true, label: "clock in")
   }
+  if withArp { link.send([0x89, 60, 0]); restoreAfterTestSetup(link, originals: arpOriginals) }
+  if let g = globalOriginal { _ = ask(link, 0x12, g, reply: 0x7E) }
   exit(summary())
 default:
   print("clock_check list | version | session [seconds] | all | out [seconds] | in [bpm] [seconds] | selftest   (--port NAME, --expect BPM)")
