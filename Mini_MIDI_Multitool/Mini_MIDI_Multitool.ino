@@ -102,8 +102,11 @@ constexpr uint32_t BRIGHTNESS_PREVIEW_HOLD_MS = 400;
 constexpr uint8_t SYSEX_MFR_ID = 0x7D;   // reserved for non-commercial/educational use
 constexpr uint8_t SYSEX_DEVICE_ID = 0x4D; // 'M'
 constexpr uint8_t PROTOCOL_VERSION = 7; // 2: 45-byte routes with port masks, GET_STATUS. 3: clock settings, LEARN. 4: 53-byte routes with feature fields, feature blocks. 5: presets. 6: Round Robin Priority order block. 7: Round Robin Velocity
-constexpr uint8_t FW_VERSION_MAJOR = 1;
-constexpr uint8_t FW_VERSION_MINOR = 128;
+// Both go out as single bytes in the identity reply, a SysEx data byte, so neither may pass 127. 1.128 did: the byte went out as 0x80, a Note Off
+// status that cut the reply in two, and Patchling called the unit old firmware. The major number moved to 2 for that reason.
+constexpr uint8_t FW_VERSION_MAJOR = 2;
+constexpr uint8_t FW_VERSION_MINOR = 0;
+static_assert(FW_VERSION_MAJOR <= 127 && FW_VERSION_MINOR <= 127, "a firmware version number goes out as a 7-bit SysEx data byte, 127 at most");
 constexpr uint8_t FW_CHUNK_BYTES = 128;          // firmware bytes per FW_DATA message, 147 once packed
 constexpr uint32_t FW_REBOOT_DELAY_MS = 300;     // lets the FW_END ACK reach the host before rebooting
 const char DEVICE_NAME[] = "FoxWizard Mini MIDI Multitool"; // long name sent in the SysEx IDENTITY_REPLY

@@ -42,6 +42,10 @@ esac
 INO="$SKETCH/$SKETCH_NAME.ino"
 MAJOR=$(sed -n 's/^constexpr uint8_t FW_VERSION_MAJOR = \([0-9]*\);.*/\1/p' "$INO")
 MINOR=$(sed -n 's/^constexpr uint8_t FW_VERSION_MINOR = \([0-9]*\);.*/\1/p' "$INO")
+if [ "$MAJOR" -gt 127 ] || [ "$MINOR" -gt 127 ]; then
+  echo "Version $MAJOR.$MINOR does not fit: each number goes out as a 7-bit SysEx data byte, 127 at most. Move the major number up and the minor back to 0." >&2
+  exit 1
+fi
 NAME="$PREFIX-$MAJOR.$MINOR"
 
 if [ -z "$TEST_MINOR" ] && { ! grep -q "FOXWIZARD PATCHLING v$MAJOR.$MINOR " ../index.html || ! grep -q "foxwizard-patchling-$MAJOR.$MINOR'" ../sw.js; }; then

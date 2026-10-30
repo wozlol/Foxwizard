@@ -1,7 +1,7 @@
 {
-  "major": 1,
-  "minor": 128,
-  "bin": "foxwizard-firmware-1.128.bin",
+  "major": 2,
+  "minor": 0,
+  "bin": "foxwizard-firmware-2.0.bin",
   "size": 230300,
-  "md5": "146083a84273615df0095cba647a3182"
+  "md5": "6ff3853f1ec7cd2c8027274ee2a51a94"
 }

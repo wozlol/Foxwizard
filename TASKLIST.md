@@ -1,6 +1,6 @@
 # FoxWizard task list
 
-Order matters. Finish the item you are on before starting the next. Anything new goes at the end of its section. Version at last edit: firmware 1.128, host brain 8, protocol 6.
+Order matters. Finish the item you are on before starting the next. Anything new goes at the end of its section. Version at last edit: firmware 2.0 (test build), host brain 8, protocol 6.
 
 ## Now (needs the hardware)
 
@@ -30,6 +30,10 @@ Numbers from `./clock_check version` and `session`, the thresholds are in `DIAGN
 - Heap: lowest 29 KB of 44 KB. Keep at least 20 KB for MIDI 2.0.
 - Saved settings image: 4,024 of 4,096 bytes at the worst case, 72 bytes of padding. Swing used 2 spare bytes (arp 15 and 44, looper 11), no growth. A per-route field does not fit.
 - RAM at build: 83% used. Program flash 18%. Filesystem 1 MB, nearly empty.
+
+## Version numbers
+
+- The firmware version goes out as two single bytes in the identity reply, so neither may pass 127. 1.128 sent 0x80, a Note Off status, which cut the reply short: Patchling showed "old firmware", `clock_check version` said "No answer", and the unit looked dead. Fixed by moving to 2.0, a compile time check in the .ino and a check in `build_firmware.sh` stop it happening again. 2.0 is a placeholder name on a test build, nothing is published, pick the release number before publishing. `./clock_check ident` shows the raw bytes of the reply.
 
 ## Found by the soak test
 

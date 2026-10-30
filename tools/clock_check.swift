@@ -1249,6 +1249,47 @@ case "update":
   guard let e = ask(link, 0x42, [], reply: 0x7E, timeout: 10.0), e.count > 1, e[1] == 0 else { print("the unit did not confirm the end of the update"); exit(1) }
   print("Update sent and confirmed, the unit restarts into it now")
   exit(0)
+case "listen":
+  // Counts what the unit is sending right now, by kind, and shows the first few messages.
+  guard let (source, destination) = findEndpoints(matching: portName), let link = Link(source: source, destination: destination) else { print("no port"); exit(2) }
+  let seconds = args.dropFirst().first.flatMap(Double.init) ?? 5
+  _ = link.drain()
+  var kinds: [String: Int] = [:], first: [String] = []
+  let until = Date().addingTimeInterval(seconds)
+  while Date() < until {
+    for r in link.drain() {
+      let b = r.bytes
+      let name: String
+      if b.first == 0xF0 { name = "sysex" } else if let f = b.first { name = f >= 0xF8 ? String(format: "realtime %02X", f) : String(format: "%@ ch%d", ["", "", "", "", "", "", "", "", "note off", "note on", "poly AT", "CC", "program", "chan AT", "bend", ""][Int(f >> 4)], Int(f & 0x0F) + 1) } else { name = "empty" }
+      kinds[name, default: 0] += 1
+      if first.count < 12 { first.append(b.map { String(format: "%02X", $0) }.joined(separator: " ")) }
+    }
+    Thread.sleep(forTimeInterval: 0.01)
+  }
+  if kinds.isEmpty { print("The unit sent nothing in \(Int(seconds)) s") } else {
+    print("In \(Int(seconds)) s the unit sent: " + kinds.sorted { $0.value > $1.value }.prefix(12).map { "\($0.value) \($0.key)" }.joined(separator: ", "))
+    print("First messages: " + first.joined(separator: " | "))
+  }
+  exit(0)
+case "ident":
+  // Asks the unit who it is again and again with a long wait each time, and shows every byte it sends back and how long it took.
+  guard let (source, destination) = findEndpoints(matching: portName), let link = Link(source: source, destination: destination) else { print("no port"); exit(2) }
+  let total = args.dropFirst().first.flatMap(Double.init) ?? 25
+  let stop = Date().addingTimeInterval(total)
+  var tries = 0
+  while Date() < stop {
+    tries += 1
+    _ = link.drain()
+    let sent = Date()
+    link.send([0xF0, 0x7D, 0x4D, 0x01, 0xF7])
+    var got: [String] = []
+    while Date().timeIntervalSince(sent) < 5.0 && got.isEmpty {
+      for r in link.drain() { got.append(r.bytes.prefix(12).map { String(format: "%02X", $0) }.joined(separator: " ") + (r.bytes.count > 12 ? " ..." : "")) }
+      Thread.sleep(forTimeInterval: 0.01)
+    }
+    print(String(format: "try %d: ", tries) + (got.isEmpty ? "nothing in 5 s" : String(format: "%.2f s: ", Date().timeIntervalSince(sent)) + got.prefix(3).joined(separator: " | ")))
+  }
+  exit(0)
 case "swingtest":
   guard let (source, destination) = findEndpoints(matching: portName), let link = Link(source: source, destination: destination) else { print("no port"); exit(2) }
   var originals: [UInt8: [UInt8]] = [:]
