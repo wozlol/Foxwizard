@@ -56,6 +56,7 @@ inline uint8_t boardCheckRun(Print &out, const char *moduleName, uint8_t firmwar
   out.printf("  chip %s rev %u, %u MHz\n", ESP.getChipModel(), (unsigned)ESP.getChipRevision(), (unsigned)ESP.getCpuFreqMHz());
   out.printf("  flash: chip %u KB, Flash Size setting %u KB\n", (unsigned)(physical / 1024), (unsigned)(headerBytes / 1024));
   out.printf("  PSRAM %u KB (not used)\n", (unsigned)(ESP.getPsramSize() / 1024));
+  out.printf("  heap: %u KB free of %u KB, lowest since start %u KB\n", (unsigned)(ESP.getFreeHeap() / 1024), (unsigned)(ESP.getHeapSize() / 1024), (unsigned)(ESP.getMinFreeHeap() / 1024));
   if (result == BOARD_CHECK_FLASH_TOO_BIG) out.printf("  CHECK FAILED: Tools -> Flash Size is larger than this chip. Set it to 4MB (32Mb) and upload again.\n");
   else out.printf("  board check: settings look right\n");
   return result;
