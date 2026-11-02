@@ -382,16 +382,24 @@ Two charts. The first is for wiring the boards you have, by what is printed on t
 
 ### Chart 1: wires between the boards, by the labels printed on them
 
-| Wire | FoxWizard (main brain), printed | Other board | Other board, printed |
-|---|---|---|---|
-| 1, out of the FoxWizard | GP14 | Bluetooth module (ESP32-S3 SuperMini or Zero) | RX |
-| 2, into the FoxWizard | GP15 | Bluetooth module | TX |
-| 3, ground | GND | Bluetooth module | GND (G on some) |
-| 4, out of the FoxWizard | GP26 | USB host module (RP2040-Zero) | GP29 |
-| 5, into the FoxWizard | GP27 | USB host module | GP28 |
-| 6, ground | GND | USB host module | GND |
+The whole Hella, enough to update all three brains from the FoxWizard. Ground and power are not listed.
 
-TX and RX cross, a wire from one board's output goes to the other board's input. If the S3 board prints 43 and 44 or IO43 and IO44 instead of TX and RX, RX is 44 and TX is 43. The S3 module needs its own power, from its USB-C or from its 5V and GND pads.
+| Wire | FoxWizard (main brain), printed | Other board | Other board, printed | What it does |
+|---|---|---|---|---|
+| 1, out of the FoxWizard | GP14 | Bluetooth module (ESP32-S3 SuperMini or Zero) | RX | Bluetooth link, and flashing the module |
+| 2, into the FoxWizard | GP15 | Bluetooth module | TX | Bluetooth link, and flashing the module |
+| 3, out of the FoxWizard | GP28 | Bluetooth module | the RESET button's pad (EN) | resets the module for flashing |
+| 4, out of the FoxWizard | GP29 | Bluetooth module | the BOOT button's pad (GPIO0) | puts the module in its bootloader |
+| 5, out of the FoxWizard | GP26 | USB host module | GP29 (RP2040-Zero) | USB host link, and updating the host module |
+| 6, into the FoxWizard | GP27 | USB host module | GP28 (RP2040-Zero) | USB host link, and updating the host module |
+| 7, the same wire as 1 | GP14 | USB host module (Host Edition board) | SWCLK | flashing the host module when it is dead or blank |
+| 8, the same wire as 2 | GP15 | USB host module (Host Edition board) | SWDIO | flashing the host module when it is dead or blank |
+
+Wires 7 and 8 are not new wires from the FoxWizard, GP14 and GP15 each split to two places. They are only for a host module with SWCLK and SWDIO pads, the Host Edition board. The RP2040-Zero has none, it is updated through the link and its own BOOT button and USB-C.
+
+What each way of updating uses: a normal update with everything working goes over the links, wires 1, 2, 5 and 6, as the main brain's own update does. A dead or blank Bluetooth module is flashed with wires 1 to 4, holding EN and GPIO0 the way the chip's bootloader wants. A dead or blank host module on the Host Edition board is flashed with wires 7 and 8, with wire 3 holding the Bluetooth module in reset so it stays quiet on those two wires. The main brain itself is always reachable over its USB-C and firmware pads.
+
+TX and RX cross, a wire from one board's output goes to the other board's input. If the S3 board prints 43 and 44 or IO43 and IO44 instead of TX and RX, RX is 44 and TX is 43. The SuperMini and the Zero have buttons for RESET and BOOT and no pads for EN and GPIO0, so wires 3 and 4 are soldered to the buttons' pads, on the terminal that is not ground.
 
 ### Chart 2: the Deluxe PCB, by chip pin numbers
 
