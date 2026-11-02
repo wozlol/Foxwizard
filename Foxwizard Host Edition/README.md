@@ -403,7 +403,7 @@ There is no separate Host Edition board. The Host Edition is the OG with an RP20
 
 ### Chart 2: the Deluxe PCB, by chip pin numbers
 
-The main brain and the host brain are bare RP2040 chips (QFN-56 pin numbers from the RP2040 datasheet) and the Bluetooth module is an ESP32-S3-WROOM-1 module (pad numbers from its datasheet, Table 3-1). One row per net, each net joins the pins in its row. Power and ground are not listed.
+The main brain and the host brain are bare RP2040 chips (QFN-56 pin numbers from the RP2040 datasheet) and the Bluetooth module is an ESP32-S3-WROOM-1 module (pad numbers from its datasheet, Table 3-1). One row per net, each net joins the pins in its row. Power, ground and the USB ports are not listed.
 
 | Net | Main RP2040 | S3 module (ESP32-S3-WROOM-1) | Host RP2040 |
 |---|---|---|---|
@@ -417,7 +417,6 @@ The main brain and the host brain are bare RP2040 chips (QFN-56 pin numbers from
 | Host brain SWD data | GPIO7, pin 9 (proposed) | | SWD, pin 25 |
 | Host brain reset | GPIO8, pin 11 (proposed) | | RUN, pin 26 |
 | TRS 2-6 are on the board | | | GPIO14, pin 17, tied to ground |
-| S3 USB port, to its USB-C jack | | IO19 (USB D-), pad 13 and IO20 (USB D+), pad 14 | |
 
 The three SWD nets and the S3's reset, boot and serial nets are the main brain's way to flash and update the host brain and the S3 with no probe, the first flash included. The same nets also go to small backup headers (host brain: SWCLK, SWD, RUN and ground, S3: TXD0, RXD0, EN, IO0 and ground), for a debug probe or a USB-serial adapter if the main brain is ever dead. The main brain's pins sit idle, as inputs, while a probe is on a header. The S3 also has BOOT and RESET buttons on IO0 and EN. SWCLK and SWD are a consecutive pair of main brain pins because the probe code drives SWD from one PIO program, any free consecutive pair will do.
 
@@ -431,13 +430,11 @@ Not wires between chips, listed so nothing is lost when the schematic is drawn.
 | Main RP2040 | GPIO1, pin 3 | DIN/TRS MIDI in |
 | Main RP2040 | GPIO5, pin 7 | the front button |
 | Main RP2040 | GPIO2, 3 and 4, pins 4, 5 and 6 | the OUT, USB and IN lights (the Deluxe's lights are WS2812, which pin is open) |
-| Main RP2040 | USB_DP, pin 47 and USB_DM, pin 46 | the USB-C jack to the computer |
 | Host RP2040 | GPIO4, pin 6 | TRS/DIN out 1 (UART1 TX) |
 | Host RP2040 | GPIO5, pin 7 | TRS/DIN in (UART1 RX) |
 | Host RP2040 | GPIO6, 7, 8 and 9, pins 8, 9, 11 and 12 | TRS outs 2 to 5 |
 | Host RP2040 | GPIO10, 11, 12 and 13, pins 13, 14, 15 and 16 | the four hub port lights |
 | Host RP2040 | GPIO16, pin 27 | its WS2812 status light |
-| Host RP2040 | USB_DP, pin 47 and USB_DM, pin 46 | the USB2514B hub's upstream port, 27 ohm resistors in series |
 
 ### The Deluxe's Bluetooth module
 
