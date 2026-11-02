@@ -37,6 +37,7 @@
 */
 
 #include <Arduino.h>
+#include "board_check.h" // stops the build with the Tools setting to change if one is wrong
 // TinyUSB is vendored in src/, with the RP2040 host fixes this sidecar needs, see
 // src/Adafruit_TinyUSB/VENDORED.md. It compiles the same on any machine, whatever TinyUSB is installed.
 #include "src/Adafruit_TinyUSB/Adafruit_TinyUSB.h"
@@ -46,9 +47,6 @@
 #include <hardware/watchdog.h>
 #include "foxwizard_link.h"
 
-#ifndef USE_TINYUSB_HOST
-#error Set Tools -> USB Stack -> Adafruit TinyUSB Host (native)
-#endif
 
 // ============================================================================================
 // Constants
@@ -68,7 +66,7 @@ constexpr uint8_t PIN_TRS_BOARD = 14; // floating (its internal pull-up): a bare
                                        // Tells the main brain whether TRS 2-6 physically exist.
 
 constexpr uint32_t DIN_BAUD = 31250;
-constexpr uint8_t HOST_FW_VERSION = 8; // 3: the host report. 4: chained hubs, hub and spare device reporting. 5: 64 endpoint slots, stack trace events. 6: 7 USB Host slots. 7: steadier TRS board pin read. 8: the link carries UMP
+constexpr uint8_t HOST_FW_VERSION = 9; // 3: the host report. 4: chained hubs, hub and spare device reporting. 5: 64 endpoint slots, stack trace events. 6: 7 USB Host slots. 7: steadier TRS board pin read. 8: the link carries UMP. 9: device names, and slots held for Bluetooth devices
 
 constexpr uint8_t HUB_PORTS = HOST_SLOTS; // USB Host slots, 7 from host firmware 6
 constexpr uint8_t LED_PORTS = 4;           // only the first four have a light on the board
@@ -111,6 +109,16 @@ struct HubPort {
   fw::ump::UmpToUsbMidi conv; // the link's UMP into this device's packets
   uint32_t lastProgressMs = 0;
   uint32_t blinkUntilMs = 0;
+};
+
+// The name of the USB device in a slot, read from its product string once it has settled, and sent to the main brain.
+struct SlotName {
+  char text[NAME_CHARS + 1] = {0};
+  bool wanted = false;      // a device is there and its name has not been read yet
+  bool have = false;
+  uint8_t daddr = 0;
+  uint32_t readAfterMs = 0; // the stack is left alone for a moment after a device mounts
+  uint32_t nextSendMs = 0;
 };
 
 struct DinOut {
@@ -316,6 +324,12 @@ SerialPIO dinOut5Serial(PIN_DIN_OUT5, NOPIN);
 
 DinOut dinOuts[DIN_OUTS];
 HubPort hubPorts[HUB_PORTS];
+SlotName slotNames[HUB_PORTS];
+uint8_t nameBusy = 0;           // USB Host slot (1-7) whose product string is being read, 0 none
+uint32_t nameBusySinceMs = 0;
+uint8_t nameBuf[2 + 2 * NAME_CHARS + 4] __attribute__((aligned(4))); // a string descriptor, UTF-16LE
+uint8_t reservedSlots = 0;      // USB Host slots held for a Bluetooth device, slot n is bit n-1. The main brain sets it
+bool reserveDirty = true;
 uint8_t midiIdxToPort[CFG_TUH_MIDI]; // 0 = not one of ours, else hub port 1-4
 
 MidiQueue<LinkFrame, 64, 0> toMainRt;
@@ -396,8 +410,83 @@ uint32_t totalDrops() {
   return n;
 }
 
+// The product string of a device, read once it has settled, one at a time. The stack calls this when the transfer ends.
+void useIdsAsName(SlotName &sn) {
+  uint16_t vid = 0, pid = 0;
+  tuh_vid_pid_get(sn.daddr, &vid, &pid);
+  snprintf(sn.text, sizeof(sn.text), "USB %04X:%04X", vid, pid);
+}
+
+void nameDone(tuh_xfer_t *xfer) {
+  const uint8_t slot = (uint8_t)xfer->user_data;
+  if (slot < 1 || slot > HUB_PORTS) { nameBusy = 0; return; }
+  SlotName &sn = slotNames[slot - 1];
+  if (!sn.wanted || !hubPorts[slot - 1].mounted) { if (nameBusy == slot) nameBusy = 0; return; } // gone, or already given up on
+  memset(sn.text, 0, sizeof(sn.text));
+  if (xfer->result == XFER_RESULT_SUCCESS && nameBuf[0] > 2 && nameBuf[1] == 3) {
+    const uint8_t chars = (uint8_t)((nameBuf[0] - 2) / 2);
+    for (uint8_t i = 0; i < chars && i < NAME_CHARS; ++i) {
+      const uint16_t c = (uint16_t)(nameBuf[2 + 2 * i] | (nameBuf[3 + 2 * i] << 8));
+      sn.text[i] = (c >= 0x20 && c < 0x7F) ? (char)c : '?';
+    }
+  }
+  if (sn.text[0] == 0) useIdsAsName(sn); // nothing readable, so the vendor and product ids
+  sn.wanted = false;
+  sn.have = true;
+  sn.nextSendMs = 0;
+  nameBusy = 0;
+}
+
+void serviceNames() {
+  const uint32_t now = millis();
+  if (nameBusy) {
+    if (now - nameBusySinceMs > 2000) { // never came back
+      SlotName &sn = slotNames[nameBusy - 1];
+      if (sn.wanted) { useIdsAsName(sn); sn.wanted = false; sn.have = true; sn.nextSendMs = 0; }
+      nameBusy = 0;
+    }
+    return;
+  }
+  for (uint8_t p = 0; p < HUB_PORTS; ++p) {
+    SlotName &sn = slotNames[p];
+    if (!sn.wanted || !hubPorts[p].mounted || now < sn.readAfterMs) continue;
+    memset(nameBuf, 0, sizeof(nameBuf));
+    if (tuh_descriptor_get_product_string(sn.daddr, 0x0409, nameBuf, sizeof(nameBuf), nameDone, (uintptr_t)(p + 1))) {
+      nameBusy = (uint8_t)(p + 1);
+      nameBusySinceMs = now;
+    } else {
+      sn.readAfterMs = now + 500; // the stack was busy
+    }
+    return;
+  }
+}
+
 void serviceControlOut() {
   const uint32_t now = millis();
+  serviceNames();
+
+  // Which slots held for Bluetooth are really free, so the main brain only gives a Bluetooth device a slot we are keeping.
+  static uint32_t lastReserveMs = 0;
+  if (reserveDirty || now - lastReserveMs >= PORT_MAP_HEARTBEAT_MS) {
+    uint8_t mountedMask = 0;
+    for (uint8_t p = 0; p < HUB_PORTS; ++p) if (hubPorts[p].mounted) mountedMask |= (uint8_t)(1 << p);
+    uint8_t pkt[4] = {CONTROL_SLOT_RESERVE, (uint8_t)(reservedSlots & ~mountedMask & 0x7F), 0, 0};
+    sendToMain(LINK_PORT_CONTROL, pkt);
+    reserveDirty = false;
+    lastReserveMs = now;
+  }
+  // Each name, whole, when it is read and every few seconds after, so a lost frame is made good.
+  for (uint8_t p = 0; p < HUB_PORTS; ++p) {
+    SlotName &sn = slotNames[p];
+    if (!sn.have || !hubPorts[p].mounted || now < sn.nextSendMs || toMainRt.freeSlots(false) < NAME_CHUNKS + 8) continue;
+    for (uint8_t chunk = 0; chunk < NAME_CHUNKS; ++chunk) {
+      uint8_t chars[2];
+      nameChunk(sn.text, chunk, chars);
+      uint8_t pkt[4] = {CONTROL_DEVICE_NAME, (uint8_t)((chunk << 4) | (p + 1)), chars[0], chars[1]};
+      sendToMain(LINK_PORT_CONTROL, pkt);
+    }
+    sn.nextSendMs = now + 5000;
+  }
 
   if (portMapDirty || now - lastPortMapMs >= PORT_MAP_HEARTBEAT_MS) {
     uint8_t mask = 0;
@@ -612,6 +701,11 @@ void pumpLinkIn() {
         mainFlowMs = millis();
       } else if (type == CONTROL_BRIGHTNESS) {
         ledBrightnessStep = data > 10 ? 10 : data;
+      } else if (type == CONTROL_SLOT_RESERVE) {
+        const uint8_t before = reservedSlots;
+        reservedSlots = data & 0x7F;
+        reserveDirty = true;
+        if (before & ~reservedSlots) placeWaitingMidi(); // a slot was given back
       }
       continue;
     }
@@ -761,9 +855,11 @@ bool placeMidi(uint8_t idx, uint8_t daddr, bool writable, uint8_t cables) {
   }
   const uint8_t jack = info.hub_port ? info.hub_port : 1;
   uint8_t port = 0;
-  if (tier <= 1 && jack <= HUB_PORTS && !hubPorts[jack - 1].mounted) port = jack;
-  if (!port && tier == 2) for (uint8_t p = HUB_PORTS; p >= 1 && !port; --p) if (!hubPorts[p - 1].mounted) port = p;
-  if (!port) for (uint8_t p = 1; p <= HUB_PORTS && !port; ++p) if (!hubPorts[p - 1].mounted) port = p;
+  // A slot held for a Bluetooth device is not free, whoever asks.
+  auto free = [](uint8_t p) { return !hubPorts[p - 1].mounted && !(reservedSlots & (1 << (p - 1))); };
+  if (tier <= 1 && jack <= HUB_PORTS && free(jack)) port = jack;
+  if (!port && tier == 2) for (uint8_t p = HUB_PORTS; p >= 1 && !port; --p) if (free(p)) port = p;
+  if (!port) for (uint8_t p = 1; p <= HUB_PORTS && !port; ++p) if (free(p)) port = p;
   if (!port) return false;
 
   HubPort &hp = hubPorts[port - 1];
@@ -774,6 +870,11 @@ bool placeMidi(uint8_t idx, uint8_t daddr, bool writable, uint8_t cables) {
   hp.midiIdx = idx;
   midiIdxToPort[idx] = port;
   portMapDirty = true;
+  reserveDirty = true; // the main brain learns at once which slots it can still hold
+  slotNames[port - 1] = SlotName();
+  slotNames[port - 1].wanted = true;
+  slotNames[port - 1].daddr = daddr;
+  slotNames[port - 1].readAfterMs = millis() + 400;
   BlackBoxPort &bb = blackBox.port[port - 1];
   bb = BlackBoxPort{};
   tuh_vid_pid_get(daddr, &bb.vid, &bb.pid);
@@ -862,6 +963,9 @@ void tuh_midi_umount_cb(uint8_t idx) {
   if (port == 0) { portMapDirty = true; return; }
   resetHubPort(hubPorts[port - 1]);
   portMapDirty = true;
+  reserveDirty = true;
+  if (nameBusy == port) nameBusy = 0;
+  slotNames[port - 1] = SlotName();
   blackBox.port[port - 1].mounted = false; // the rest stays, for a report
   logEvent(HOST_EVENT_UNMOUNT, port);
   placeWaitingMidi();

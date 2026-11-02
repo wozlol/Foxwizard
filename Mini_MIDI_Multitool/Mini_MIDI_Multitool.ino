@@ -40,8 +40,7 @@
   - Tools -> Flash Size = 2MB (Sketch: 1MB, FS: 1MB). Firmware updates over MIDI are staged in
     that FS. Saved settings live in the EEPROM area, which sits at the same address in every layout.
 
-  Factory reset: hold the button while power is applied / USB is plugged in (checked once at boot,
-  same as the original simple adaptor sketch). This also works as a software command over SysEx.
+  Factory reset: Patchling's Factory Reset button, a SysEx command. Holding the button while plugging in does nothing (2.1).
 
   Note on file layout: every struct/enum used as a function parameter type is declared up front,
   before any function definitions. The Arduino IDE auto-generates forward prototypes for every
@@ -51,6 +50,7 @@
 */
 
 #include <Arduino.h>
+#include "board_check.h" // stops the build with the Tools setting to change if one is wrong
 #include <Adafruit_TinyUSB.h>
 #include <EEPROM.h>
 #include <Updater.h>
@@ -64,6 +64,7 @@
 #include "src/rr_priority.h"
 #include "src/swing.h"
 #include "src/usb_coalesce.h"
+#include "src/ble_slots.h"
 #include "hardware/watchdog.h"
 
 // ============================================================================================
@@ -82,6 +83,10 @@ constexpr uint8_t PIN_BUTTON = 5;
 constexpr uint32_t DIN_BAUD = 31250;
 constexpr uint8_t PIN_LINK_TX = 26;
 constexpr uint8_t PIN_LINK_RX = 27;
+constexpr uint8_t PIN_S3_TX = 14;               // to the Bluetooth module (ESP32-S3) RX, GPIO44. Also the USB host module's SWCLK pad
+constexpr uint8_t PIN_S3_RX = 15;               // from its TX, GPIO43. Also the USB host module's SWDIO pad
+constexpr size_t S3_RX_BUFFER = 1024;
+constexpr uint32_t S3_PRESENT_MS = 1500;        // the Bluetooth module counts as present this long after its last port map frame
 constexpr uint8_t CLOCK_SOURCE_AUTO = 15;       // Clock: Auto (1.92), the factory setting from 1.98
 constexpr size_t LINK_RX_BUFFER = 8192;        // filled by the PIO receive interrupt
 constexpr uint16_t LINK_RX_PAUSE_AT = 2048;     // ask the host brain to pause above this many waiting bytes
@@ -101,11 +106,11 @@ constexpr uint32_t BRIGHTNESS_PREVIEW_HOLD_MS = 400;
 
 constexpr uint8_t SYSEX_MFR_ID = 0x7D;   // reserved for non-commercial/educational use
 constexpr uint8_t SYSEX_DEVICE_ID = 0x4D; // 'M'
-constexpr uint8_t PROTOCOL_VERSION = 7; // 2: 45-byte routes with port masks, GET_STATUS. 3: clock settings, LEARN. 4: 53-byte routes with feature fields, feature blocks. 5: presets. 6: Round Robin Priority order block. 7: Round Robin Velocity
+constexpr uint8_t PROTOCOL_VERSION = 8; // 2: 45-byte routes with port masks, GET_STATUS. 3: clock settings, LEARN. 4: 53-byte routes with feature fields, feature blocks. 5: presets. 6: Round Robin Priority order block. 7: Round Robin Velocity. 8: Bluetooth slots and device names
 // Both go out as single bytes in the identity reply, a SysEx data byte, so neither may pass 127. 1.128 did: the byte went out as 0x80, a Note Off
 // status that cut the reply in two, and Patchling called the unit old firmware. The major number moved to 2 for that reason.
 constexpr uint8_t FW_VERSION_MAJOR = 2;
-constexpr uint8_t FW_VERSION_MINOR = 1;
+constexpr uint8_t FW_VERSION_MINOR = 2;
 static_assert(FW_VERSION_MAJOR <= 127 && FW_VERSION_MINOR <= 127, "a firmware version number goes out as a 7-bit SysEx data byte, 127 at most");
 constexpr uint8_t FW_CHUNK_BYTES = 128;          // firmware bytes per FW_DATA message, 147 once packed
 constexpr uint32_t FW_REBOOT_DELAY_MS = 300;     // lets the FW_END ACK reach the host before rebooting
@@ -151,6 +156,9 @@ enum SysexCmd : uint8_t {
   CMD_PRESET_DATA = 0x38, // slot count, active slot (0-15), slots in use as a 16-bit mask in 7-bit bytes, low first
   CMD_SET_PRESET_SLOTS = 0x39, // payload: the slot count, 1-16
   CMD_SELECT_PRESET = 0x3A, // payload: the slot, 0-15. Silences everything, loads it, acknowledged once it is live
+  CMD_GET_SLOTS = 0x3B, // 2.2: payload 0 for the summary, 1-8 for a host slot, 9 for BLE Device
+  CMD_SLOT_DATA = 0x3C, // the index, then that record
+  CMD_BLE_ACTION = 0x3D, // 2.2: payload action, value. 1 learning on or off, 2 forget a slot
   CMD_COMMIT = 0x31,
   CMD_FACTORY_RESET = 0x32,
   CMD_FW_BEGIN = 0x40,
@@ -184,8 +192,14 @@ constexpr uint16_t PORT_HOST1 = 1u << 2;     // USB Host 1-4 are bits 2-5, USB H
 constexpr uint16_t PORT_TRS2 = 1u << 6;      // TRS 2-6 are bits 6-10
 constexpr uint16_t PORT_HOST_ALL = 0x383C;
 constexpr uint16_t PORT_TRS2_6 = 0x07C0;
-constexpr uint8_t PORT_COUNT = 14;
-constexpr uint8_t LINK_PORTS_MAX = HOST_SLOTS + 5; // the link ports an output mask can name: the USB Host slots and TRS 2-6
+constexpr uint16_t PORT_BLE_DEVICE = 1u << 14; // 2.2: BLE Device, the FoxWizard's own Bluetooth MIDI port. Host slot 9
+constexpr uint16_t PORT_BLE_SHARED = 1u << 15; // 2.2: host slot 8, only ever a BLE Host. USB Host slots 5-7 also go to BLE Hosts when no USB device has them
+constexpr uint8_t BLE_SHARED_SLOT = 8;
+constexpr uint8_t BLE_DEVICE_SLOT = 9;
+constexpr uint8_t BLE_MAIN_HANDLES = 4; // BLE Hosts the main brain keeps track of, the module has fewer (BLE_HOSTS_MAX), RAM is tight
+constexpr uint8_t PORT_COUNT = 16;
+constexpr uint8_t LINK_PORTS_MAX = HOST_SLOTS + 5 + 6; // the link ports an output mask can name: the USB Host slots, TRS 2-6 and the Bluetooth ports
+constexpr uint8_t S3_VPORT = 0x20; // link port numbers from here are on the Bluetooth module's link: S3_VPORT + its port
 enum : uint8_t { MODE_USB_ADAPTOR = 0, MODE_ROUTER = 1 };
 enum : uint8_t {
   BTN_PANIC = 0,
@@ -330,6 +344,7 @@ struct DinParser {
 // ============================================================================================
 Adafruit_USBD_MIDI usb_midi;
 SerialPIO linkSerial(PIN_LINK_TX, PIN_LINK_RX, LINK_RX_BUFFER);
+SerialPIO s3Serial(PIN_S3_TX, PIN_S3_RX, S3_RX_BUFFER); // the Bluetooth module, 2.2
 
 RouteData routes[MAX_ROUTES];
 uint16_t routeCount = 0;
@@ -379,6 +394,50 @@ uint8_t hostWaiting = 0;                 // devices plugged in with no free USB 
 uint8_t hostReport[HOST_REPORT_BYTES];   // 1.63: the host brain's report from its last restart
 uint8_t hostReportGot[(HOST_REPORT_BYTES / 2 + 7) / 8]; // which 2-byte pieces have arrived
 constexpr uint8_t HOST_REPORT_PAGE = 120; // bytes of the report in each reply
+
+// The Bluetooth module (2.2), see the section on it below.
+MidiQueue<LinkFrame, 32, 0> s3RtQueue;
+MidiQueue<LinkFrame, 128, 16> s3NormalQueue;
+LinkFrame s3TxFrame;
+uint8_t s3TxPos = LINK_FRAME_BYTES;
+LinkFrameReader s3Reader;
+LinkMessageReader s3Message;
+fw::ump::UsbMidiToUmp s3Up[BLE_MAIN_HANDLES + 1];   // index 0 is BLE Device, 1 and up the BLE Host handles, see s3Index()
+fw::ump::UmpToUsbMidi s3Down[BLE_MAIN_HANDLES + 1];
+SysexState bleSysex[2]; // BLE Device, and the BLE Hosts together: a SysEx from a Bluetooth device is rare
+bool s3AskedPause = false;
+uint32_t s3FlowMs = 0;
+bool pausingS3 = false;
+uint32_t lastS3FlowSentMs = 0;
+uint32_t s3LastStatusMs = 0;
+uint8_t s3FwVersion = 0;
+uint8_t s3Mask = 0;      // BLE Host handles connected, handle h is bit h-1
+uint8_t s3Flags = 0;     // bit 0 BLE Device connected, 1 learning, 2 scanning, 3 peripheral window
+uint8_t s3Hosts = 0;
+uint8_t s3BoardCheck = 0;
+bool s3WasPresent = false;
+fw::slots::Table slotTable;
+uint8_t bleHandleSlot[BLE_MAIN_HANDLES + 1];    // handle -> host slot it holds, 0 none
+uint8_t bleSlotHandle[BLE_DEVICE_SLOT + 1]; // host slot -> handle, 0 none
+uint8_t bleWaitSlot[BLE_MAIN_HANDLES + 1];      // a USB Host slot asked for, waiting for the host brain's yes
+uint32_t bleWaitSinceMs[BLE_MAIN_HANDLES + 1];
+uint8_t bleRefused = 0;                    // handles sent away, until they leave
+uint8_t bleHandleAddr[BLE_MAIN_HANDLES + 1][6];
+uint8_t bleAddrGot[BLE_MAIN_HANDLES + 1];       // bit n = part n of the address has arrived
+char bleHandleName[BLE_MAIN_HANDLES + 1][NAME_CHARS + 1];
+char bleNameStage[BLE_MAIN_HANDLES + 1][NAME_CHARS + 1];
+char usbSlotStage[HOST_SLOTS + 1][NAME_CHARS + 1];
+uint8_t usbSlotNew = 0;                    // USB Host slots that mounted since their name last came, slot n is bit n-1
+uint8_t bleReserveWanted = 0;              // USB Host slots held for Bluetooth, sent to the host brain
+uint8_t bleReserveHonored = 0;             // what it says it is holding
+uint8_t slotsGeneration = 0;               // changes whenever Patchling would show something different
+bool bleKnownDirty = true;
+uint8_t bleAllowedSent = 0xFF;
+uint32_t bleAllowMs = 0;
+uint32_t bleKnownMs = 0;
+uint32_t bleReserveMs = 0;
+bool slotsSaveWait = false;
+uint32_t slotsChangedMs = 0;
 
 // Stuck-note guard. Every key held on an input, by the channel and note it arrived with, before any Launchpad translation:
 // 0 = not held, 1-7 = the USB Host port, 0x80 = TRS 2, 0x81 = USB Device, 0x82 = TRS/DIN. If the host brain restarts or
@@ -898,7 +957,11 @@ NoteHoldStack &noteStackFor(uint8_t inputDevice, uint8_t channel) {
 
 // The port bit of a USB Host slot, 1-7 (below the types: a function up with the constants would put
 // the auto prototypes of everything after it above the types they use).
-uint16_t hostPortBit(uint8_t slot) { return slot <= 4 ? (uint16_t)(PORT_HOST1 << (slot - 1)) : (uint16_t)(1u << (slot + 6)); }
+uint16_t hostPortBit(uint8_t slot) {
+  if (slot <= 4) return (uint16_t)(PORT_HOST1 << (slot - 1));
+  if (slot <= HOST_SLOTS) return (uint16_t)(1u << (slot + 6));
+  return slot == BLE_SHARED_SLOT ? PORT_BLE_SHARED : PORT_BLE_DEVICE; // 2.2: the Bluetooth module's slots
+}
 
 // The port a message being handled came in on. USB Host uses currentHostPort.
 uint16_t sourcePort(uint8_t inputDevice) {
@@ -1537,6 +1600,7 @@ void applyBrightnessToLeds() {
   // same as every other control frame; a sidecar that isn't listening just never hears it.
   uint8_t pkt[4] = {CONTROL_BRIGHTNESS, globalSettings.ledBrightnessStep, 0, 0};
   linkSend(LINK_PORT_CONTROL, pkt);
+  s3Send(LINK_PORT_CONTROL, pkt); // and the Bluetooth module's
 }
 
 uint8_t scaleByte(uint32_t elapsed, uint32_t duration) {
@@ -1804,6 +1868,7 @@ void resetLinkConversion() {
 
 // pkt is a USB MIDI 1.0 packet for a host port, or a control frame's 4 bytes.
 void linkSend(uint8_t port, const uint8_t pkt[4]) {
+  if (port >= S3_VPORT) { s3Send((uint8_t)(port - S3_VPORT), pkt); return; } // the Bluetooth module's link
   if (port != LINK_PORT_CONTROL && !hostPresent()) return;
   if (port == LINK_PORT_CONTROL) {
     LinkFrame f;
@@ -2153,19 +2218,27 @@ void serviceLearnTimeout() {
 // ============================================================================================
 // Every port that exists right now. The sidecar's ports only while it's present.
 uint16_t availablePorts() {
-  return PORT_TRS | PORT_USB | (hostPresent() ? (PORT_HOST_ALL | (hostHasTrs ? PORT_TRS2_6 : 0)) : 0);
+  return PORT_TRS | PORT_USB | (hostPresent() ? (PORT_HOST_ALL | (hostHasTrs ? PORT_TRS2_6 : 0)) : 0) | bleAvailablePorts();
 }
 
 // Link ports for an output mask: USB Host 1-4 are link ports 1-4 (only hub ports with a device
 // mounted), TRS 2-6 are link ports 5-9.
 uint8_t linkPortsFor(uint16_t mask, uint8_t ports[LINK_PORTS_MAX]) {
   uint8_t n = 0;
-  if (!hostPresent()) return 0;
-  for (uint8_t p = 1; p <= HOST_SLOTS; ++p) {
-    if ((mask & hostPortBit(p)) && (hostPortMask & (1 << hostMaskBit(p)))) ports[n++] = hostLinkPort(p);
+  if (hostPresent()) {
+    for (uint8_t p = 1; p <= HOST_SLOTS; ++p) {
+      if ((mask & hostPortBit(p)) && (hostPortMask & (1 << hostMaskBit(p)))) ports[n++] = hostLinkPort(p);
+    }
+    for (uint8_t i = 0; i < 5; ++i) {
+      if (mask & (PORT_TRS2 << i)) ports[n++] = LINK_PORT_DIN + i;
+    }
   }
-  for (uint8_t i = 0; i < 5; ++i) {
-    if (mask & (PORT_TRS2 << i)) ports[n++] = LINK_PORT_DIN + i;
+  // 2.2: the Bluetooth module's ports, BLE Device and the slots a BLE Host holds, as link ports on its own link
+  if (s3Present()) {
+    if ((mask & PORT_BLE_DEVICE) && (s3Flags & 1)) ports[n++] = S3_VPORT + LINK_PORT_BLE_DEVICE;
+    for (uint8_t slot = 5; slot <= BLE_SHARED_SLOT; ++slot) {
+      if ((mask & hostPortBit(slot)) && bleSlotHandle[slot]) ports[n++] = S3_VPORT + bleSlotHandle[slot];
+    }
   }
   return n;
 }
@@ -5816,7 +5889,7 @@ void sendReply(uint8_t sourcePort) {
     trsSend(replyBuf, replyLen); // a protocol reply, not activity, see usbSysexByte above
   } else if (sourcePort == DEV_HOST || sourcePort == DEV_TRS2) {
     UsbOutSysexAccum accum; // reply goes back out the sidecar port the command came in on
-    const uint8_t port = (sourcePort == DEV_HOST) ? hostLinkPort(currentHostPort) : LINK_PORT_DIN;
+    const uint8_t port = (sourcePort == DEV_HOST) ? slotLinkPort(currentHostPort) : LINK_PORT_DIN;
     for (uint8_t i = 0; i < replyLen; ++i) linkSysexByte(accum, &port, 1, replyBuf[i]);
   } else {
     UsbOutSysexAccum accum; // fresh accumulator: our own replies are always short + self-contained
@@ -5997,6 +6070,55 @@ void handleSysexCommand(uint8_t sourcePort, const uint8_t *cmdBuf, uint8_t cmdLe
       perfLoopMaxUs = perfLinkLimitHits = perfInputHeldBack = perfLinkHigh = perfTrsHigh = perfUsbHigh = 0;
       perfRepeatOn = perfStrayOff = perfLoopOrphanOff = perfLoopRepeatOn = 0;
       sendReply(sourcePort);
+      break;
+    }
+
+    case CMD_GET_SLOTS: {
+      const uint8_t index = payloadLen ? payload[0] : 0;
+      beginReply(CMD_SLOT_DATA);
+      appendReply(index);
+      if (index == 0) { // the summary
+        appendReply((uint8_t)((s3Present() ? 1 : 0) | (bleDeviceUp() ? 2 : 0) | ((s3Present() && (s3Flags & 2)) ? 4 : 0) | ((s3Present() && (s3Flags & 4)) ? 8 : 0) |
+                              ((s3Present() && (s3Flags & 8)) ? 16 : 0) | (s3BoardCheck ? 32 : 0)));
+        appendReply(s3Present() ? (s3FwVersion & 0x7F) : 0);
+        appendReply(slotsGeneration);
+        appendReply(s3Present() ? bleFreeSlots() : 0);
+        appendReply(s3Present() ? (s3Hosts & 0x7F) : 0);
+      } else if (index == BLE_DEVICE_SLOT) { // BLE Device: kind 3
+        appendReply(3);
+        appendReply(bleDeviceUp() ? 1 : 0);
+        appendReply(0);
+      } else if (index <= BLE_SHARED_SLOT) { // kind, state (bit 0 there now, bit 1 a Bluetooth device may take it), name
+        const fw::slots::Record &r = slotTable.rec[index];
+        const bool usbHere = index <= HOST_SLOTS && hostPresent() && (hostPortMask & (1 << hostMaskBit(index)));
+        const bool bleHere = (slotTable.bleConnected & fw::slots::slotBit(index)) != 0;
+        const uint8_t kind = usbHere ? fw::slots::kUsb : r.kind;
+        const char *name = (usbHere && r.kind != fw::slots::kUsb) ? "" : r.name;
+        appendReply(kind);
+        appendReply((uint8_t)((usbHere || bleHere ? 1 : 0) | (fw::slots::isBleSlot(index) ? 2 : 0)));
+        const uint8_t len = nameLength(name);
+        appendReply(len);
+        for (uint8_t i = 0; i < len; ++i) appendReply((uint8_t)name[i] & 0x7F);
+      }
+      sendReply(sourcePort);
+      break;
+    }
+
+    case CMD_BLE_ACTION: {
+      if (payloadLen < 2) { sendAck(sourcePort, cmd, ACK_ERR_BAD_DATA, 0, 0); break; }
+      const uint8_t action = payload[0], value = payload[1];
+      if (action == 1) { // learning on or off, as the module's own button does
+        if (!s3Present()) { sendAck(sourcePort, cmd, ACK_ERR_BAD_INDEX, 0, 0); break; }
+        const uint8_t pkt[4] = {CONTROL_BLE_COMMAND, BLE_CMD_LEARN, (uint8_t)(value ? 1 : 0), 0};
+        s3Send(LINK_PORT_CONTROL, pkt);
+      } else if (action == 2) { // forget a slot
+        if (value < 1 || value > BLE_SHARED_SLOT) { sendAck(sourcePort, cmd, ACK_ERR_BAD_INDEX, 0, 0); break; }
+        bleForgetSlot(value);
+      } else {
+        sendAck(sourcePort, cmd, ACK_ERR_BAD_DATA, 0, 0);
+        break;
+      }
+      sendAck(sourcePort, cmd, ACK_OK, 0, 0);
       break;
     }
 
@@ -6201,6 +6323,7 @@ void handleSysexCommand(uint8_t sourcePort, const uint8_t *cmdBuf, uint8_t cmdLe
 
     case CMD_FACTORY_RESET: {
       presetWipe();
+      bleWipe();
       setFactoryDefaults();
       applyBrightnessToLeds();
       resetButtonRuntimeState();
@@ -6584,6 +6707,7 @@ void pumpHostIn() {
         const uint8_t mounted = packet[1] & ~0x10;
         const uint8_t gone = hostPortMask & ~mounted;
         if (mounted & ~hostPortMask) lpRepaint = true; // a device plugged in might be a Launchpad that's lost its lights
+        for (uint8_t p = 1; p <= HOST_SLOTS; ++p) if ((mounted & ~hostPortMask) & (1 << hostMaskBit(p))) usbSlotNew |= (uint8_t)(1 << (p - 1)); // its name will come
         hostPortMask = mounted;
         hostHasTrs = (packet[1] & 0x10) != 0;
         for (uint8_t p = 1; p <= HOST_SLOTS; ++p) if (gone & (1 << hostMaskBit(p))) releaseSidecarNotes(p);
@@ -6612,6 +6736,10 @@ void pumpHostIn() {
       } else if (type == CONTROL_FLOW) {
         hostAskedPause = packet[1] == 1;
         hostFlowMs = millis();
+      } else if (type == CONTROL_SLOT_RESERVE) { // host firmware 9: the USB Host slots it is keeping free for Bluetooth
+        bleReserveHonored = packet[1] & 0x7F;
+      } else if (type == CONTROL_DEVICE_NAME) {  // host firmware 9: the name of the USB device in a slot
+        usbNameChunk(packet[1] & 0x0F, packet[1] >> 4, packet[2], packet[3]);
       }
       continue;
     }
@@ -6630,9 +6758,430 @@ void pumpHostIn() {
         handleUsbMidiPacket(DEV_TRS2, hostSysex[port], packets[k]);
       }
     }
-    // Other ports are reserved (13-14: C3 BLE MIDI, planned).
+    // Other ports are reserved. Bluetooth is on its own link.
   }
   if (budget == 0xFFFF && linkSerial.available() > 0) ++perfLinkLimitHits; // stopped at the limit, more waiting
+}
+
+// ============================================================================================
+// The Bluetooth module (2.2). An ESP32-S3 on its own link, GP14 and GP15, with the same frames as the USB host module's. It connects
+// Bluetooth MIDI devices and the main brain gives each one a host slot: slot 8, the spare route bit, or a USB Host slot 5 to 7 the
+// host brain is not using. BLE Device, the FoxWizard as a Bluetooth MIDI device, is slot 9. Who has which slot, and their names, are in
+// slotTable and saved in /slots.fw. The rules and their tests are in src/ble_slots.h. With no module attached none of this does anything.
+// ============================================================================================
+const char *const SLOTS_FILE = "/slots.fw";
+const char *const SLOTS_FILE_TMP = "/slots.tmp";
+
+bool s3Present() { return s3LastStatusMs != 0 && millis() - s3LastStatusMs < S3_PRESENT_MS; }
+bool bleDeviceUp() { return s3Present() && (s3Flags & 1); }
+bool s3Paused() { return s3AskedPause && millis() - s3FlowMs < FLOW_EXPIRY_MS; }
+
+// The converter index of one of the module's ports: 0 for BLE Device, the handle for a BLE Host, 0xFF for any other.
+uint8_t s3Index(uint8_t port) {
+  if (port == LINK_PORT_BLE_DEVICE) return 0;
+  return (port >= 1 && port <= BLE_MAIN_HANDLES) ? port : 0xFF;
+}
+
+// pkt is a USB MIDI 1.0 packet for one of the module's ports, or a control frame's 4 bytes.
+void s3Send(uint8_t port, const uint8_t pkt[4]) {
+  if (port == LINK_PORT_CONTROL) {
+    LinkFrame f;
+    encodeLinkFrame(port, pkt, f);
+    s3RtQueue.push(f, true);
+    return;
+  }
+  if (!s3Present()) return;
+  uint32_t words[4];
+  const uint8_t idx = s3Index(port);
+  if (idx == 0xFF) return;
+  const uint8_t n = s3Up[idx].push(pkt, words);
+  for (uint8_t i = 0; i < n;) {
+    const uint8_t len = fw::ump::wordCount(words[i]);
+    if (isRealtimeWord(words[i])) pushLinkMessage(s3RtQueue, port, &words[i], len, true);
+    else pushLinkMessage(s3NormalQueue, port, &words[i], len, isCriticalWord(words[i]));
+    i += len;
+  }
+}
+
+void pumpS3Out() {
+  while (true) {
+    if (s3TxPos >= LINK_FRAME_BYTES) {
+      LinkFrame *next = s3RtQueue.peek();
+      if (next) {
+        s3TxFrame = *next;
+        s3RtQueue.pop();
+      } else if (!s3Paused() && (next = s3NormalQueue.peek()) != nullptr) {
+        s3TxFrame = *next;
+        s3NormalQueue.pop();
+      } else {
+        return;
+      }
+      s3TxPos = 0;
+    }
+    while (s3TxPos < LINK_FRAME_BYTES && s3Serial.availableForWrite() > 0) s3Serial.write(s3TxFrame.b[s3TxPos++]);
+    if (s3TxPos < LINK_FRAME_BYTES) return; // PIO FIFO full, carry on next loop
+  }
+}
+
+// Asks the module to pause while received bytes pile up faster than the loop parses them.
+void serviceS3Flow() {
+  const int waiting = s3Serial.available();
+  const bool wantPause = pausingS3 ? waiting > (int)(S3_RX_BUFFER / 4) : waiting > (int)(S3_RX_BUFFER / 2);
+  if (wantPause == pausingS3 && millis() - lastS3FlowSentMs < FLOW_REPEAT_MS) return;
+  pausingS3 = wantPause;
+  const uint8_t pkt[4] = {CONTROL_FLOW, (uint8_t)(wantPause ? 1 : 0), 0, 0};
+  s3Send(LINK_PORT_CONTROL, pkt);
+  lastS3FlowSentMs = millis();
+}
+
+void bleMarkChanged() { slotsGeneration = (uint8_t)((slotsGeneration + 1) & 0x7F); }
+
+// Route bits of the Bluetooth module's ports that exist right now.
+uint16_t bleAvailablePorts() {
+  if (!s3Present()) return 0;
+  uint16_t ports = PORT_BLE_DEVICE | PORT_BLE_SHARED;
+  for (uint8_t slot = 5; slot <= 7; ++slot) if (bleSlotHandle[slot]) ports |= hostPortBit(slot);
+  return ports;
+}
+
+// The link port a host slot's messages go out on, for a reply to a command that came in on it.
+uint8_t slotLinkPort(uint8_t slot) {
+  if (slot == BLE_DEVICE_SLOT) return S3_VPORT + LINK_PORT_BLE_DEVICE;
+  if (slot >= 5 && slot <= BLE_SHARED_SLOT && bleSlotHandle[slot]) return S3_VPORT + bleSlotHandle[slot];
+  return hostLinkPort(slot);
+}
+
+// USB Host slots 1-7 with a USB device in them, slot n at bit n-1. A host brain older than firmware 9 cannot hold a slot back, so
+// slots 5 to 7 count as taken for Bluetooth.
+uint8_t usbBusyMask() {
+  if (!hostPresent()) return 0;
+  uint8_t busy = 0;
+  for (uint8_t p = 1; p <= HOST_SLOTS; ++p) if (hostPortMask & (1 << hostMaskBit(p))) busy |= (uint8_t)(1 << (p - 1));
+  if (hostFwVersion < 9) busy |= 0x70;
+  return busy;
+}
+
+uint8_t bleClaimedMask() {
+  uint8_t claimed = 0;
+  for (uint8_t h = 1; h <= BLE_MAIN_HANDLES; ++h) if (bleWaitSlot[h]) claimed |= (uint8_t)(1 << (bleWaitSlot[h] - 1));
+  return claimed;
+}
+
+uint8_t bleFreeSlots() { return slotTable.freeCount(usbBusyMask() | bleClaimedMask()); }
+
+void bleSendReserve() {
+  const uint8_t pkt[4] = {CONTROL_SLOT_RESERVE, bleReserveWanted, 0, 0};
+  linkSend(LINK_PORT_CONTROL, pkt);
+  bleReserveMs = millis();
+}
+
+void bleRefuse(uint8_t h) {
+  bleRefused |= (uint8_t)(1 << (h - 1));
+  const uint8_t pkt[4] = {CONTROL_BLE_COMMAND, BLE_CMD_DISCONNECT, h, 0};
+  s3Send(LINK_PORT_CONTROL, pkt);
+}
+
+void bleActivate(uint8_t h, uint8_t slot) {
+  slotTable.bleAssign(slot, bleHandleAddr[h], bleHandleName[h][0] ? bleHandleName[h] : "Bluetooth");
+  bleHandleSlot[h] = slot;
+  bleSlotHandle[slot] = h;
+  bleWaitSlot[h] = 0;
+  if (slot <= HOST_SLOTS) bleReserveWanted |= (uint8_t)(1 << (slot - 1)); // a USB Host slot it holds stays held, whatever the host brain does
+  bleKnownDirty = true;
+  bleMarkChanged();
+}
+
+// A handle's device is gone (or never got a slot). Its notes are released as for a real Note Off.
+void bleHandleLeft(uint8_t h) {
+  const uint8_t slot = bleHandleSlot[h];
+  if (slot) {
+    releaseHeldNotes(slot, false);
+    slotTable.bleLeft(slot);
+    bleSlotHandle[slot] = 0;
+    bleHandleSlot[h] = 0;
+    if (slot <= HOST_SLOTS && (bleReserveWanted & (1 << (slot - 1)))) {
+      bleReserveWanted &= (uint8_t)~(1 << (slot - 1));
+      bleSendReserve();
+    }
+  }
+  if (bleWaitSlot[h]) {
+    bleReserveWanted &= (uint8_t)~(1 << (bleWaitSlot[h] - 1));
+    bleWaitSlot[h] = 0;
+    bleSendReserve();
+  }
+  bleAddrGot[h] = 0;
+  bleRefused &= (uint8_t)~(1 << (h - 1));
+  memset(bleHandleName[h], 0, sizeof(bleHandleName[h]));
+  memset(bleHandleAddr[h], 0, sizeof(bleHandleAddr[h]));
+  bleMarkChanged();
+}
+
+// A Bluetooth MIDI device has connected and its address is known: find it a slot.
+void bleTryAssign(uint8_t h) {
+  const uint32_t now = millis();
+  if (bleWaitSlot[h] == 0) {
+    const uint8_t slot = slotTable.choose(bleHandleAddr[h], usbBusyMask() | bleClaimedMask());
+    if (!slot) { bleRefuse(h); return; } // every slot has a device on it
+    if (slot <= HOST_SLOTS && hostPresent()) { // a USB Host slot: the host brain has to agree to keep it free
+      bleWaitSlot[h] = slot;
+      bleWaitSinceMs[h] = now;
+      bleReserveWanted |= (uint8_t)(1 << (slot - 1));
+      bleSendReserve();
+      return;
+    }
+    bleActivate(h, slot);
+    return;
+  }
+  const uint8_t slot = bleWaitSlot[h];
+  if (bleReserveHonored & (1 << (slot - 1))) { bleActivate(h, slot); return; }
+  if ((usbBusyMask() & (1 << (slot - 1))) || now - bleWaitSinceMs[h] > 1500) { // a USB device got there first, or no answer
+    bleReserveWanted &= (uint8_t)~(1 << (slot - 1));
+    bleSendReserve();
+    bleWaitSlot[h] = 0;
+    bleRefuse(h);
+  }
+}
+
+// What the module should reconnect to: the Bluetooth devices the slots remember.
+void bleKnownSend() {
+  for (uint8_t i = 0; i < fw::slots::kBleCount; ++i) {
+    const uint8_t slot = fw::slots::kBleOrder[i];
+    const fw::slots::Record &r = slotTable.rec[slot];
+    const bool has = r.kind == fw::slots::kBle;
+    for (uint8_t part = 0; part < 3; ++part) {
+      const uint8_t pkt[4] = {CONTROL_BLE_KNOWN, (uint8_t)((part << 4) | slot), has ? r.addr[part * 2] : (uint8_t)0, has ? r.addr[part * 2 + 1] : (uint8_t)0};
+      s3Send(LINK_PORT_CONTROL, pkt);
+    }
+  }
+}
+
+void bleForgetSlot(uint8_t slot) {
+  if (slot < 1 || slot > BLE_SHARED_SLOT) return;
+  const uint8_t h = bleSlotHandle[slot];
+  if (h) {
+    const uint8_t pkt[4] = {CONTROL_BLE_COMMAND, BLE_CMD_FORGET, h, 0};
+    s3Send(LINK_PORT_CONTROL, pkt);
+    bleHandleLeft(h);
+  }
+  slotTable.forget(slot);
+  bleKnownDirty = true;
+  bleMarkChanged();
+}
+
+// The module's button was held 10 seconds: every Bluetooth device is forgotten. USB names are kept.
+void bleClearAll() {
+  for (uint8_t i = 0; i < fw::slots::kBleCount; ++i) {
+    const uint8_t slot = fw::slots::kBleOrder[i];
+    if (slotTable.rec[slot].kind == fw::slots::kBle) slotTable.forget(slot);
+  }
+  bleKnownDirty = true;
+  bleMarkChanged();
+}
+
+// Factory reset: no slot remembers anything.
+void bleWipe() {
+  for (uint8_t h = 1; h <= BLE_MAIN_HANDLES; ++h) if (bleHandleSlot[h] || bleWaitSlot[h]) bleHandleLeft(h);
+  slotTable.clear();
+  slotTable.dirty = false;
+  if (loopFsReady && LittleFS.exists(SLOTS_FILE)) LittleFS.remove(SLOTS_FILE);
+  bleKnownDirty = true;
+  bleMarkChanged();
+}
+
+// A piece of a USB device's name, from the host brain (host firmware 9).
+void usbNameChunk(uint8_t slot, uint8_t chunk, uint8_t c0, uint8_t c1) {
+  if (slot < 1 || slot > HOST_SLOTS) return;
+  if (!nameFeed(usbSlotStage[slot], chunk, c0, c1)) return;
+  char clean[NAME_CHARS + 1];
+  memcpy(clean, usbSlotStage[slot], sizeof(clean));
+  nameClean(clean);
+  const uint8_t bit = (uint8_t)(1 << (slot - 1));
+  const bool isNew = (usbSlotNew & bit) != 0;
+  if (isNew || strncmp(slotTable.rec[slot].name, clean, NAME_CHARS) != 0) bleMarkChanged();
+  slotTable.usbSeen(slot, clean, isNew);
+  usbSlotNew &= (uint8_t)~bit;
+}
+
+void bleNameChunk(uint8_t h, uint8_t chunk, uint8_t c0, uint8_t c1) {
+  if (h < 1 || h > BLE_MAIN_HANDLES) return;
+  if (!nameFeed(bleNameStage[h], chunk, c0, c1)) return;
+  memcpy(bleHandleName[h], bleNameStage[h], sizeof(bleHandleName[h]));
+  nameClean(bleHandleName[h]);
+  if (bleHandleSlot[h]) {
+    if (strncmp(slotTable.rec[bleHandleSlot[h]].name, bleHandleName[h], NAME_CHARS) != 0) bleMarkChanged();
+    slotTable.bleName(bleHandleSlot[h], bleHandleName[h]);
+  }
+}
+
+void handleS3Control(const uint8_t packet[4]) {
+  const uint8_t type = packet[0] & 0x0F;
+  if (type == CONTROL_PORT_MAP) {
+    s3Mask = packet[1];
+    s3FwVersion = packet[2];
+    s3LastStatusMs = millis();
+  } else if (type == CONTROL_BLE_STATUS) {
+    if (s3Flags != packet[1] || s3Hosts != packet[2] || s3BoardCheck != packet[3]) bleMarkChanged();
+    s3Flags = packet[1];
+    s3Hosts = packet[2];
+    s3BoardCheck = packet[3];
+  } else if (type == CONTROL_BLE_ADDRESS) {
+    const uint8_t part = packet[1] >> 4, h = packet[1] & 0x0F;
+    if (h >= 1 && h <= BLE_MAIN_HANDLES && part < 3) {
+      bleHandleAddr[h][part * 2] = packet[2];
+      bleHandleAddr[h][part * 2 + 1] = packet[3];
+      bleAddrGot[h] |= (uint8_t)(1 << part);
+    }
+  } else if (type == CONTROL_DEVICE_NAME) {
+    bleNameChunk(packet[1] & 0x0F, packet[1] >> 4, packet[2], packet[3]);
+  } else if (type == CONTROL_BLE_EVENT) {
+    if (packet[1] == BLE_EVENT_CLEAR_ALL) bleClearAll();
+  } else if (type == CONTROL_FLOW) {
+    s3AskedPause = packet[1] == 1;
+    s3FlowMs = millis();
+  }
+}
+
+// The host slot a message from one of the module's ports belongs to, 0 if it has none.
+uint8_t s3PortSlot(uint8_t port) {
+  if (port == LINK_PORT_BLE_DEVICE) return bleDeviceUp() ? BLE_DEVICE_SLOT : 0;
+  if (port >= 1 && port <= BLE_MAIN_HANDLES) return bleHandleSlot[port];
+  return 0;
+}
+
+void pumpS3In() {
+  if (!outputsHaveRoom()) return; // an output is backed up: the module waits, as the host brain does
+  uint16_t budget = LINK_RX_BUDGET;
+  while (budget-- && s3Serial.available() > 0) {
+    if (!s3Reader.feed((uint8_t)s3Serial.read())) continue;
+    uint32_t word;
+    bool first;
+    const uint8_t port = decodeLinkWord(s3Reader.frame, word, first);
+    if (port == LINK_PORT_CONTROL) {
+      const uint8_t packet[4] = {(uint8_t)(word >> 24), (uint8_t)(word >> 16), (uint8_t)(word >> 8), (uint8_t)word};
+      handleS3Control(packet);
+      continue;
+    }
+    if (!s3Present()) continue; // MIDI only counts once the module has identified itself
+    uint32_t message[4];
+    const uint8_t words = s3Message.feed(word, first, message);
+    if (!words) continue;
+    const uint8_t slot = s3PortSlot(port);
+    if (!slot) continue;
+    uint8_t packets[8][4];
+    const uint8_t made = s3Down[s3Index(port)].push(message, words, packets);
+    for (uint8_t k = 0; k < made; ++k) {
+      currentHostPort = slot;
+      handleUsbMidiPacket(DEV_HOST, bleSysex[slot == BLE_DEVICE_SLOT ? 0 : 1], packets[k]);
+    }
+  }
+}
+
+// Saved slots: who had which and their names, so a returning device gets its own slot back.
+bool saveSlots() {
+  rp2040.wdt_reset();
+  pauseHostForFlash();
+  uint8_t buf[fw::slots::Table::kFileBytes];
+  const uint16_t n = slotTable.save(buf);
+  File file = LittleFS.open(SLOTS_FILE_TMP, "w");
+  bool ok = (bool)file && file.write(buf, n) == n;
+  if (file) file.close();
+  if (ok) {
+    LittleFS.remove(SLOTS_FILE);
+    ok = LittleFS.rename(SLOTS_FILE_TMP, SLOTS_FILE);
+  } else {
+    LittleFS.remove(SLOTS_FILE_TMP);
+  }
+  resumeHostAfterFlash();
+  if (ok) slotTable.dirty = false;
+  return ok;
+}
+
+void loadSlots() {
+  if (!loopFsReady) return;
+  File file = LittleFS.open(SLOTS_FILE, "r");
+  if (!file) return;
+  uint8_t buf[fw::slots::Table::kFileBytes + 1];
+  const int n = file.read(buf, sizeof(buf));
+  file.close();
+  if (n > 0) slotTable.load(buf, (uint16_t)n);
+  bleKnownDirty = true;
+}
+
+// Waits for a quiet moment, like the loop and the parameter locks do, then saves.
+void serviceSlotsSave() {
+  if (!slotTable.dirty) { slotsSaveWait = false; return; }
+  if (!loopFsReady) return;
+  const uint32_t ms = millis();
+  if (!slotsSaveWait) { slotsSaveWait = true; slotsChangedMs = ms; return; }
+  if (ms - slotsChangedMs < 2000 || ms - lastMusicMs < LOOP_SAVE_QUIET_MS) return;
+  saveSlots();
+  slotsSaveWait = false;
+  slotsChangedMs = ms;
+}
+
+void serviceBle() {
+  const uint32_t now = millis();
+  const bool present = s3Present();
+  if (present != s3WasPresent) {
+    s3WasPresent = present;
+    s3Message = LinkMessageReader();
+    for (uint8_t i = 0; i <= BLE_MAIN_HANDLES; ++i) { s3Up[i].reset(); s3Down[i].reset(); }
+    if (!present) { // its notes will never get a Note Off
+      for (uint8_t h = 1; h <= BLE_MAIN_HANDLES; ++h) bleHandleLeft(h);
+      releaseHeldNotes(BLE_DEVICE_SLOT, false);
+      s3Flags = 0;
+      s3Mask = 0;
+    } else {
+      applyBrightnessToLeds(); // it forgot the knob
+      bleKnownDirty = true;
+      bleAllowedSent = 0xFF;
+    }
+    bleMarkChanged();
+  }
+  if (!present) { serviceSlotsSave(); return; }
+
+  static bool deviceWas = false;
+  const bool deviceNow = (s3Flags & 1) != 0;
+  if (deviceWas && !deviceNow) releaseHeldNotes(BLE_DEVICE_SLOT, false);
+  deviceWas = deviceNow;
+
+  for (uint8_t h = 1; h <= BLE_MAIN_HANDLES; ++h) {
+    const uint8_t bit = (uint8_t)(1 << (h - 1));
+    if (s3Mask & bit) {
+      if (!bleHandleSlot[h] && !(bleRefused & bit) && bleAddrGot[h] == 7) bleTryAssign(h);
+    } else if (bleHandleSlot[h] || bleAddrGot[h] || bleWaitSlot[h] || (bleRefused & bit)) {
+      bleHandleLeft(h);
+    }
+  }
+
+  // A USB device mounted into a USB Host slot a Bluetooth device holds, which happens after a host brain restart: the USB device keeps it.
+  if (hostPresent()) {
+    for (uint8_t slot = 5; slot <= 7; ++slot) {
+      const uint8_t h = bleSlotHandle[slot];
+      if (h && (hostPortMask & (1 << hostMaskBit(slot)))) {
+        bleRefuse(h);
+        bleHandleLeft(h);
+      }
+    }
+    if (now - bleReserveMs >= 500) bleSendReserve(); // the host brain forgets it when it restarts
+  }
+
+  // Keep the module told what it may connect to and how many.
+  uint8_t active = 0;
+  for (uint8_t h = 1; h <= BLE_MAIN_HANDLES; ++h) if (bleHandleSlot[h] || bleWaitSlot[h]) ++active;
+  const uint8_t allowed = (uint8_t)(active + bleFreeSlots());
+  if (allowed != bleAllowedSent || now - bleAllowMs >= 1000) {
+    bleAllowedSent = allowed;
+    bleAllowMs = now;
+    const uint8_t pkt[4] = {CONTROL_BLE_COMMAND, BLE_CMD_ALLOW, allowed, 0};
+    s3Send(LINK_PORT_CONTROL, pkt);
+  }
+  if (bleKnownDirty || now - bleKnownMs >= 5000) {
+    bleKnownDirty = false;
+    bleKnownMs = now;
+    bleKnownSend();
+  }
+  serviceSlotsSave();
 }
 
 // ============================================================================================
@@ -7047,12 +7596,15 @@ void setup() {
   looper.setEraseHook(looperEraseHook, nullptr); // Note Delete
   linkSerial.begin(LINK_BAUD);
   gpio_pull_up(PIN_LINK_RX); // holds the line idle with no host brain attached, so it reads nothing
+  s3Serial.begin(LINK_BAUD);
+  gpio_pull_up(PIN_S3_RX); // the same for the Bluetooth module
 
   loadFromFlash();
   applyBrightnessToLeds();
   resetButtonRuntimeState();
   looperStorageBegin();
   presetBegin(false);
+  loadSlots(); // who had which Bluetooth and USB Host slot, and their names
   routeNotesOffArmed = true;
 
   clockEngine.begin(clockConfig(), time_us_64());
@@ -7079,8 +7631,10 @@ void loop() {
   pumpDinIn();
   CRUMB(73);
   pumpHostIn();
+  pumpS3In();
   CRUMB(74);
   serviceStuckNoteGuard();
+  serviceBle();
   serviceButton();
   servicePresets(); // after every input of this pass, before anything that reads the routes
   serviceCommit();
@@ -7105,8 +7659,10 @@ void loop() {
   pumpUsbOut();
   CRUMB(81);
   serviceLinkFlow();
+  serviceS3Flow();
   CRUMB(82);
   pumpLinkOut();
+  pumpS3Out();
   CRUMB(80);
   sampleMemory();
 

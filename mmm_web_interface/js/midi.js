@@ -35,6 +35,9 @@ export const CMD = {
   PRESET_DATA: 0x38,
   SET_PRESET_SLOTS: 0x39,
   SELECT_PRESET: 0x3A,
+  GET_SLOTS: 0x3B,
+  SLOT_DATA: 0x3C,
+  BLE_ACTION: 0x3D,
   COMMIT: 0x31,
   FACTORY_RESET: 0x32,
   FW_BEGIN: 0x40,
@@ -47,8 +50,10 @@ const MFR_ID = 0x7D;
 const DEVICE_ID = 0x4D;
 export const ROUTE_NAME_MAX_LEN = 24; // must match ROUTE_NAME_MAX_LEN in the firmware
 
-// Ports, one bit each, same as PORT_* in the firmware. Inputs are bits 0-6 and 11-13, TRS 3-6 are outputs
-// only. USB Host 5-7 (1.74) took the spare bits 11-13, and slot is the host's 1-7 number.
+// Ports, one bit each, same as PORT_* in the firmware. Inputs are bits 0-6, 11-13 and 14-15, TRS 3-6 are outputs
+// only. USB Host 5-7 (1.74) took the spare bits 11-13, and slot is the host's 1-7 number. The Bluetooth module's
+// ports (2.2) are bits 14 and 15, bleSlot is their host slot, 9 BLE Device and 8 a BLE Host. A Bluetooth device can
+// also hold USB Host 5-7, then that port reads BLE Host and the device's name (see the slots, getSlots).
 // Routes carry them as inPorts/outPorts. Protocol 1 firmware (1.0-1.3) only has TRS/DIN and USB Device.
 export const PORTS = [
   { bit: 0, key: 'trs', label: 'TRS/DIN', short: 'TRS', input: true, sidecar: false },
@@ -64,8 +69,11 @@ export const PORTS = [
   { bit: 7, key: 'trs3', label: 'TRS 3', short: 'TRS3', input: false, sidecar: true, trs: true },
   { bit: 8, key: 'trs4', label: 'TRS 4', short: 'TRS4', input: false, sidecar: true, trs: true },
   { bit: 9, key: 'trs5', label: 'TRS 5', short: 'TRS5', input: false, sidecar: true, trs: true },
-  { bit: 10, key: 'trs6', label: 'TRS 6', short: 'TRS6', input: false, sidecar: true, trs: true }
+  { bit: 10, key: 'trs6', label: 'TRS 6', short: 'TRS6', input: false, sidecar: true, trs: true },
+  { bit: 15, key: 'ble8', label: 'BLE Host', short: 'BLE', input: true, sidecar: false, ble: true, bleSlot: 8 },
+  { bit: 14, key: 'bleDevice', label: 'BLE Device', short: 'BLEDev', input: true, sidecar: false, ble: true, bleSlot: 9 }
 ];
+export const BLE_PORTS = (1 << 14) | (1 << 15);
 export const PORT_TRS = 1 << 0;
 export const PORT_USB = 1 << 1;
 export const SIDECAR_INPUT_PORTS = 0x387C;
@@ -807,6 +815,36 @@ export class DeviceLink extends EventTarget {
   async getPresets() {
     const r = await this._sendAndWait([CMD.GET_PRESETS], CMD.PRESET_DATA, DEFAULT_TIMEOUT_MS);
     return { slots: r[0], active: r[1], used: r[2] | (r[3] << 7) | (r[4] << 14) };
+  }
+
+  /**
+   * 2.2 (protocol 8): the Bluetooth module and the host slots. { present, deviceConnected, learning, scanning, peripheral,
+   * boardCheck, fw, generation, free, hosts, slots }. slots is read only when the generation differs from knownGeneration, else null.
+   * slots[1-8] are the host slots and slots[9] is BLE Device: { kind (0 none, 1 USB, 2 Bluetooth, 3 BLE Device), connected,
+   * bleOk (a Bluetooth device may take it), name }. Null before protocol 8.
+   */
+  async getSlots(knownGeneration = -1) {
+    if (this.protocolVersion < 8) return null;
+    const s = await this._sendAndWait([CMD.GET_SLOTS, 0], CMD.SLOT_DATA, DEFAULT_TIMEOUT_MS);
+    const summary = {
+      present: !!(s[1] & 1), deviceConnected: !!(s[1] & 2), learning: !!(s[1] & 4), scanning: !!(s[1] & 8), peripheral: !!(s[1] & 16),
+      boardCheck: !!(s[1] & 32), fw: s[2] ?? 0, generation: s[3] ?? 0, free: s[4] ?? 0, hosts: s[5] ?? 0, slots: null
+    };
+    if (summary.generation !== knownGeneration) {
+      const slots = [];
+      for (let i = 1; i <= 9; i++) {
+        const r = await this._sendAndWait([CMD.GET_SLOTS, i], CMD.SLOT_DATA, DEFAULT_TIMEOUT_MS);
+        const len = r[3] ?? 0;
+        slots[i] = { kind: r[1] ?? 0, connected: !!((r[2] ?? 0) & 1), bleOk: !!((r[2] ?? 0) & 2), name: String.fromCharCode(...r.slice(4, 4 + len)) };
+      }
+      summary.slots = slots;
+    }
+    return summary;
+  }
+
+  /** 2.2: action 1 starts (value 1) or stops (0) adding Bluetooth devices, action 2 forgets host slot 1-8. */
+  async bleAction(action, value) {
+    return this._sendMutating(CMD.BLE_ACTION, [action, value]);
   }
 
   async setPresetSlots(count) {

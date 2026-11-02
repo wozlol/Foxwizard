@@ -1,5 +1,5 @@
 import { ACT, MAP_ENTRIES, defaultAction, defaultLpActions, actionEditorHtml, applyActionField, usesLooper, usesLiveChannel } from './mapper.js';
-import { DeviceLink, DATA_TYPE_BITS, ROUTE_NAME_MAX_LEN, PORTS, PORT_TRS, PORT_USB, SIDECAR_INPUT_PORTS, SIDECAR_OUTPUT_PORTS, SIDECAR_TRS_PORTS, FEATURE, SCALES, LAYOUTS, routeChannelOrder, SWING_AMOUNTS, defaultScale, ARP_SLOTS, ARP_MODES, ARP_MODE_ORDER, ARP_SQUARES, DIVISIONS, defaultArp, defaultEcho, defaultStutter, defaultLooper, defaultLpQuad, noTrigger, STUTTER_RUNOUTS, snapRunout, defaultPlock } from './midi.js';
+import { DeviceLink, DATA_TYPE_BITS, ROUTE_NAME_MAX_LEN, PORTS, PORT_TRS, PORT_USB, BLE_PORTS, SIDECAR_INPUT_PORTS, SIDECAR_OUTPUT_PORTS, SIDECAR_TRS_PORTS, FEATURE, SCALES, LAYOUTS, routeChannelOrder, SWING_AMOUNTS, defaultScale, ARP_SLOTS, ARP_MODES, ARP_MODE_ORDER, ARP_SQUARES, DIVISIONS, defaultArp, defaultEcho, defaultStutter, defaultLooper, defaultLpQuad, noTrigger, STUTTER_RUNOUTS, snapRunout, defaultPlock } from './midi.js';
 import { serializePreset, parsePreset, downloadPreset, readPresetFile, channelsToRangeString } from './presetXml.js';
 import { attachDragReorder } from './dragReorder.js';
 import { parseHostReport, hostReportSummary, hostReportText } from './hostReport.js';
@@ -99,7 +99,7 @@ function defaultRoute() {
     name: '',
     enabled: true,
     // Every port this FoxWizard has right now, so a fresh route is a full passthrough.
-    inPorts: PORT_TRS | PORT_USB | (sidecarPresent ? sidecarInputPorts() : 0),
+    inPorts: PORT_TRS | PORT_USB | (sidecarPresent ? sidecarInputPorts() : 0) | (blePresent ? BLE_PORTS : 0),
     inputChannels: 0x0001, // ch1 only
     // All top-level input data types on by default (every bit except bit7/aftertouchMap, which is
     // a sub-switch under Poly Aftertouch, not one of the top-level switches the master toggle
@@ -107,7 +107,7 @@ function defaultRoute() {
     typeFlags: 0x7F,
     noteStart: 0, noteEnd: 127,
     ccStart: 0, ccEnd: 127,
-    outPorts: PORT_TRS | PORT_USB | (sidecarPresent ? sidecarOutputPorts() : 0),
+    outPorts: PORT_TRS | PORT_USB | (sidecarPresent ? sidecarOutputPorts() : 0) | (blePresent ? BLE_PORTS : 0),
     outputChannels: 0x0001, // ch1 only
     transpose: 0,
     velocityScale: 100,
@@ -675,6 +675,128 @@ let hostPortsShown = 4;
 let hostRestartCount = null; // null until the first status after connecting, so only new restarts are announced
 let lastHostStatus = null;   // newest GET_STATUS reply, for the badge click
 
+// Bluetooth (2.2, protocol 8): the module is another thing a FoxWizard can have. It shows as a card and as BLE ports on the routes.
+// BLE Host and USB Host 5-7 share slots, so the unit says who holds each and what they are called, and the ports read that.
+let blePresent = false;
+let bleInfo = null;   // the newest summary from the unit
+let bleSlots = [];    // by host slot, 1-8, and 9 for BLE Device
+let bleGeneration = -1;
+let bleBusy = false;
+const bluetoothRow = document.getElementById('bluetoothRow');
+
+function escapeHtml(text) {
+  return String(text).replace(/[&<>"']/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]));
+}
+
+function bleRec(slot) { return bleSlots[slot] || null; }
+
+// A port's label: the device's name when the unit knows it, else the port's own name. A Bluetooth device in USB Host 5 reads BLE Host.
+function portLabel(p) {
+  if (p.bleSlot === 9) return 'BLE Device';
+  const slot = p.bleSlot || p.slot;
+  const rec = slot ? bleRec(slot) : null;
+  if (rec?.name && (rec.kind === 1 || rec.kind === 2)) return rec.name;
+  if (p.bleSlot === 8 || rec?.kind === 2) return 'BLE Host';
+  return p.label;
+}
+
+function portLive(p) {
+  if (p.bleSlot === 9) return !!(blePresent && bleInfo?.deviceConnected);
+  const slot = p.bleSlot || p.slot;
+  const rec = slot ? bleRec(slot) : null;
+  if (p.bleSlot === 8) return !!rec?.connected;
+  if (p.slot && rec?.kind === 2) return !!rec.connected;
+  return !!(p.slot && sidecarPresent && (hostPortMask & (1 << (p.slot - 1))));
+}
+
+function portTitle(p, live) {
+  const slot = p.bleSlot || p.slot;
+  const rec = slot ? bleRec(slot) : null;
+  const kind = p.bleSlot === 9 ? 'BLE Device' : (p.bleSlot === 8 || rec?.kind === 2) ? 'BLE Host' : p.label;
+  const named = rec?.name && p.bleSlot !== 9 ? `: ${rec.name}` : '';
+  return `${kind}${named}${live ? ', connected' : (named ? ', not connected now' : '')}`;
+}
+
+async function refreshBle() {
+  if (bleBusy || !device.connected || device.protocolVersion < 8) return false;
+  bleBusy = true;
+  try {
+    const info = await device.getSlots(bleGeneration);
+    if (!info) return false;
+    const before = blePresent;
+    const hadBoardCheck = !!bleInfo?.boardCheck;
+    let changed = false;
+    blePresent = info.present;
+    if (info.slots) { bleSlots = info.slots; changed = true; }
+    bleGeneration = info.generation;
+    bleInfo = info;
+    if (blePresent !== before) {
+      changed = true;
+      toast(blePresent ? 'Bluetooth module connected' : 'Bluetooth module disconnected', blePresent ? 'success' : 'error');
+    }
+    if (info.boardCheck && !hadBoardCheck) toast("The Bluetooth module says its Tools settings are wrong. Open its serial monitor to see which.", 'error');
+    renderBluetoothRow();
+    return changed;
+  } catch (err) {
+    return false;
+  } finally {
+    bleBusy = false;
+  }
+}
+
+function resetBle() {
+  blePresent = false;
+  bleInfo = null;
+  bleSlots = [];
+  bleGeneration = -1;
+  renderBluetoothRow();
+}
+
+// The slots a Bluetooth device may take, in the order the unit tries them.
+const BLE_SLOT_ORDER = [8, 5, 6, 7];
+
+function renderBluetoothRow() {
+  bluetoothRow.hidden = !blePresent;
+  if (!blePresent || !bleInfo) { bluetoothRow.innerHTML = ''; return; }
+  const i = bleInfo;
+  const devices = BLE_SLOT_ORDER.map((slot) => ({ slot, rec: bleRec(slot) })).filter((d) => d.rec?.kind === 2);
+  const usbInTheWay = [5, 6, 7].some((s) => bleRec(s)?.kind === 1 && bleRec(s)?.connected);
+  const full = i.free === 0 && !i.learning;
+  const state = [
+    `BLE Device: ${i.deviceConnected ? 'connected' : 'waiting for a phone or computer'}`,
+    `${i.hosts} Bluetooth device${i.hosts === 1 ? '' : 's'} connected`
+  ].join(' · ');
+  let note = '';
+  if (i.peripheral) note = '<p class="ble-note">Waiting for a phone or computer to connect to BLE Device. Your Bluetooth devices reconnect after a minute.</p>';
+  else if (i.learning) note = '<p class="ble-note">Turn on the Bluetooth MIDI device you want to add and put it in pairing mode. It connects by itself and is remembered. This stops after a minute.</p>';
+  else if (full) note = `<p class="ble-note ble-note-warn">${usbInTheWay ? 'Every slot is taken. Unplug a USB device in USB Host 5 to 7 first, then add the Bluetooth device.' : 'Every slot has a Bluetooth device. Forget one first.'}</p>`;
+  bluetoothRow.innerHTML = `
+    <div class="ble-row-header">
+      <h2 class="ble-row-heading">BLUETOOTH</h2>
+      <span class="ble-state">${state}</span>
+      <button type="button" class="btn btn-ghost btn-tiny" data-ble-action="learn" ${full ? 'disabled' : ''}>${i.learning ? 'Stop Adding' : 'Add Bluetooth Device'}</button>
+    </div>
+    ${note}
+    ${devices.length ? `<ul class="ble-devices">${devices.map(({ slot, rec }) => `<li class="ble-device${rec.connected ? '' : ' ble-device-gone'}">
+        <span class="ble-dot${rec.connected ? ' ble-dot-on' : ''}"></span><span>${escapeHtml(rec.name || 'Bluetooth device')}</span>
+        <button type="button" class="btn btn-ghost btn-tiny" data-ble-forget="${slot}">Forget</button></li>`).join('')}</ul>` : ''}`;
+}
+
+bluetoothRow.addEventListener('click', async (e) => {
+  const learn = e.target.closest('[data-ble-action="learn"]');
+  const forget = e.target.closest('[data-ble-forget]');
+  if (!learn && !forget) return;
+  if (!device.connected) { toast('Not connected to a device', 'error'); return; }
+  try {
+    if (learn) await device.bleAction(1, bleInfo?.learning ? 0 : 1);
+    else await device.bleAction(2, parseInt(forget.dataset.bleForget, 10));
+  } catch (err) {
+    toast("The Bluetooth module didn't answer", 'error');
+    return;
+  }
+  if (await refreshBle()) { renderRoutes(); renderConnectionPill(); }
+});
+
 function restartMessage(status) {
   switch (status.restartReason) {
     case 2: return `Host Edition restarted to recover: USB Host ${status.restartPort} stopped accepting data`;
@@ -730,6 +852,7 @@ async function refreshSidecarStatus() {
   }
   lastHostStatus = status;
   checkUnitPreset(status);
+  const bleChanged = await refreshBle();
   if (status.sidecar) {
     if (hostRestartCount !== null && status.restartCount > hostRestartCount) {
       // USB driver resets (data sequence 3, device change 4) recover on their own: a brief yellow note.
@@ -752,7 +875,7 @@ async function refreshSidecarStatus() {
     hostRestartCount = status.restartCount;
   }
   updateClockReadout(status);
-  if (sidecarChanged || trsChanged || hostShownChanged) {
+  if (sidecarChanged || trsChanged || hostShownChanged || bleChanged) {
     renderRoutes();
     renderClockRow();
     renderConnectionPill();
@@ -773,11 +896,11 @@ function renderConnectionPill() {
     const version = versionText(deviceVersion());
     if (status === 'updatable' || status === 'manual') {
       connectionPill.classList.add('outdated');
-      connectionLabel.textContent = `Connected · Firmware ${version}${sidecarPresent ? ' · Host' : ''} · Update`;
+      connectionLabel.textContent = `Connected · Firmware ${version}${sidecarPresent ? ' · Host' : ''}${blePresent ? ' · Bluetooth' : ''} · Update`;
       connectionPill.title = `Click to update to firmware ${versionText(latestFirmware)}`;
     } else {
       connectionPill.classList.add('connected');
-      connectionLabel.textContent = `Connected · Firmware ${version}${sidecarPresent ? ' · Host' : ''}`;
+      connectionLabel.textContent = `Connected · Firmware ${version}${sidecarPresent ? ' · Host' : ''}${blePresent ? ' · Bluetooth' : ''}`;
       connectionPill.title = status === 'current' ? 'Firmware is up to date' : "Couldn't check for firmware updates";
     }
   } else if (s === 'connecting') {
@@ -807,6 +930,7 @@ device.addEventListener('status', async (e) => {
     hostHub = { known: false, jacks: 0, hubs: 0, waiting: 0 };
     sidecarMisses = 0;
     updateHostPortsShown();
+    resetBle();
   }
   if (connectionState !== 'connected' && sidecarPresent) {
     sidecarPresent = false;
@@ -1697,7 +1821,15 @@ function sidecarPortShown(p, used) {
 // goes with which switch. Sidecar ports (USB Host 1-4, TRS 2-6) only show while a sidecar is
 // detected, or when the route already uses them (TRS 2-6 excepted, see trsUnavailable above).
 function visiblePorts(route, field) {
-  return PORTS.filter((p) => (field === 'outPorts' || p.input) && (!p.sidecar || sidecarPortShown(p, !!(route[field] & (1 << p.bit)))));
+  return PORTS.filter((p) => (field === 'outPorts' || p.input) && portShown(p, route, field));
+}
+
+// The Bluetooth module's ports show while it is there. A Bluetooth device holding USB Host 5-7 shows that port whatever the hubs say.
+function portShown(p, route, field) {
+  const used = !!(route[field] & (1 << p.bit));
+  if (p.ble) return blePresent || used;
+  if (p.slot >= 5 && bleRec(p.slot)?.kind === 2) return true;
+  return !p.sidecar || sidecarPortShown(p, used);
 }
 
 // Sidecar port masks this board actually has: Host 1-4 always, TRS 2-6 only when a TRS board is
@@ -1724,11 +1856,13 @@ function portSwitchesHtml(route, index, field, title) {
       <span class="switch-label">${allLabel}</span>
     </label>`;
   const chips = visiblePorts(route, field).map((p) => {
-    const live = p.slot && sidecarPresent && (hostPortMask & (1 << (p.slot - 1)));
-    return `<label class="switch switch-port port-chip${live ? ' port-chip-live' : ''}" data-port-bit="${p.bit}" title="${p.label}${live ? ', device connected' : ''}">
+    const live = portLive(p);
+    const slot = p.bleSlot || p.slot;
+    const remembered = !live && !!bleRec(slot)?.name && p.bleSlot !== 9;
+    return `<label class="switch switch-port port-chip${live ? ' port-chip-live' : ''}${remembered ? ' port-chip-remembered' : ''}" data-port-bit="${p.bit}" title="${escapeHtml(portTitle(p, live))}">
       <input type="checkbox" data-route-index="${index}" data-field="${field}" data-bit="${p.bit}" ${route[field] & (1 << p.bit) ? 'checked' : ''}>
       <span class="switch-track"><span class="switch-thumb"></span></span>
-      <span class="switch-label">${p.label}</span>
+      <span class="switch-label">${escapeHtml(portLabel(p))}</span>
     </label>`;
   }).join('');
   return `<div class="port-switches"><h3>${title}</h3>${allChip}${chips}</div>`;
@@ -1737,11 +1871,10 @@ function portSwitchesHtml(route, index, field, title) {
 // Marks which USB Host chips have a device plugged in, without re-rendering the route list.
 function updatePortChipsLive() {
   for (const p of PORTS.filter((x) => x.slot)) {
-    const i = p.slot - 1;
-    const live = sidecarPresent && !!(hostPortMask & (1 << i));
+    const live = portLive(p);
     routesContainer.querySelectorAll(`.port-chip[data-port-bit="${p.bit}"]`).forEach((el) => {
       el.classList.toggle('port-chip-live', live);
-      el.title = `USB Host ${i + 1}${live ? ', device connected' : ''}`;
+      el.title = portTitle(p, live);
     });
   }
 }

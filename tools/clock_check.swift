@@ -1197,6 +1197,40 @@ case "commit":
   let reply = ask(link, 0x31, reply: 0x7E, timeout: 5.0)
   print(reply == nil ? "No answer to the save" : "Saved to the unit's flash")
   exit(reply == nil ? 1 : 0)
+case "slots":
+  // The Bluetooth module and the host slots (protocol 8, firmware 2.2): who is in which slot, and what they are called.
+  guard let (source, destination) = findEndpoints(matching: portName), let link = Link(source: source, destination: destination) else { print("no port"); exit(2) }
+  guard let summary = ask(link, 0x3B, [0], reply: 0x3C, timeout: 1.5), summary.count >= 6 else { print("No answer. The unit needs firmware 2.2 or later."); exit(1) }
+  let flags = summary[1]
+  print("Bluetooth module: \(flags & 1 != 0 ? "present, firmware \(summary[2])" : "not present")")
+  if flags & 1 != 0 {
+    print("  BLE Device: \(flags & 2 != 0 ? "a phone or computer is connected" : "waiting for a phone or computer")")
+    print("  Learning: \(flags & 4 != 0 ? "on" : "off"), scanning: \(flags & 8 != 0 ? "yes" : "no"), force peripheral: \(flags & 16 != 0 ? "on" : "off")")
+    print("  Bluetooth devices connected: \(summary[5]), slots a new device could take: \(summary[4])")
+    if flags & 32 != 0 { print("  The module says its Arduino Tools settings are wrong. Open its serial monitor.") }
+  }
+  print("  slot list generation \(summary[3])")
+  for i in 1...9 {
+    guard let r = ask(link, 0x3B, [UInt8(i)], reply: 0x3C, timeout: 1.5), r.count >= 4 else { print("  slot \(i): no answer"); continue }
+    let len = Int(r[3])
+    let name = r.count >= 4 + len ? String(decoding: r[4..<(4 + len)], as: UTF8.self) : ""
+    let kinds = ["empty", "USB device", "Bluetooth device", "BLE Device"]
+    let kind = Int(r[1]) < kinds.count ? kinds[Int(r[1])] : "kind \(r[1])"
+    let place = i == 9 ? "BLE Device" : (i == 8 ? "slot 8 (BLE only)" : "USB Host \(i)" + (r[2] & 2 != 0 ? " (a Bluetooth device may take it)" : ""))
+    print("  \(place): \(kind)\(r[2] & 1 != 0 ? ", there now" : "")\(name.isEmpty ? "" : ", \"\(name)\"")")
+  }
+  exit(0)
+case "bleaction":
+  // clock_check bleaction learn on|off   or   clock_check bleaction forget SLOT. Does what Patchling's Bluetooth card does.
+  guard let (source, destination) = findEndpoints(matching: portName), let link = Link(source: source, destination: destination) else { print("no port"); exit(2) }
+  let words = Array(args.dropFirst())
+  var payload: [UInt8]? = nil
+  if words.count >= 2, words[0] == "learn" { payload = [1, words[1] == "on" ? 1 : 0] }
+  if words.count >= 2, words[0] == "forget", let n = UInt8(words[1]) { payload = [2, n] }
+  guard let p = payload else { print("clock_check bleaction learn on|off   |   clock_check bleaction forget SLOT"); exit(2) }
+  let reply = ask(link, 0x3D, p, reply: 0x7E, timeout: 2.0)
+  print(reply == nil ? "No answer" : (reply!.count > 1 && reply![1] == 0 ? "Done" : "The unit said no (status \(reply!.count > 1 ? Int(reply![1]) : -1))"))
+  exit(0)
 case "getblock":
   // Reads one feature block the way Patchling does, for finding which request raises the stack depth.
   guard let (source, destination) = findEndpoints(matching: portName), let link = Link(source: source, destination: destination), let type = args.dropFirst().first.flatMap({ UInt8($0) }) else { print("clock_check getblock TYPE"); exit(2) }

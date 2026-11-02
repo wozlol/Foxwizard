@@ -1,7 +1,7 @@
 #pragma once
 
-// Shared by both Host Edition sketches. Keep the copies in Foxwizard_Host_Edition_Sidecar and
-// Mini_MIDI_Multitool identical. Frame format and ports: Foxwizard Host Edition/README.md.
+// Shared by the main brain and both sidecars. Keep the copies in Mini_MIDI_Multitool, Foxwizard_Host_Edition_Sidecar and
+// Foxwizard_Bluetooth_Sidecar identical. Frame format and ports: Foxwizard Host Edition/README.md.
 
 #include <stdint.h>
 #include <string.h>
@@ -23,6 +23,12 @@ inline uint8_t hostLinkPort(uint8_t slot) { return slot <= 4 ? slot : slot + 5; 
 inline uint8_t hostSlotFromLink(uint8_t port) { return (port >= 1 && port <= 4) ? port : ((port >= 10 && port <= 12) ? port - 5 : 0); }
 inline uint8_t hostMaskBit(uint8_t slot) { return slot <= 4 ? slot - 1 : slot; }
 
+// The Bluetooth module (the ESP32-S3) is on its own link with the same frames. Its ports: 1-8 are BLE Host connections (the
+// handle the module gives each one), 9 is BLE Device, the FoxWizard's own Bluetooth MIDI port, 15 is control. The main brain
+// gives each BLE Host a USB Host slot (5-7) or the shared slot 8, see the slots table in the Host Edition README.
+constexpr uint8_t LINK_PORT_BLE_DEVICE = 9;
+constexpr uint8_t BLE_HANDLES = 8;
+
 // Control frame types, carried in the CIN field of a port 15 frame.
 constexpr uint8_t CONTROL_PORT_MAP = 1; // host -> main. byte 1 = port mask, 2 = fw version, 3 = drops
 constexpr uint8_t CONTROL_FLOW = 2;     // both ways. byte 1 = 1 pause, 0 resume
@@ -30,6 +36,21 @@ constexpr uint8_t CONTROL_HOST_RESTART = 3; // host -> main. byte 1 = last resta
 constexpr uint8_t CONTROL_BRIGHTNESS = 4; // main -> host. byte 1 = ledBrightnessStep (0-10), for the sidecar's status LED
 constexpr uint8_t CONTROL_HOST_HUB = 6;    // host -> main. byte 1 = downstream jacks of the hubs attached (0 no hub), 2 = hubs attached, 3 = devices waiting for a free slot
 constexpr uint8_t CONTROL_HOST_REPORT = 5; // host -> main. byte 1 = index, 2-3 = report bytes 2*index and 2*index+1
+// Slots shared by USB Host and BLE Host (host firmware 9, Bluetooth module 1, main 2.2).
+constexpr uint8_t CONTROL_SLOT_RESERVE = 7;  // main -> host: byte 1 = USB Host slots held for a Bluetooth device, slot n is bit n-1. host -> main: the ones it is keeping free
+constexpr uint8_t CONTROL_DEVICE_NAME = 8;   // host or Bluetooth module -> main: byte 1 = chunk << 4 | slot or handle, 2-3 = two name characters, 0 ends it
+constexpr uint8_t CONTROL_BLE_STATUS = 9;    // Bluetooth module -> main: byte 1 = bit 0 BLE Device connected, bit 1 learning, bit 2 scanning, bit 3 peripheral window, 2 = BLE Hosts connected, 3 = board check (0 fine)
+constexpr uint8_t CONTROL_BLE_ADDRESS = 10;  // Bluetooth module -> main: byte 1 = part << 4 | handle, 2-3 = two address bytes, parts 0-2
+constexpr uint8_t CONTROL_BLE_KNOWN = 11;    // main -> Bluetooth module: byte 1 = part << 4 | slot, 2-3 = two address bytes, parts 0-2. All zero clears the slot
+constexpr uint8_t CONTROL_BLE_COMMAND = 12;  // main -> Bluetooth module: byte 1 = BLE_CMD_*, byte 2 = its value
+constexpr uint8_t CONTROL_BLE_EVENT = 13;    // Bluetooth module -> main: byte 1 = BLE_EVENT_*
+constexpr uint8_t BLE_EVENT_CLEAR_ALL = 1;   // the button was held 10 seconds: forget every Bluetooth device
+constexpr uint8_t BLE_CMD_LEARN = 1;         // value 1 starts learning (scan, connect and remember compatible devices), 0 stops it
+constexpr uint8_t BLE_CMD_ALLOW = 2;         // value = BLE Hosts it may have connected at once, 0 to 8
+constexpr uint8_t BLE_CMD_DISCONNECT = 3;    // value = handle
+constexpr uint8_t BLE_CMD_FORGET = 4;        // value = handle, disconnects it and removes the Bluetooth bond
+constexpr uint8_t NAME_CHARS = 24;
+constexpr uint8_t NAME_CHUNKS = NAME_CHARS / 2;
 
 // The host report (host fw 3): what the host brain knew when it last restarted, sent a few times
 // after a recovery restart. Multi-byte values are little-endian.
@@ -239,4 +260,36 @@ inline bool pushLinkMessage(Q &q, uint8_t port, const uint32_t *words, uint8_t n
     q.push(f, critical);
   }
   return true;
+}
+
+// A device name in control frames: printable ASCII, NAME_CHARS at most, sent as NAME_CHUNKS frames of two characters. Characters
+// past the end of the name are zeros. The receiver commits the name when the last chunk arrives, and the sender repeats the whole
+// name now and then, so a lost frame is made good by the next pass.
+inline uint8_t nameLength(const char *name) {
+  uint8_t n = 0;
+  while (n < NAME_CHARS && name[n]) ++n;
+  return n;
+}
+
+inline void nameChunk(const char *name, uint8_t chunk, uint8_t out[2]) {
+  const uint8_t n = nameLength(name);
+  for (uint8_t i = 0; i < 2; ++i) {
+    const uint8_t at = (uint8_t)(chunk * 2 + i);
+    out[i] = at < n ? (uint8_t)((uint8_t)name[at] & 0x7F) : (uint8_t)0;
+  }
+}
+
+// staging holds NAME_CHARS + 1 bytes. True when this chunk was the last, and staging is then a whole name.
+inline bool nameFeed(char *staging, uint8_t chunk, uint8_t c0, uint8_t c1) {
+  if (chunk >= NAME_CHUNKS) return false;
+  staging[chunk * 2] = (char)(c0 & 0x7F);
+  staging[chunk * 2 + 1] = (char)(c1 & 0x7F);
+  if (chunk != NAME_CHUNKS - 1) return false;
+  staging[NAME_CHARS] = 0;
+  return true;
+}
+
+// Printable ASCII only, so a name is safe in a SysEx and on a page. Anything else becomes '?'.
+inline void nameClean(char *name) {
+  for (uint8_t i = 0; i < NAME_CHARS && name[i]; ++i) if (name[i] < 0x20 || name[i] > 0x7E) name[i] = '?';
 }
