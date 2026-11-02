@@ -8,8 +8,8 @@
   ../README.md for the link frame format and the buffering rules.
 
   Wiring:
-  - GP28 = link TX to main brain GP27
-  - GP29 = link RX from main brain GP26
+  - GP28 = link TX to main brain GP28
+  - GP29 = link RX from main brain GP29
   - GP4  = DIN/TRS MIDI OUT 1 (UART1 TX)
   - GP5  = DIN/TRS MIDI IN (UART1 RX)
   - GP6, GP7, GP8, GP9 = DIN/TRS MIDI OUT 2-5 (PIO serial TX)

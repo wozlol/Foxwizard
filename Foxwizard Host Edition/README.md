@@ -13,9 +13,9 @@ The only custom FoxWizard board today is the original (OG). Every other edition 
 
 The main brain firmware runs the same with or without a host brain attached, so one firmware covers both.
 
-- GP27 has its internal pull-up on, so an unconnected link reads as idle.
+- GP28 has its internal pull-up on, so an unconnected link reads as idle.
 - The host brain counts as present only for 1.5 s after its last port map frame, which it sends every 500 ms.
-- With no host brain present, the main brain ignores link MIDI and sends none. Flow control frames still go out GP26, to nothing.
+- With no host brain present, the main brain ignores link MIDI and sends none. Flow control frames still go out GP29, to nothing.
 - A host brain plugged in or restarting is picked up within 500 ms.
 
 Tested on hardware: it runs with the host brain disconnected and picks it up when reconnected.
@@ -82,19 +82,19 @@ Same as the FoxWizard, plus:
 
 | Pin | Use |
 |---|---|
-| GP26 | Link TX to host brain GP29 (PIO serial) |
-| GP27 | Link RX from host brain GP28 (PIO serial) |
+| GP29 | Link TX to host brain GP29 (PIO serial) |
+| GP28 | Link RX from host brain GP28 (PIO serial) |
 | GP14 | Link TX to the Bluetooth module's GPIO44 (PIO serial) |
 | GP15 | Link RX from the Bluetooth module's GPIO43 (PIO serial) |
 
-GP28 and GP29 are kept for the Bluetooth module's EN and IO0, so the main brain can flash it (planned). GP14 and GP15 are also the host brain's SWCLK and SWDIO pads, see Flashing the modules.
+GP26 and GP27 are kept for the Bluetooth module's EN and IO0, so the main brain can flash it (planned). GP14 and GP15 are also the host brain's SWCLK and SWDIO pads, see Flashing the modules.
 
 ### Host brain
 
 | Pin | Use |
 |---|---|
-| GP28 | Link TX to main brain GP27 (UART0) |
-| GP29 | Link RX from main brain GP26 (UART0) |
+| GP28 | Link TX to main brain GP28 (UART0) |
+| GP29 | Link RX from main brain GP29 (UART0) |
 | GP4 | DIN/TRS MIDI OUT 1 (UART1 TX) |
 | GP5 | DIN/TRS MIDI IN (UART1 RX) |
 | GP6, GP7, GP8, GP9 | DIN/TRS MIDI OUT 2-5 (PIO serial TX) |
@@ -382,47 +382,42 @@ USB Host, BLE Host and the USB devices on the module's own USB port share host s
 
 Two charts. The first is for wiring the boards you have, by what is printed on them. The second is for drawing the Deluxe schematic, by the chips' pin numbers from their datasheets.
 
-### Chart 1: wires between the boards, by the labels printed on them
+### Chart 1: the Hella, wires between the boards by the labels printed on them
 
-The whole Hella: the FoxWizard, an RP2040-Zero as the USB host module and an ESP32-S3 SuperMini as the Bluetooth module. Ground and power are not listed.
+The FoxWizard, an RP2040-Zero as the USB host module and an ESP32-S3 SuperMini as the Bluetooth module. One row per wire, each wire goes between the pads in its row. Ground and power are not listed.
 
-| Wire | FoxWizard (main brain), printed | Other board | Other board, printed | What it does |
-|---|---|---|---|---|
-| 1, out of the FoxWizard | GP14 | Bluetooth module (ESP32-S3 SuperMini) | RX | Bluetooth link, updating the module |
-| 2, into the FoxWizard | GP15 | Bluetooth module | TX | Bluetooth link, updating the module |
-| 3, out of the FoxWizard | GP28 | Bluetooth module | the RESET button's pad (EN), see below | resets the module for flashing a dead one |
-| 4, out of the FoxWizard | GP29 | Bluetooth module | the BOOT button's pad (GPIO0), see below | puts the module in its bootloader |
-| 5, out of the FoxWizard | GP26 | USB host module (RP2040-Zero) | GP29 | USB host link, updating the host module |
-| 6, into the FoxWizard | GP27 | USB host module | GP28 | USB host link, updating the host module |
+| Wire | FoxWizard (main brain) | S3 SuperMini (Bluetooth module) | RP2040-Zero (USB host module) |
+|---|---|---|---|
+| Bluetooth link, out of the FoxWizard | GP14 | RX | |
+| Bluetooth link, into the FoxWizard | GP15 | TX | |
+| USB host link, out of the FoxWizard | GP29 | | GP29 |
+| USB host link, into the FoxWizard | GP28 | | GP28 |
+| S3 reset, optional | GP26 | RESET button's pad (EN) | |
+| S3 boot mode, optional | GP27 | BOOT button's pad (GPIO0) | |
 
-Both modules are updated from Patchling through the FoxWizard over wires 1, 2, 5 and 6, once the relay is built, so wires 3 and 4 are only for rescuing a Bluetooth module whose firmware is dead or blank, by the chip's own bootloader. The RP2040-Zero is rescued with its own BOOT button and USB-C, it has no debug pads, so there is no wire for that. The main brain is always reachable over its USB-C and firmware pads.
+Both modules are updated from Patchling through the FoxWizard over the four link wires once the relay is built. The last two rows are only for rescuing a Bluetooth module whose firmware is dead or blank, by the chip's own bootloader. The RP2040-Zero is rescued with its own BOOT button and USB-C, it has no debug pads. The main brain is always reachable over its USB-C and firmware pads.
 
-TX and RX cross, a wire from one board's output goes to the other board's input. If the S3 board prints 43 and 44 or IO43 and IO44 instead of TX and RX, RX is 44 and TX is 43. The SuperMini's pinout pages list pads for many GPIOs but I could not confirm pads for GPIO0 and EN, only the BOOT and RESET buttons, so for wires 3 and 4 check your board with a meter and, if there are no pads, solder to the buttons' pads on the terminal that is not ground. Those two wires are optional.
+TX and RX cross, a wire from one board's output goes to the other board's input. If the S3 board prints 43 and 44 or IO43 and IO44 instead of TX and RX, RX is 44 and TX is 43. The SuperMini's pinout pages list pads for many GPIOs but I could not confirm pads for GPIO0 and EN, only the BOOT and RESET buttons, so for the last two rows check your board with a meter and, if there are no pads, solder to the buttons' pads on the terminal that is not ground.
 
-There is no separate Host Edition board. The Host Edition is the OG with an RP2040-Zero, the Hella adds an S3 SuperMini, and the Deluxe is the one new PCB with both modules' circuits. The host brain's rescue on the Deluxe is SWD, see the second chart.
+There is no separate Host Edition board. The Host Edition is the OG with an RP2040-Zero, the Hella adds an S3 SuperMini, and the Deluxe is the one new PCB with both modules' circuits.
 
 ### Chart 2: the Deluxe PCB, by chip pin numbers
 
-The USB host module and the main brain are bare RP2040 chips (QFN-56, pin numbers from the RP2040 datasheet). The Bluetooth module is an ESP32-S3-WROOM-1 module (pad numbers from its datasheet, Table 3-1).
+The main brain and the host brain are bare RP2040 chips (QFN-56 pin numbers from the RP2040 datasheet) and the Bluetooth module is an ESP32-S3-WROOM-1 module (pad numbers from its datasheet, Table 3-1). One row per net, each net joins the pins in its row.
 
-| Wire | RP2040 main brain, name and pin | Goes to | Name and pin |
+| Net | Main RP2040 | S3 module (ESP32-S3-WROOM-1) | Host RP2040 |
 |---|---|---|---|
-| Bluetooth link, out of the main brain | GPIO14, pin 17 | ESP32-S3-WROOM-1 | RXD0 (GPIO44), pad 36 |
-| Bluetooth link, into the main brain | GPIO15, pin 18 | ESP32-S3-WROOM-1 | TXD0 (GPIO43), pad 37 |
-| USB host link, out of the main brain | GPIO26, pin 38 | RP2040 host brain | GPIO29, pin 41 |
-| USB host link, into the main brain | GPIO27, pin 39 | RP2040 host brain | GPIO28, pin 40 |
-| S3 reset (planned) | GPIO28, pin 40 | ESP32-S3-WROOM-1 | EN, pad 3 |
-| S3 boot mode (planned) | GPIO29, pin 41 | ESP32-S3-WROOM-1 | IO0, pad 27 |
+| Bluetooth link, out of the main brain | GPIO14, pin 17 | RXD0 (GPIO44), pad 36 | |
+| Bluetooth link, into the main brain | GPIO15, pin 18 | TXD0 (GPIO43), pad 37 | |
+| USB host link, out of the main brain | GPIO29, pin 41 | | GPIO29, pin 41 |
+| USB host link, into the main brain | GPIO28, pin 40 | | GPIO28, pin 40 |
+| S3 reset, for rescue | GPIO26, pin 38 | EN, pad 3 | |
+| S3 boot mode, for rescue | GPIO27, pin 39 | IO0, pad 27 | |
+| S3 USB port, to its USB-C jack | | IO19 (USB D-), pad 13 and IO20 (USB D+), pad 14 | |
+| Host brain debug pads, to a probe header | | | SWCLK, pin 24. SWD, pin 25. RUN, pin 26 |
+| Power | | 3V3, pad 2. GND, pads 1, 40 and the ground pad 41 under the module | |
 
-More pins on the Deluxe, not wires from the main brain:
-
-| Chip | Name and pin | What it is |
-|---|---|---|
-| ESP32-S3-WROOM-1 | IO19 (USB D-), pad 13 and IO20 (USB D+), pad 14 | the S3's USB port, to its USB-C jack |
-| ESP32-S3-WROOM-1 | 3V3, pad 2. GND, pads 1 and 40, and the ground pad 41 under the module | power |
-| RP2040 host brain | SWCLK, pin 24. SWD, pin 25. RUN, pin 26 | its debug pads, for flashing it (planned) |
-
-On the Deluxe the host brain's SWD, and the S3's EN and IO0, get their own main brain pins and a header for a debug probe, the chips have the pins to spare. That is the Deluxe's rescue path for a dead host brain, and the SWD pads are on the board.
+On the Deluxe the host brain's SWD pads, and a few more rescue lines, can have their own main brain pins and a header for a debug probe, the chips have the pins to spare. That is the Deluxe's rescue path for a dead host brain.
 
 ### The Deluxe's Bluetooth module
 
@@ -433,11 +428,11 @@ ESP32-S3-WROOM-1-N8R8, the version with the PCB antenna: 8 MB flash and 8 MB PSR
 - **Bluetooth module, first time and after:** its own USB-C, with the Tools settings above. The first upload may need BOOT held while plugging in.
 - **Host brain on the Deluxe:** SWD pads, see above. On the Hella and the Host Edition it is an RP2040-Zero, flashed over its own USB-C with BOOT held.
 - **Planned, updating the modules from Patchling, on the Hella as well as the Deluxe:** the main brain relays the same chunked update it already takes (begin, data, end, with a checksum and the whole-file MD5) to a chosen module over its link, and the module installs it itself. Nothing in it needs the Deluxe's extra pins. It needs: the host brain's sketch built with a filesystem to stage the image, as the main brain is (`Flash Size 2MB (Sketch: 1MB, FS: 1MB)`, the sketch is 85 KB), the S3's second app slot (the default 4 MB layout has two), a target byte in the update messages, each module reporting its firmware version so Patchling can show an update badge per module, and the module binaries published next to the main brain's. Until it is built a module is updated by hand: the host brain over its own USB-C and BOOT button (RP2040-Zero, Hella and Host Edition) or SWD pads (the Deluxe), the Bluetooth module over its USB-C.
-- **Planned, a probe build on the main brain:** for the first flash of a host brain soldered to a board, Raspberry Pi's `debugprobe` firmware with `PROBE_PIN_OFFSET` 14, so SWCLK is GP14 and SWDIO is GP15, the reset, UART and light pins moved off GP1, GP4 and GP5 (DIN in, IN light, button) and GP28 held low so a blank Bluetooth module cannot talk on the SWD wire. Load it over USB with the firmware pads shorted, flash the host brain over SWD from a computer with OpenOCD, short the pads again and load the main firmware.
+- **Planned, a probe build on the main brain:** for the first flash of a host brain soldered to a board, Raspberry Pi's `debugprobe` firmware with `PROBE_PIN_OFFSET` 14, so SWCLK is GP14 and SWDIO is GP15, the reset, UART and light pins moved off GP1, GP4 and GP5 (DIN in, IN light, button) and GP26 held low so a blank Bluetooth module cannot talk on the SWD wire. Load it over USB with the firmware pads shorted, flash the host brain over SWD from a computer with OpenOCD, short the pads again and load the main firmware.
 - **Planned, an SWD flash mode in the main firmware:** routing paused with a notice, a free PIO state machine borrowed or plain GPIO, the watchdog fed, a restart at the end. Only the SWD engine and the flashing steps, no USB probe side. A failed flash is run again, the host brain cannot be bricked.
-- **Planned, the Bluetooth module from the main brain:** Espressif's `esp-serial-flasher` (it has a Pico host port and ESP32-S3 target), over GP14 and GP15 with GP28 on the module's EN and GP29 on IO0. Patchling streams the image over SysEx, nothing is stored on the main brain.
+- **Planned, the Bluetooth module from the main brain:** Espressif's `esp-serial-flasher` (it has a Pico host port and ESP32-S3 target), over GP14 and GP15 with GP26 on the module's EN and GP27 on IO0. Patchling streams the image over SysEx, nothing is stored on the main brain.
 
-The exposed pads on the main brain are GP14, GP15, GP26, GP27, GP28 and GP29. GP26 and GP27 are the host brain link, and GP14, GP15, GP28 and GP29 are used by the above.
+The exposed pads on the main brain are GP14, GP15, GP26, GP27, GP28 and GP29. GP28 and GP29 are the host brain link, the same pad numbers as on the host module, and GP14, GP15, GP26 and GP27 are used by the above. Firmware 2.2 moved the host link here from GP26 and GP27 (it was GP26 to host GP29 and GP27 from host GP28), a unit wired the old way needs its two link wires moved.
 
 ## Editions
 

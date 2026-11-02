@@ -12,7 +12,7 @@
   Wiring (see board_config.h for the module switch):
   - GPIO43 = link TX to main brain GP14
   - GPIO44 = link RX from main brain GP15
-  - the main brain's GP28 on EN and GP29 on IO0, so it can flash this module over the same two wires (not in this version)
+  - the main brain's GP26 on EN and GP27 on IO0, so it can flash this module over the same two wires (not in this version)
   - GND shared
 
   Arduino setup: the Tools settings are in board_check.h, and the build stops with the one to change if one is wrong.

@@ -31,8 +31,8 @@
   - GP3 = USB activity light
   - GP4 = IN activity light
   - GP5 = front button, active LOW with INPUT_PULLUP
-  - GP26 = host link TX to host brain GP29 (PIO serial)
-  - GP27 = host link RX from host brain GP28 (PIO serial)
+  - GP29 = host link TX to host brain GP29 (PIO serial), the same pad number on both boards (2.2, before that GP26 and GP27)
+  - GP28 = host link RX from host brain GP28 (PIO serial)
 
   Arduino setup:
   - Board: Waveshare RP2040-Zero
@@ -81,8 +81,8 @@ constexpr uint8_t PIN_LED_USB = 3;
 constexpr uint8_t PIN_LED_IN = 4;
 constexpr uint8_t PIN_BUTTON = 5;
 constexpr uint32_t DIN_BAUD = 31250;
-constexpr uint8_t PIN_LINK_TX = 26;
-constexpr uint8_t PIN_LINK_RX = 27;
+constexpr uint8_t PIN_LINK_TX = 29; // pad 29 on this board to pad 29 on the host module, and 28 to 28 (2.2, it was 26 and 27 to 29 and 28)
+constexpr uint8_t PIN_LINK_RX = 28;
 constexpr uint8_t PIN_S3_TX = 14;               // to the Bluetooth module (ESP32-S3) RX, GPIO44. Also the USB host module's SWCLK pad
 constexpr uint8_t PIN_S3_RX = 15;               // from its TX, GPIO43. Also the USB host module's SWDIO pad
 constexpr size_t S3_RX_BUFFER = 1024;
