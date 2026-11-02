@@ -378,31 +378,47 @@ USB Host, BLE Host and the USB devices on the module's own USB port share host s
 
 ## Wiring and pin numbers
 
-Numbers from the datasheets: RP2040 (QFN-56), ESP32-S3 (QFN-56, the chip under the SuperMini's and the Zero's shield) and ESP32-S3-MINI-1 (the module for the Deluxe). "Module label" is what the pad is printed as on the RP2040-Zero or the S3 module.
+Two charts. The first is for wiring the boards you have, by what is printed on them. The second is for drawing the Deluxe schematic, by the chips' pin numbers from their datasheets.
 
-### Wires in this build
+### Chart 1: wires between the boards, by the labels printed on them
 
-| Wire | From, module label | From, RP2040 pin | To, module label | To, chip pin | To, MINI-1 pad |
-|---|---|---|---|---|---|
-| Bluetooth link out | main brain GP14 | 17 | S3 RX, GPIO44 | 50 (U0RXD) | 40 (RXD0) |
-| Bluetooth link in | main brain GP15 | 18 | S3 TX, GPIO43 | 49 (U0TXD) | 39 (TXD0) |
-| USB host link out | main brain GP26 | 38 | host brain GP29 | 41 | |
-| USB host link in | main brain GP27 | 39 | host brain GP28 | 40 | |
-| Ground | GND | | GND | | 1, 2, 42, 43, 46 to 65 |
+| Wire | FoxWizard (main brain), printed | Other board | Other board, printed |
+|---|---|---|---|
+| 1, out of the FoxWizard | GP14 | Bluetooth module (ESP32-S3 SuperMini or Zero) | RX |
+| 2, into the FoxWizard | GP15 | Bluetooth module | TX |
+| 3, ground | GND | Bluetooth module | GND (G on some) |
+| 4, out of the FoxWizard | GP26 | USB host module (RP2040-Zero) | GP29 |
+| 5, into the FoxWizard | GP27 | USB host module | GP28 |
+| 6, ground | GND | USB host module | GND |
 
-All RP2040 pin numbers are the same on every RP2040 chip, the RP2040-Zero module's own labels are `GP` and the GPIO number.
+TX and RX cross, a wire from one board's output goes to the other board's input. If the S3 board prints 43 and 44 or IO43 and IO44 instead of TX and RX, RX is 44 and TX is 43. The S3 module needs its own power, from its USB-C or from its 5V and GND pads.
 
-### Planned wires (flashing from the main brain)
+### Chart 2: the Deluxe PCB, by chip pin numbers
 
-| Wire | From, module label | From, RP2040 pin | To | To, chip pin | To, MINI-1 pad |
-|---|---|---|---|---|---|
-| S3 reset | main brain GP28 | 40 | S3 EN | 4 (CHIP_PU) | 45 (EN) |
-| S3 boot mode | main brain GP29 | 41 | S3 IO0, GPIO0 | 5 | 4 (IO0) |
-| Host brain SWD clock | main brain GP14 (shared with the Bluetooth link) | 17 | host brain SWCLK | 24 | |
-| Host brain SWD data | main brain GP15 (shared with the Bluetooth link) | 18 | host brain SWD, SWDIO | 25 | |
-| Host brain reset (not wired, it resets itself over SWD) | | | host brain RUN | 26 | |
+The USB host module and the main brain are bare RP2040 chips (QFN-56, pin numbers from the RP2040 datasheet). The Bluetooth module is an ESP32-S3-WROOM-1 module (pad numbers from its datasheet, Table 3-1).
 
-The SuperMini and the Zero have buttons for BOOT (GPIO0) and RESET (EN) and, as far as their pinouts say, no pads for them, so wiring those two means soldering to the buttons' pads. The ESP32-S3-MINI-1 on the Deluxe has both as pins. Other S3 pins in use: the USB port is GPIO19 (USB D-) and GPIO20 (USB D+), chip pins 25 and 26, MINI-1 pads 23 and 24. The SuperMini's light is GPIO48 (chip pin 36, MINI-1 pad 30) and the Zero's is GPIO21.
+| Wire | RP2040 main brain, name and pin | Goes to | Name and pin |
+|---|---|---|---|
+| Bluetooth link, out of the main brain | GPIO14, pin 17 | ESP32-S3-WROOM-1 | RXD0 (GPIO44), pad 36 |
+| Bluetooth link, into the main brain | GPIO15, pin 18 | ESP32-S3-WROOM-1 | TXD0 (GPIO43), pad 37 |
+| USB host link, out of the main brain | GPIO26, pin 38 | RP2040 host brain | GPIO29, pin 41 |
+| USB host link, into the main brain | GPIO27, pin 39 | RP2040 host brain | GPIO28, pin 40 |
+| S3 reset (planned) | GPIO28, pin 40 | ESP32-S3-WROOM-1 | EN, pad 3 |
+| S3 boot mode (planned) | GPIO29, pin 41 | ESP32-S3-WROOM-1 | IO0, pad 27 |
+
+More pins on the Deluxe, not wires from the main brain:
+
+| Chip | Name and pin | What it is |
+|---|---|---|
+| ESP32-S3-WROOM-1 | IO19 (USB D-), pad 13 and IO20 (USB D+), pad 14 | the S3's USB port, to its USB-C jack |
+| ESP32-S3-WROOM-1 | 3V3, pad 2. GND, pads 1 and 40, and the ground pad 41 under the module | power |
+| RP2040 host brain | SWCLK, pin 24. SWD, pin 25. RUN, pin 26 | its debug pads, for flashing it (planned) |
+
+The Deluxe can give the host brain's SWD and the S3's EN and IO0 their own main brain pins, the pins in the first chart are the ones the exposed pads allow.
+
+### The Deluxe's Bluetooth module
+
+ESP32-S3-WROOM-1-N8R8, the version with the PCB antenna: 8 MB flash and 8 MB PSRAM, 18.0 x 25.5 x 3.1 mm. The PSRAM is what the audio looper, the sampler and AMY need. JLCPCB lists it as C2913201, about $3.40 to $5.00 each depending on the quantity, with tens of thousands in stock when checked (check the live page before ordering). The N16R8 (C2913202, about $3.50 to $5.30) has the same pinout with 16 MB of flash, for more samples. Both are rated to 65 degrees C ambient, and the 8 MB PSRAM uses pads 28 to 30 (IO35 to IO37), which are not available.
 
 ## Flashing the modules
 
@@ -423,7 +439,7 @@ The exposed pads on the main brain are GP14, GP15, GP26, GP27, GP28 and GP29. GP
 | Host Edition | RP2040 | RP2040-Zero or Host Edition board | |
 | Bluetooth Edition | RP2040 | | ESP32-S3 SuperMini or Zero |
 | Hella Edition | RP2040 | RP2040-Zero or Host Edition board | ESP32-S3 SuperMini or Zero |
-| Deluxe | RP2040 | RP2040 on the board, with its hub and TRS 2-6 | ESP32-S3 on the board, with an ES8388 codec |
+| Deluxe | RP2040 | RP2040 on the board, with its hub and TRS 2-6 | ESP32-S3-WROOM-1-N8R8 on the board, with an ES8388 codec |
 
 One main brain firmware covers every edition, it finds each module by its link.
 
