@@ -112,6 +112,27 @@ int main() {
     CHECK(t.rec[8].kind == kBle, "no USB name in slot 8");
     t.usbSeen(9, "x", true);
   }
+  // A USB device on the module's own USB port shares the pool, and a returning one finds its own slot, never a Bluetooth device's.
+  {
+    Table t;
+    const uint8_t usbId[6] = {0x01, 0x02, 0x03, 0x04, 0x00, 0x00};
+    CHECK(t.choose(usbId, 0, kModuleUsb) == 8, "the first module device takes slot 8");
+    t.bleAssign(8, usbId, "Keystation", kModuleUsb);
+    CHECK(t.rec[8].kind == kModuleUsb, "recorded as a module USB device");
+    connect(t, A, "A");
+    CHECK(t.rec[5].kind == kBle, "a Bluetooth device after it takes slot 5");
+    t.bleLeft(8); t.bleLeft(5);
+    CHECK(t.choose(usbId, 0, kModuleUsb) == 8, "the USB device gets slot 8 back");
+    CHECK(t.choose(A, 0, kBle) == 5, "the Bluetooth device gets slot 5 back");
+    uint8_t same[6]; memcpy(same, usbId, 6);
+    CHECK(t.choose(same, 0, kBle) != 8, "the same six bytes as a Bluetooth address do not match the USB record");
+    uint8_t file[Table::kFileBytes];
+    const uint16_t n = t.save(file);
+    Table u;
+    CHECK(u.load(file, n) && u.rec[8].kind == kModuleUsb && strcmp(u.rec[8].name, "Keystation") == 0, "kind and name survive the file");
+    t.bleName(8, "Keystation 49");
+    CHECK(strcmp(t.rec[8].name, "Keystation 49") == 0, "a module USB name can be updated");
+  }
   // The file.
   {
     Table t;

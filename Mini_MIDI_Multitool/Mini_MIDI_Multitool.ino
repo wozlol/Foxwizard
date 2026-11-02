@@ -158,7 +158,7 @@ enum SysexCmd : uint8_t {
   CMD_SELECT_PRESET = 0x3A, // payload: the slot, 0-15. Silences everything, loads it, acknowledged once it is live
   CMD_GET_SLOTS = 0x3B, // 2.2: payload 0 for the summary, 1-8 for a host slot, 9 for BLE Device
   CMD_SLOT_DATA = 0x3C, // the index, then that record
-  CMD_BLE_ACTION = 0x3D, // 2.2: payload action, value. 1 learning on or off, 2 forget a slot
+  CMD_BLE_ACTION = 0x3D, // 2.2: payload action, value. 1 learning on or off, 2 forget a slot, 3 the module's USB port (0 host, 1 device)
   CMD_COMMIT = 0x31,
   CMD_FACTORY_RESET = 0x32,
   CMD_FW_BEGIN = 0x40,
@@ -423,7 +423,8 @@ uint8_t bleWaitSlot[BLE_MAIN_HANDLES + 1];      // a USB Host slot asked for, wa
 uint32_t bleWaitSinceMs[BLE_MAIN_HANDLES + 1];
 uint8_t bleRefused = 0;                    // handles sent away, until they leave
 uint8_t bleHandleAddr[BLE_MAIN_HANDLES + 1][6];
-uint8_t bleAddrGot[BLE_MAIN_HANDLES + 1];       // bit n = part n of the address has arrived
+uint8_t bleAddrGot[BLE_MAIN_HANDLES + 1];       // bit n = part n of the address has arrived, part 3 is what kind of device it is
+uint8_t bleHandleKind[BLE_MAIN_HANDLES + 1];    // MODULE_KIND_USB or MODULE_KIND_BLE
 char bleHandleName[BLE_MAIN_HANDLES + 1][NAME_CHARS + 1];
 char bleNameStage[BLE_MAIN_HANDLES + 1][NAME_CHARS + 1];
 char usbSlotStage[HOST_SLOTS + 1][NAME_CHARS + 1];
@@ -6084,18 +6085,21 @@ void handleSysexCommand(uint8_t sourcePort, const uint8_t *cmdBuf, uint8_t cmdLe
         appendReply(slotsGeneration);
         appendReply(s3Present() ? bleFreeSlots() : 0);
         appendReply(s3Present() ? (s3Hosts & 0x7F) : 0);
+        appendReply(s3Present() ? ((s3Flags >> 4) & 3) : 0); // the module's USB port: bit 0 a host port, bit 1 the host failed to start and it fell back
+        appendReply(s3Present() ? (s3BoardCheck & 0x7F) : 0);
       } else if (index == BLE_DEVICE_SLOT) { // BLE Device: kind 3
         appendReply(3);
         appendReply(bleDeviceUp() ? 1 : 0);
         appendReply(0);
-      } else if (index <= BLE_SHARED_SLOT) { // kind, state (bit 0 there now, bit 1 a Bluetooth device may take it), name
+      } else if (index <= BLE_SHARED_SLOT) { // kind, state (bit 0 there now, bit 1 a module device may take it, bit 2 a module device holds it), name
         const fw::slots::Record &r = slotTable.rec[index];
         const bool usbHere = index <= HOST_SLOTS && hostPresent() && (hostPortMask & (1 << hostMaskBit(index)));
         const bool bleHere = (slotTable.bleConnected & fw::slots::slotBit(index)) != 0;
-        const uint8_t kind = usbHere ? fw::slots::kUsb : r.kind;
+        const bool moduleDev = !usbHere && (r.kind == fw::slots::kBle || r.kind == fw::slots::kModuleUsb); // a device on the Bluetooth module
+        const uint8_t kind = usbHere ? fw::slots::kUsb : (r.kind == fw::slots::kModuleUsb ? fw::slots::kUsb : r.kind);
         const char *name = (usbHere && r.kind != fw::slots::kUsb) ? "" : r.name;
         appendReply(kind);
-        appendReply((uint8_t)((usbHere || bleHere ? 1 : 0) | (fw::slots::isBleSlot(index) ? 2 : 0)));
+        appendReply((uint8_t)((usbHere || bleHere ? 1 : 0) | (fw::slots::isBleSlot(index) ? 2 : 0) | (moduleDev ? 4 : 0)));
         const uint8_t len = nameLength(name);
         appendReply(len);
         for (uint8_t i = 0; i < len; ++i) appendReply((uint8_t)name[i] & 0x7F);
@@ -6114,6 +6118,10 @@ void handleSysexCommand(uint8_t sourcePort, const uint8_t *cmdBuf, uint8_t cmdLe
       } else if (action == 2) { // forget a slot
         if (value < 1 || value > BLE_SHARED_SLOT) { sendAck(sourcePort, cmd, ACK_ERR_BAD_INDEX, 0, 0); break; }
         bleForgetSlot(value);
+      } else if (action == 3) { // the module's USB port, 0 a host port, 1 a device port. The module saves it and restarts
+        if (!s3Present()) { sendAck(sourcePort, cmd, ACK_ERR_BAD_INDEX, 0, 0); break; }
+        const uint8_t pkt[4] = {CONTROL_BLE_COMMAND, BLE_CMD_USB_ROLE, (uint8_t)(value ? 1 : 0), 0};
+        s3Send(LINK_PORT_CONTROL, pkt);
       } else {
         sendAck(sourcePort, cmd, ACK_ERR_BAD_DATA, 0, 0);
         break;
@@ -6882,7 +6890,8 @@ void bleRefuse(uint8_t h) {
 }
 
 void bleActivate(uint8_t h, uint8_t slot) {
-  slotTable.bleAssign(slot, bleHandleAddr[h], bleHandleName[h][0] ? bleHandleName[h] : "Bluetooth");
+  const bool usb = bleHandleKind[h] == MODULE_KIND_USB;
+  slotTable.bleAssign(slot, bleHandleAddr[h], bleHandleName[h][0] ? bleHandleName[h] : (usb ? "USB device" : "Bluetooth"), usb ? fw::slots::kModuleUsb : fw::slots::kBle);
   bleHandleSlot[h] = slot;
   bleSlotHandle[slot] = h;
   bleWaitSlot[h] = 0;
@@ -6920,7 +6929,7 @@ void bleHandleLeft(uint8_t h) {
 void bleTryAssign(uint8_t h) {
   const uint32_t now = millis();
   if (bleWaitSlot[h] == 0) {
-    const uint8_t slot = slotTable.choose(bleHandleAddr[h], usbBusyMask() | bleClaimedMask());
+    const uint8_t slot = slotTable.choose(bleHandleAddr[h], usbBusyMask() | bleClaimedMask(), bleHandleKind[h] == MODULE_KIND_USB ? fw::slots::kModuleUsb : fw::slots::kBle);
     if (!slot) { bleRefuse(h); return; } // every slot has a device on it
     if (slot <= HOST_SLOTS && hostPresent()) { // a USB Host slot: the host brain has to agree to keep it free
       bleWaitSlot[h] = slot;
@@ -7030,6 +7039,9 @@ void handleS3Control(const uint8_t packet[4]) {
       bleHandleAddr[h][part * 2] = packet[2];
       bleHandleAddr[h][part * 2 + 1] = packet[3];
       bleAddrGot[h] |= (uint8_t)(1 << part);
+    } else if (h >= 1 && h <= BLE_MAIN_HANDLES && part == 3) { // what kind of device the handle is
+      bleHandleKind[h] = packet[2] == MODULE_KIND_USB ? MODULE_KIND_USB : MODULE_KIND_BLE;
+      bleAddrGot[h] |= 8;
     }
   } else if (type == CONTROL_DEVICE_NAME) {
     bleNameChunk(packet[1] & 0x0F, packet[1] >> 4, packet[2], packet[3]);
@@ -7148,7 +7160,7 @@ void serviceBle() {
   for (uint8_t h = 1; h <= BLE_MAIN_HANDLES; ++h) {
     const uint8_t bit = (uint8_t)(1 << (h - 1));
     if (s3Mask & bit) {
-      if (!bleHandleSlot[h] && !(bleRefused & bit) && bleAddrGot[h] == 7) bleTryAssign(h);
+      if (!bleHandleSlot[h] && !(bleRefused & bit) && bleAddrGot[h] == 15) bleTryAssign(h);
     } else if (bleHandleSlot[h] || bleAddrGot[h] || bleWaitSlot[h] || (bleRefused & bit)) {
       bleHandleLeft(h);
     }

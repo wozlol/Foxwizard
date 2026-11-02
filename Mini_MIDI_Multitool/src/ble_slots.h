@@ -3,9 +3,9 @@
 // The slots Bluetooth devices share with the USB Host ports, and the file that remembers who had which. Header only and free of
 // Arduino, so tests/ble_slots_test.cpp checks the rules on a computer.
 //
-// Host slots 1-7 are the USB Host ports. Slot 8 is a route's spare port bit (15), only ever a Bluetooth device. A Bluetooth device
-// may take slot 8 first, then USB Host slots 5, 6 and 7, which sit empty unless a hub is chained. Slots 1-4 are the hub's own
-// jacks and never go to a Bluetooth device.
+// Host slots 1-7 are the USB Host ports. Slot 8 is a route's spare port bit (15), only ever a device on the Bluetooth module. A
+// Bluetooth device or a USB device on the module's own USB port may take slot 8 first, then USB Host slots 5, 6 and 7, which sit
+// empty unless a hub is chained. Slots 1-4 are the hub's own jacks and never go to a module device.
 
 #include <stdint.h>
 #include <string.h>
@@ -18,7 +18,7 @@ constexpr uint8_t kNameChars = 24;
 constexpr uint8_t kBleOrder[4] = {8, 5, 6, 7};
 constexpr uint8_t kBleCount = 4;
 
-enum Kind : uint8_t { kNone = 0, kUsb = 1, kBle = 2 };
+enum Kind : uint8_t { kNone = 0, kUsb = 1, kBle = 2, kModuleUsb = 3 }; // kUsb is a USB device on the USB host module, kModuleUsb one on the Bluetooth module's own USB port
 
 struct Record {
   uint8_t kind = kNone;
@@ -67,10 +67,10 @@ class Table {
   // The slot a Bluetooth device at addr should take, or 0 for none. usbBusy has slot n at bit n-1 for every slot a USB device
   // is in (or is waiting for). A device that comes back gets its own slot if it is still free, else a new device takes a slot
   // nothing has used, else the one whose device has been gone longest. A connected device's slot is never taken.
-  uint8_t choose(const uint8_t addr[6], uint8_t usbBusy) const {
+  uint8_t choose(const uint8_t addr[6], uint8_t usbBusy, uint8_t kind = kBle) const {
     for (uint8_t i = 0; i < kBleCount; ++i) {
       const uint8_t s = kBleOrder[i];
-      if (rec[s].kind == kBle && memcmp(rec[s].addr, addr, 6) == 0 && available(s, usbBusy)) return s;
+      if (rec[s].kind == kind && memcmp(rec[s].addr, addr, 6) == 0 && available(s, usbBusy)) return s;
     }
     uint8_t best = 0;
     uint32_t bestAge = 0;
@@ -90,14 +90,14 @@ class Table {
     return n;
   }
 
-  void bleAssign(uint8_t slot, const uint8_t addr[6], const char *name) {
+  void bleAssign(uint8_t slot, const uint8_t addr[6], const char *name, uint8_t kind = kBle) {
     if (!isBleSlot(slot)) return;
     for (uint8_t i = 0; i < kBleCount; ++i) { // a device lives in one slot only
       const uint8_t s = kBleOrder[i];
-      if (s != slot && rec[s].kind == kBle && memcmp(rec[s].addr, addr, 6) == 0 && !(bleConnected & slotBit(s))) rec[s] = Record();
+      if (s != slot && rec[s].kind == kind && memcmp(rec[s].addr, addr, 6) == 0 && !(bleConnected & slotBit(s))) rec[s] = Record();
     }
     Record &r = rec[slot];
-    r.kind = kBle;
+    r.kind = kind;
     memcpy(r.addr, addr, 6);
     memset(r.name, 0, sizeof(r.name));
     strncpy(r.name, name, kNameChars);
@@ -107,7 +107,7 @@ class Table {
   }
 
   void bleName(uint8_t slot, const char *name) {
-    if (!isBleSlot(slot) || rec[slot].kind != kBle || strncmp(rec[slot].name, name, kNameChars) == 0) return;
+    if (!isBleSlot(slot) || (rec[slot].kind != kBle && rec[slot].kind != kModuleUsb) || strncmp(rec[slot].name, name, kNameChars) == 0) return;
     memset(rec[slot].name, 0, sizeof(rec[slot].name));
     strncpy(rec[slot].name, name, kNameChars);
     dirty = true;
@@ -159,7 +159,7 @@ class Table {
       r.name[kNameChars] = 0;
       for (uint8_t i = 0; i < kNameChars && r.name[i]; ++i) if (r.name[i] < 0x20 || r.name[i] > 0x7E) r.name[i] = '?';
       for (uint8_t i = 0; i < 4; ++i) r.lastSeen |= (uint32_t)*p++ << (8 * i);
-      if (r.kind > kBle || (r.kind == kBle && !isBleSlot(s)) || (r.kind == kUsb && s > 7)) r = Record();
+      if (r.kind > kModuleUsb || ((r.kind == kBle || r.kind == kModuleUsb) && !isBleSlot(s)) || (r.kind == kUsb && s > 7)) r = Record();
       if (r.lastSeen > c) c = r.lastSeen;
     }
     for (uint8_t s = 1; s <= kSlots; ++s) rec[s] = loaded[s];

@@ -1209,6 +1209,7 @@ case "slots":
     print("  Bluetooth devices connected: \(summary[5]), slots a new device could take: \(summary[4])")
     if flags & 32 != 0 { print("  The module says its Arduino Tools settings are wrong. Open its serial monitor.") }
   }
+  if flags & 1 != 0, summary.count >= 7 { print("  The module's USB port: \(summary[6] & 1 != 0 ? "a host port" : "a device port")\(summary[6] & 2 != 0 ? " (the host did not start, it fell back)" : "")") }
   print("  slot list generation \(summary[3])")
   for i in 1...9 {
     guard let r = ask(link, 0x3B, [UInt8(i)], reply: 0x3C, timeout: 1.5), r.count >= 4 else { print("  slot \(i): no answer"); continue }
@@ -1227,7 +1228,8 @@ case "bleaction":
   var payload: [UInt8]? = nil
   if words.count >= 2, words[0] == "learn" { payload = [1, words[1] == "on" ? 1 : 0] }
   if words.count >= 2, words[0] == "forget", let n = UInt8(words[1]) { payload = [2, n] }
-  guard let p = payload else { print("clock_check bleaction learn on|off   |   clock_check bleaction forget SLOT"); exit(2) }
+  if words.count >= 2, words[0] == "usb" { payload = [3, words[1] == "device" ? 1 : 0] } // the module's USB port, it restarts
+  guard let p = payload else { print("clock_check bleaction learn on|off   |   forget SLOT   |   usb host|device"); exit(2) }
   let reply = ask(link, 0x3D, p, reply: 0x7E, timeout: 2.0)
   print(reply == nil ? "No answer" : (reply!.count > 1 && reply![1] == 0 ? "Done" : "The unit said no (status \(reply!.count > 1 ? Int(reply![1]) : -1))"))
   exit(0)

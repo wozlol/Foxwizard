@@ -821,28 +821,30 @@ export class DeviceLink extends EventTarget {
    * 2.2 (protocol 8): the Bluetooth module and the host slots. { present, deviceConnected, learning, scanning, peripheral,
    * boardCheck, fw, generation, free, hosts, slots }. slots is read only when the generation differs from knownGeneration, else null.
    * slots[1-8] are the host slots and slots[9] is BLE Device: { kind (0 none, 1 USB, 2 Bluetooth, 3 BLE Device), connected,
-   * bleOk (a Bluetooth device may take it), name }. Null before protocol 8.
+   * bleOk (a module device may take it), module (a device on the Bluetooth module holds it, Bluetooth or USB), name }. Null before protocol 8.
    */
   async getSlots(knownGeneration = -1) {
     if (this.protocolVersion < 8) return null;
     const s = await this._sendAndWait([CMD.GET_SLOTS, 0], CMD.SLOT_DATA, DEFAULT_TIMEOUT_MS);
     const summary = {
       present: !!(s[1] & 1), deviceConnected: !!(s[1] & 2), learning: !!(s[1] & 4), scanning: !!(s[1] & 8), peripheral: !!(s[1] & 16),
-      boardCheck: !!(s[1] & 32), fw: s[2] ?? 0, generation: s[3] ?? 0, free: s[4] ?? 0, hosts: s[5] ?? 0, slots: null
+      boardCheck: !!(s[1] & 32), fw: s[2] ?? 0, generation: s[3] ?? 0, free: s[4] ?? 0, hosts: s[5] ?? 0, slots: null,
+      // The module's USB port: a host port, or fell back to a device port because the host failed to start. boardCheckCode: 1 flash size wrong.
+      usbHost: !!((s[6] ?? 0) & 1), usbFellBack: !!((s[6] ?? 0) & 2), boardCheckCode: s[7] ?? 0
     };
     if (summary.generation !== knownGeneration) {
       const slots = [];
       for (let i = 1; i <= 9; i++) {
         const r = await this._sendAndWait([CMD.GET_SLOTS, i], CMD.SLOT_DATA, DEFAULT_TIMEOUT_MS);
         const len = r[3] ?? 0;
-        slots[i] = { kind: r[1] ?? 0, connected: !!((r[2] ?? 0) & 1), bleOk: !!((r[2] ?? 0) & 2), name: String.fromCharCode(...r.slice(4, 4 + len)) };
+        slots[i] = { kind: r[1] ?? 0, connected: !!((r[2] ?? 0) & 1), bleOk: !!((r[2] ?? 0) & 2), module: !!((r[2] ?? 0) & 4), name: String.fromCharCode(...r.slice(4, 4 + len)) };
       }
       summary.slots = slots;
     }
     return summary;
   }
 
-  /** 2.2: action 1 starts (value 1) or stops (0) adding Bluetooth devices, action 2 forgets host slot 1-8. */
+  /** 2.2: action 1 starts (value 1) or stops (0) adding Bluetooth devices, action 2 forgets host slot 1-8, action 3 sets the module's USB port, 0 host and 1 device (it restarts). */
   async bleAction(action, value) {
     return this._sendMutating(CMD.BLE_ACTION, [action, value]);
   }

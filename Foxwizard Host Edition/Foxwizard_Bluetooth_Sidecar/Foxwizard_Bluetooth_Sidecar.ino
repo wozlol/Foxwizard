@@ -6,7 +6,7 @@
   ../README.md.
 
   - BLE Device (link port 9): the FoxWizard shows up as a Bluetooth MIDI device to a phone or computer. Always advertising.
-  - BLE Host (link ports 1 to BLE_HOSTS_MAX): the FoxWizard connects to Bluetooth MIDI devices such as keyboards. The main brain
+  - BLE Host (link ports 1 to MODULE_HANDLES, shared with USB): the FoxWizard connects to Bluetooth MIDI devices such as keyboards. The main brain
     says which devices to reconnect to and how many it has room for. The module scans for them, and for new ones while learning.
 
   Wiring (see board_config.h for the module switch):
@@ -17,36 +17,39 @@
 
   Arduino setup: the Tools settings are in board_check.h, and the build stops with the one to change if one is wrong.
 
-  The button is the module's BOOT button (GPIO0), pressed while it runs:
-  - style FW_BUTTON_CME (default)
+  The button is the module's BOOT button (GPIO0), pressed while it runs. At power on the remembered devices reconnect on their own.
+  - style FW_BUTTON_ONE_MODE (the default), one add mode for both roles, nothing to choose:
+    - Hold 3 seconds, let go: add devices for a minute. A phone or computer can connect to BLE Device (it advertises all the time),
+      and the module scans for Bluetooth MIDI devices and connects the ones it finds, up to the room there is, remembering each at once.
+    - Short press: stop adding early.
+  - style FW_BUTTON_CME, CME's way, in case it is ever needed:
     - Hold 3 seconds, let go: force peripheral. Drops every Bluetooth link and advertises for a minute so a phone or computer
       can connect. Then the remembered devices reconnect on their own.
-    - Double press: learn hosts for a minute. Compatible Bluetooth MIDI devices are connected up to the room there is, and each
-      is remembered at once.
-    - Short press: stop learning.
-  - style FW_BUTTON_ONE_MODE
-    - Hold 3 seconds, let go: add devices for a minute, in both roles. Short press stops it.
+    - Double press: learn hosts for a minute, the same adding. Short press: stop learning.
   - Both: hold 10 seconds, let go, to forget every Bluetooth device and bond.
   The light goes white at 3 seconds held and red at 10, so you know what letting go will do.
 
   Status light, the module's own WS2812, off by default, same no-blink ethic as the other lights:
   - blue: fades up on Bluetooth MIDI and fades back down, 1 s up and 1/2 s down, following the main brain's brightness knob
   - green: a short flash for each new Bluetooth connection
-  - blue, blinking: learning
-  - purple, pulsing slowly: force peripheral, waiting for a phone or computer
+  - blue, blinking: adding devices
+  - purple, pulsing slowly: force peripheral (CME style only), waiting for a phone or computer
   - purple, blinking fast: nothing heard from the main brain for over a second
   - red, blinking slowly: the Tools settings are wrong, see the serial monitor
 */
 
 #include <Arduino.h>
 #include <NimBLEDevice.h>
+#include <Preferences.h>
 
 #include "board_config.h"
 #include "board_check.h"
 #include "foxwizard_link.h"
 #include "ble_midi.h"
+#include "usb_midi_host.h"
 
-static_assert(BLE_HOSTS_MAX >= 1 && BLE_HOSTS_MAX <= BLE_HANDLES, "BLE_HOSTS_MAX is 1 to 8");
+static_assert(MODULE_HANDLES >= 1 && MODULE_HANDLES <= BLE_HANDLES, "MODULE_HANDLES is 1 to 8");
+static_assert(BLE_HOSTS_MAX >= 1 && BLE_HOSTS_MAX <= MODULE_HANDLES, "BLE_HOSTS_MAX is 1 to MODULE_HANDLES");
 static_assert(BLE_HOSTS_MAX + 1 <= NIMBLE_MAX_CONNECTIONS, "Raise CONFIG_BT_NIMBLE_MAX_CONNECTIONS in NimBLE-Arduino's nimconfig.h to BLE_HOSTS_MAX + 1, or lower BLE_HOSTS_MAX in board_config.h");
 
 // ============================================================================================
@@ -111,6 +114,8 @@ struct Peer {
   bool announced = false;                 // loop() has seen it connect
   uint16_t connHandle = 0xFFFF;           // BLE Device: which central
   uint16_t mtu = 23;
+  bool usb = false;                       // a USB MIDI device on the module's USB host port, not a Bluetooth one
+  uint8_t usbIndex = 0;                   // its place in usbmidi
   NimBLEClient *client = nullptr;         // BLE Host
   NimBLERemoteCharacteristic *chr = nullptr;
   uint8_t addr[6] = {0, 0, 0, 0, 0, 0};
@@ -124,12 +129,18 @@ struct Peer {
   uint8_t identityStep = 0;
 };
 
-enum LedColor : uint8_t { LED_NONE = 0, LED_BLUE, LED_GREEN, LED_PURPLE, LED_RED, LED_WHITE };
+enum LedColor : uint8_t { LED_NONE = 0, LED_BLUE, LED_GREEN, LED_PURPLE, LED_RED, LED_WHITE, LED_ORANGE };
 
 // ============================================================================================
 // Globals
 // ============================================================================================
-Peer peers[1 + BLE_HOSTS_MAX];
+Peer peers[1 + MODULE_HANDLES];
+uint8_t usbHandleOf[usbmidi::kMaxDevices]; // the handle each USB MIDI device has, 0 none
+Preferences prefs;
+bool usbHostActive = false;                // the module's USB port is a host port this run
+bool usbFailsafe = false;                  // the host failed to start last time, the port is a service port until told otherwise
+uint32_t usbTryClearMs = 0;
+uint32_t restartAtMs = 0;
 NimBLEServer *bleServer = nullptr;
 NimBLECharacteristic *deviceChr = nullptr;
 TaskHandle_t connectTask = nullptr;
@@ -151,7 +162,7 @@ uint32_t lastMainFrameMs = 0;
 uint8_t ledBrightnessStep = 10;
 
 // What the main brain has told us
-uint8_t allowedHosts = FW_BENCH ? BLE_HOSTS_MAX : 0;
+uint8_t allowedHosts = FW_BENCH ? MODULE_HANDLES : 0;
 uint8_t knownAddr[BLE_HANDLES + 1][6];
 bool knownValid[BLE_HANDLES + 1];
 uint32_t lastKnownMs = 0;
@@ -194,23 +205,30 @@ bool addrZero(const uint8_t *a) { static const uint8_t z[6] = {0, 0, 0, 0, 0, 0}
 uint8_t peerPort(uint8_t i) { return i == 0 ? LINK_PORT_BLE_DEVICE : i; }
 Peer *peerForPort(uint8_t port) {
   if (port == LINK_PORT_BLE_DEVICE) return &peers[0];
-  if (port >= 1 && port <= BLE_HOSTS_MAX) return &peers[port];
+  if (port >= 1 && port <= MODULE_HANDLES) return &peers[port];
   return nullptr;
 }
 
+// Every handle in use, Bluetooth and USB.
 uint8_t hostsConnected() {
   uint8_t n = 0;
-  for (uint8_t h = 1; h <= BLE_HOSTS_MAX; ++h) if (peers[h].connected) ++n;
+  for (uint8_t h = 1; h <= MODULE_HANDLES; ++h) if (peers[h].connected) ++n;
+  return n;
+}
+
+uint8_t bleHostsConnected() {
+  uint8_t n = 0;
+  for (uint8_t h = 1; h <= MODULE_HANDLES; ++h) if (peers[h].connected && !peers[h].usb) ++n;
   return n;
 }
 
 uint8_t freeHostHandle() {
-  for (uint8_t h = 1; h <= BLE_HOSTS_MAX; ++h) if (!peers[h].connected) return h;
+  for (uint8_t h = 1; h <= MODULE_HANDLES; ++h) if (!peers[h].connected) return h;
   return 0;
 }
 
 uint8_t hostByAddress(const uint8_t *a) {
-  for (uint8_t h = 1; h <= BLE_HOSTS_MAX; ++h) if (peers[h].connected && addrEqual(peers[h].addr, a)) return h;
+  for (uint8_t h = 1; h <= MODULE_HANDLES; ++h) if (peers[h].connected && addrEqual(peers[h].addr, a)) return h;
   return 0;
 }
 
@@ -295,6 +313,7 @@ void showColor(uint8_t color, uint8_t level) {
     case LED_PURPLE: r = level; b = level; break;
     case LED_RED: r = level; break;
     case LED_WHITE: r = g = b = level; break;
+    case LED_ORANGE: r = level; g = level / 3; break;
     default: break;
   }
   writeLed(r, g, b);
@@ -308,6 +327,7 @@ void serviceLed() {
   if (boardCheckResult != BOARD_CHECK_OK) { showColor(LED_RED, (now / 1000) % 2 ? 0 : floorLevel); return; }
   if (buttonHeldMs >= HOLD_FORGET_MS) { showColor(LED_RED, floorLevel); return; }
   if (buttonHeldMs >= HOLD_MODE_MS) { showColor(LED_WHITE, floorLevel); return; }
+  if (usbFailsafe && now < 30000) { showColor(LED_ORANGE, (now / 500) % 2 ? 0 : floorLevel); return; } // the USB host did not start, see the module's status in Patchling
   if (timerActive(flashUntilMs)) { showColor(LED_GREEN, floorLevel); return; }
   if (learning()) { showColor(LED_BLUE, (now / 250) % 2 ? 0 : floorLevel); return; }
   if (peripheralWindow()) { // a slow triangle, 2 seconds round
@@ -333,7 +353,7 @@ void serviceLed() {
 // Bluetooth callbacks. These run in the Bluetooth task, so they only set flags and fill rings.
 // ============================================================================================
 Peer *peerByClient(NimBLEClient *c) {
-  for (uint8_t h = 1; h <= BLE_HOSTS_MAX; ++h) if (peers[h].client == c) return &peers[h];
+  for (uint8_t h = 1; h <= MODULE_HANDLES; ++h) if (peers[h].client == c) return &peers[h];
   return nullptr;
 }
 
@@ -383,7 +403,7 @@ class HostScanCallbacks : public NimBLEScanCallbacks {
     if (!learning() && !isKnown(a)) return;
     bool take = false;
     portENTER_CRITICAL(&stateMux);
-    if (!connecting && hostsConnected() < allowedHosts && !peripheralWindow()) {
+    if (!connecting && hostsConnected() < allowedHosts && bleHostsConnected() < BLE_HOSTS_MAX && !peripheralWindow()) {
       connecting = true; // only the flag in here, no allocation with the interrupts off
       take = true;
     }
@@ -420,7 +440,7 @@ bool connectHost(uint8_t h) {
   }
   // The client is registered before it subscribes, so the first notifications find their handle. A reused client may still be
   // on another handle from its last connection.
-  for (uint8_t k = 1; k <= BLE_HOSTS_MAX; ++k) if (k != h && peers[k].client == c) { peers[k].client = nullptr; peers[k].chr = nullptr; }
+  for (uint8_t k = 1; k <= MODULE_HANDLES; ++k) if (k != h && peers[k].client == c) { peers[k].client = nullptr; peers[k].chr = nullptr; }
   Peer &p = peers[h];
   p.rx.clear();
   p.outRt.clear();
@@ -430,6 +450,7 @@ bool connectHost(uint8_t h) {
   p.down.reset();
   p.client = c;
   p.chr = chr;
+  p.usb = false;
   if (!chr->subscribe(true, hostNotify)) {
     p.client = nullptr;
     p.chr = nullptr;
@@ -469,7 +490,7 @@ void connectTaskFn(void *) {
 void serviceScan() {
   const uint32_t now = millis();
   NimBLEScan *scan = NimBLEDevice::getScan();
-  const bool room = hostsConnected() < allowedHosts;
+  const bool room = hostsConnected() < allowedHosts && bleHostsConnected() < BLE_HOSTS_MAX;
   const bool want = room && !connecting && !peripheralWindow() && (learning() || knownMissing()) && now - lastConnectEndMs > 1500;
   if (want && !scan->isScanning() && now - lastScanMs > 1000) {
     lastScanMs = now;
@@ -489,15 +510,99 @@ void serviceAdvertising() {
   if (!adv->isAdvertising()) adv->start();
 }
 
+// A USB device is let go and left alone until it is unplugged. A Bluetooth device is disconnected.
 void disconnectHost(uint8_t h) {
   Peer &p = peers[h];
+  if (p.usb) { usbmidi::release(p.usbIndex); p.connected = false; return; }
   if (p.connected && p.client) p.client->disconnect();
   p.connected = false;
 }
 
+// Every Bluetooth link. USB devices stay.
 void disconnectAll() {
-  for (uint8_t h = 1; h <= BLE_HOSTS_MAX; ++h) disconnectHost(h);
+  for (uint8_t h = 1; h <= MODULE_HANDLES; ++h) if (!peers[h].usb) disconnectHost(h);
   if (peers[0].connected && bleServer) bleServer->disconnect(peers[0].connHandle);
+}
+
+// ============================================================================================
+// USB MIDI devices on the module's own USB port
+// ============================================================================================
+// Called from the USB client task.
+void usbRxSink(uint8_t index, const uint8_t *data, size_t length) {
+  const uint8_t h = usbHandleOf[index];
+  if (h) peers[h].rx.push(data, length);
+}
+
+// A USB device gets a handle when there is room for it, as a Bluetooth device does. With no room it waits, plugged in and unused, and
+// starts working when the main brain says there is a slot.
+void serviceUsb() {
+  if (!usbHostActive) return;
+  for (uint8_t i = 0; i < usbmidi::kMaxDevices; ++i) {
+    const uint8_t h = usbHandleOf[i];
+    const uint8_t st = usbmidi::state(i);
+    if (h) {
+      if (st != usbmidi::kActive && !usbmidi::pending(i)) { // unplugged, or let go
+        peers[h].connected = false;
+        usbHandleOf[i] = 0;
+        statusDirty = true;
+      }
+      continue;
+    }
+    if (st != usbmidi::kOpened || usbmidi::ignored(i) || usbmidi::pending(i)) continue;
+    if (hostsConnected() >= allowedHosts) continue;
+    const uint8_t nh = freeHostHandle();
+    if (!nh) continue;
+    const usbmidi::Device &d = usbmidi::device(i);
+    Peer &p = peers[nh];
+    p.rx.clear();
+    p.outRt.clear();
+    p.outNormal.clear();
+    p.up.reset();
+    p.down.reset();
+    p.client = nullptr;
+    p.chr = nullptr;
+    p.usb = true;
+    p.usbIndex = i;
+    p.addr[0] = (uint8_t)d.vid; p.addr[1] = (uint8_t)(d.vid >> 8);
+    p.addr[2] = (uint8_t)d.pid; p.addr[3] = (uint8_t)(d.pid >> 8);
+    p.addr[4] = (uint8_t)d.serialHash; p.addr[5] = (uint8_t)(d.serialHash >> 8);
+    memset(p.name, 0, sizeof(p.name));
+    strncpy(p.name, d.name, NAME_CHARS);
+    cleanName(p.name);
+    p.announced = false;
+    p.identityStep = 0;
+    usbHandleOf[i] = nh;
+    p.connected = true;
+    statusDirty = true;
+    usbmidi::activate(i);
+  }
+}
+
+// What the module's USB port is this run. A saved setting, host unless told otherwise. If the host crashed the last time it started, or
+// three starts in a row never got through 5 seconds, the port falls back to the chip's USB serial so the module can always be reached
+// and flashed. A power cut a second after start is not a crash, so one of them alone does not move the port.
+void startUsbRole() {
+#if FW_BENCH || !FW_USB_HOST
+  return; // the port stays the chip's USB serial and JTAG
+#else
+  prefs.begin("fwbt", false);
+  uint8_t role = prefs.getUChar("usbrole", 0); // 0 host, 1 device
+  const uint8_t tries = prefs.getUChar("usbtry", 0); // starts of the host that never ran for 5 seconds
+  const esp_reset_reason_t why = esp_reset_reason();
+  const bool crashed = why == ESP_RST_PANIC || why == ESP_RST_INT_WDT || why == ESP_RST_TASK_WDT || why == ESP_RST_WDT;
+  if (role == 0 && tries && (crashed || tries >= 3)) {
+    role = 1;
+    prefs.putUChar("usbrole", 1);
+    prefs.putUChar("usbtry", 0);
+    usbFailsafe = true;
+  }
+  if (role == 0) {
+    prefs.putUChar("usbtry", (uint8_t)(tries + 1));
+    usbHostActive = usbmidi::begin(usbRxSink);
+    if (usbHostActive) usbTryClearMs = millis() + 5000;
+    else { prefs.putUChar("usbtry", 0); prefs.putUChar("usbrole", 1); usbFailsafe = true; }
+  }
+#endif
 }
 
 // ============================================================================================
@@ -507,6 +612,8 @@ void startLearning() {
   if (allowedHosts == 0) return; // no room, the main brain says so
   learnUntilMs = millis() + LEARN_MS;
   peripheralUntilMs = 0;
+  lastAdvMs = 0;
+  if (!peers[0].connected) NimBLEDevice::startAdvertising(); // a phone or computer can connect during the minute as well
   statusDirty = true;
 }
 
@@ -536,12 +643,14 @@ void forgetEverything() {
 
 void shortPress(uint32_t now, uint32_t &lastShortMs) {
   stopLearning();
+#if FW_BUTTON_STYLE == FW_BUTTON_CME
   if (lastShortMs && now - lastShortMs < DOUBLE_PRESS_MS) { // the second press of a double press
     lastShortMs = 0;
     startLearning();
   } else {
     lastShortMs = now;
   }
+#endif
 }
 
 void serviceButton() {
@@ -599,16 +708,25 @@ void handleControl(const uint8_t pkt[4]) {
     const uint8_t value = pkt[2];
     switch (pkt[1]) {
       case BLE_CMD_LEARN: if (value) startLearning(); else stopLearning(); break;
-      case BLE_CMD_ALLOW: allowedHosts = value > BLE_HOSTS_MAX ? BLE_HOSTS_MAX : value; break;
+      case BLE_CMD_ALLOW: allowedHosts = value > MODULE_HANDLES ? MODULE_HANDLES : value; break;
+      case BLE_CMD_USB_ROLE: { // saved, and the module restarts so the port starts as the other kind
+        Preferences saved;
+        saved.begin("fwbt", false);
+        saved.putUChar("usbrole", value ? 1 : 0);
+        saved.putUChar("usbtry", 0);
+        saved.end();
+        restartAtMs = millis() + 400;
+        break;
+      }
       case BLE_CMD_DISCONNECT:
-        if (value >= 1 && value <= BLE_HOSTS_MAX && peers[value].connected) {
+        if (value >= 1 && value <= MODULE_HANDLES && peers[value].connected) {
           memcpy(refusedAddr, peers[value].addr, 6);
           refusedMs = millis();
           disconnectHost(value);
         }
         break;
       case BLE_CMD_FORGET:
-        if (value >= 1 && value <= BLE_HOSTS_MAX) {
+        if (value >= 1 && value <= MODULE_HANDLES) {
           for (uint8_t s = 1; s <= BLE_HANDLES; ++s) if (addrEqual(knownAddr[s], peers[value].addr)) knownValid[s] = false;
           memcpy(refusedAddr, peers[value].addr, 6);
           refusedMs = millis();
@@ -669,11 +787,21 @@ void pumpLinkIn() {
 // Bluetooth MIDI in and out
 // ============================================================================================
 void pumpBleIn() {
-  for (uint8_t i = 0; i < 1 + BLE_HOSTS_MAX; ++i) {
+  for (uint8_t i = 0; i < 1 + MODULE_HANDLES; ++i) {
     Peer &p = peers[i];
     RxRing::Item *item;
     while ((item = p.rx.peek()) != nullptr) {
       if (toMainNormal.freeSlots(false) < 64) return; // the link is behind, the data waits in the ring
+      if (p.usb) { // already USB MIDI packets, 4 bytes each
+        for (uint16_t k = 0; k + 3 < item->len; k += 4) {
+          const uint8_t *pkt = item->data + k;
+          if ((pkt[0] & 0x0F) < 2) continue;
+          if (p.announced) sendPacketToMain(peerPort(i), p.up, pkt);
+          noteActivity();
+        }
+        p.rx.release();
+        continue;
+      }
       p.parser.feed(item->data, item->len, [&](const uint8_t pkt[4]) {
         if ((pkt[0] & 0x0F) < 2) return;
 #if FW_BENCH
@@ -697,9 +825,22 @@ bool sendBle(Peer &p, const uint8_t *data, uint16_t len) {
 
 void pumpBleOut() {
   const uint16_t stamp = (uint16_t)(millis() & 0x1FFF);
-  for (uint8_t i = 0; i < 1 + BLE_HOSTS_MAX; ++i) {
+  for (uint8_t i = 0; i < 1 + MODULE_HANDLES; ++i) {
     Peer &p = peers[i];
     if (!p.connected) continue;
+    if (p.usb) { // USB MIDI packets as they are, a few at a time
+      uint8_t buf[64];
+      uint16_t n = 0, takenRt = 0, takenNormal = 0;
+      MidiPacket *pk;
+      while (n + 4 <= sizeof(buf) && (pk = p.outRt.peekAt(takenRt)) != nullptr) { buf[n] = pk->b[0] & 0x0F; buf[n + 1] = pk->b[1]; buf[n + 2] = pk->b[2]; buf[n + 3] = pk->b[3]; n += 4; ++takenRt; }
+      while (n + 4 <= sizeof(buf) && takenRt == p.outRt.size() && (pk = p.outNormal.peekAt(takenNormal)) != nullptr) { buf[n] = pk->b[0] & 0x0F; buf[n + 1] = pk->b[1]; buf[n + 2] = pk->b[2]; buf[n + 3] = pk->b[3]; n += 4; ++takenNormal; }
+      if (n && usbmidi::send(p.usbIndex, buf, n)) {
+        for (uint16_t k = 0; k < takenRt; ++k) p.outRt.pop();
+        for (uint16_t k = 0; k < takenNormal; ++k) p.outNormal.pop();
+        noteActivity();
+      }
+      continue;
+    }
     if (p.client) p.mtu = p.client->getMTU();
     const uint16_t limit = p.mtu > 23 ? (p.mtu - 3 > 180 ? 180 : p.mtu - 3) : 20;
     for (uint8_t round = 0; round < 2; ++round) { // at most two Bluetooth packets for a link in a pass
@@ -727,6 +868,8 @@ void sendIdentity(uint8_t h) {
     const uint8_t pkt[4] = {CONTROL_BLE_ADDRESS, (uint8_t)((part << 4) | h), p.addr[part * 2], p.addr[part * 2 + 1]};
     sendToMain(LINK_PORT_CONTROL, pkt);
   }
+  const uint8_t kind[4] = {CONTROL_BLE_ADDRESS, (uint8_t)((3 << 4) | h), p.usb ? MODULE_KIND_USB : MODULE_KIND_BLE, 0};
+  sendToMain(LINK_PORT_CONTROL, kind);
   for (uint8_t chunk = 0; chunk < NAME_CHUNKS; ++chunk) {
     uint8_t chars[2];
     nameChunk(p.name, chunk, chars);
@@ -736,20 +879,20 @@ void sendIdentity(uint8_t h) {
 }
 
 void serviceConnections() {
-  for (uint8_t i = 0; i < 1 + BLE_HOSTS_MAX; ++i) {
+  for (uint8_t i = 0; i < 1 + MODULE_HANDLES; ++i) {
     Peer &p = peers[i];
     if (p.connected && !p.announced) {
       p.announced = true;
       flashUntilMs = millis() + CONNECT_FLASH_MS;
       if (peers[0].connected && i == 0) peripheralUntilMs = 0; // the phone or computer got in, normal service again
-      if (i > 0 && toMainRt.freeSlots(false) > 20) sendIdentity((uint8_t)i);
+      if (i > 0 && toMainRt.freeSlots(false) > 24) sendIdentity((uint8_t)i);
       statusDirty = true;
 #if FW_BENCH
       Serial.printf("connected %s %u: %s\n", i == 0 ? "device" : "host", (unsigned)i, i == 0 ? "central" : p.name);
 #endif
     } else if (!p.connected && p.announced) {
       p.announced = false;
-      if (i > 0) { p.client = nullptr; p.chr = nullptr; }
+      if (i > 0) { p.client = nullptr; p.chr = nullptr; p.usb = false; }
       p.rx.clear();
       p.outRt.clear();
       p.outNormal.clear();
@@ -770,11 +913,11 @@ void serviceControlOut() {
     statusDirty = false;
     lastBeatMs = now;
     uint8_t mask = 0;
-    for (uint8_t h = 1; h <= BLE_HOSTS_MAX; ++h) if (peers[h].connected && peers[h].announced) mask |= (uint8_t)(1 << (h - 1));
+    for (uint8_t h = 1; h <= MODULE_HANDLES; ++h) if (peers[h].connected && peers[h].announced) mask |= (uint8_t)(1 << (h - 1));
     const uint32_t drops = totalDrops();
     const uint8_t map[4] = {CONTROL_PORT_MAP, mask, BT_FW_VERSION, (uint8_t)(drops > 127 ? 127 : drops)};
     sendToMain(LINK_PORT_CONTROL, map);
-    const uint8_t flags = (uint8_t)((peers[0].connected ? 1 : 0) | (learning() ? 2 : 0) | (NimBLEDevice::getScan()->isScanning() ? 4 : 0) | (peripheralWindow() ? 8 : 0));
+    const uint8_t flags = (uint8_t)((peers[0].connected ? 1 : 0) | (learning() ? 2 : 0) | (NimBLEDevice::getScan()->isScanning() ? 4 : 0) | (peripheralWindow() ? 8 : 0) | (usbHostActive ? 16 : 0) | (usbFailsafe ? 32 : 0));
     const uint8_t st[4] = {CONTROL_BLE_STATUS, flags, hostsConnected(), boardCheckResult};
     sendToMain(LINK_PORT_CONTROL, st);
     if (clearEventsLeft) {
@@ -786,9 +929,9 @@ void serviceControlOut() {
   // Each connected host's address and name again now and then, so the main brain gets them even if the first pass was missed.
   if (now - lastIdentityMs >= IDENTITY_MS * 20) {
     lastIdentityMs = now;
-    for (uint8_t n = 0; n < BLE_HOSTS_MAX; ++n) {
-      identityPeer = (uint8_t)(identityPeer % BLE_HOSTS_MAX + 1);
-      if (peers[identityPeer].connected && peers[identityPeer].announced && toMainRt.freeSlots(false) > 20) { sendIdentity(identityPeer); break; }
+    for (uint8_t n = 0; n < MODULE_HANDLES; ++n) {
+      identityPeer = (uint8_t)(identityPeer % MODULE_HANDLES + 1);
+      if (peers[identityPeer].connected && peers[identityPeer].announced && toMainRt.freeSlots(false) > 24) { sendIdentity(identityPeer); break; }
     }
   }
 }
@@ -830,17 +973,21 @@ void setup() {
   scan->setWindow(60);
 
   xTaskCreate(connectTaskFn, "bleconn", 6144, nullptr, 1, &connectTask);
+  startUsbRole(); // after Bluetooth is up, a USB host that fails then costs nothing else
   ledFadeMs = millis();
 }
 
 void loop() {
-  if (!bannerPrinted && millis() > 3000) { // after a serial monitor has had time to open
+  if (usbTryClearMs && (int32_t)(millis() - usbTryClearMs) >= 0) { usbTryClearMs = 0; prefs.putUChar("usbtry", 0); } // the host has run for 5 seconds
+  if (restartAtMs && (int32_t)(millis() - restartAtMs) >= 0) ESP.restart();
+  if (!bannerPrinted && !usbHostActive && millis() > 3000) { // after a serial monitor has had time to open
     bannerPrinted = true;
     boardCheckRun(Serial, MODULE_NAME, BT_FW_VERSION);
     Serial.printf("  allowed hosts %u, learning %s, button style %s\n", allowedHosts, learning() ? "on" : "off", FW_BUTTON_STYLE == FW_BUTTON_CME ? "CME" : "one mode");
   }
   serviceButton();
   pumpLinkIn();
+  serviceUsb();
   serviceConnections();
   pumpBleIn();
   pumpBleOut();

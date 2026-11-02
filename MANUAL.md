@@ -27,9 +27,9 @@ Find your edition here. Everything in this manual applies to every edition unles
 | FoxWizard Jr | The FoxWizard without TRS-B. |
 | FoxWizard | The original. USB-C, one TRS/DIN in and one out. |
 | Host Edition | The FoxWizard plus a USB host module. Up to 7 USB MIDI devices through hubs. With the TRS board it also has 5 more TRS outs and one more TRS in. |
-| Bluetooth Edition (planned) | The FoxWizard plus a Bluetooth module. Bluetooth MIDI devices, the FoxWizard as a Bluetooth MIDI device, and one USB Host port. |
+| Bluetooth Edition (planned) | The FoxWizard plus a Bluetooth module. Bluetooth MIDI devices, the FoxWizard as a Bluetooth MIDI device, and a USB port that hosts USB MIDI devices as well as it can, how many on a hub is not guaranteed. |
 | Hella Edition (planned) | The FoxWizard plus both modules. |
-| Deluxe (planned) | Everything on one board, with the extra TRS ports, an AMY Synth and an Audio Looper. |
+| Deluxe (planned) | Everything on one board, with the extra TRS ports, the Bluetooth module's USB port, an AMY Synth and an Audio Looper. |
 
 ## Connections
 
@@ -46,22 +46,32 @@ Up to seven USB devices work at once, whichever hub jacks they're plugged into. 
 
 ## Bluetooth (planned)
 
-The Bluetooth Edition, the Hella Edition and the Deluxe add two kinds of Bluetooth port. Each has its own input and output switch on every route.
+The Bluetooth Edition, the Hella Edition and the Deluxe add two kinds of Bluetooth port and a USB port on the Bluetooth module. Each has its own input and output switch on every route.
 
 - **BLE Host:** a Bluetooth MIDI device the FoxWizard connects to, such as a keyboard. It works like a USB Host port.
 - **BLE Device:** the FoxWizard itself, showing up as a Bluetooth MIDI device to a phone or computer. It is one port, like the USB-C one.
+- **The module's USB port:** USB MIDI devices plugged into it play like the ones on the USB Host ports, on a hub too, as many as it can manage (about 2 or 3 through a hub, it is not guaranteed). The port needs power for the devices, so use a powered hub. Patchling's Bluetooth row has a **USB Port** setting, Host or Device. Device turns the port into a second device port instead of a host. The module restarts when you change it. If the host fails to start, the port falls back to Device by itself so the module can always be updated, and Patchling tells you.
 
-The Bluetooth module's button (the small BOOT button on it) does the pairing, and Patchling's Bluetooth card does the same with **Add Bluetooth Device**.
+The Bluetooth module's button (the small BOOT button on it) does the adding, and Patchling's Bluetooth row does the same with **Add Bluetooth Device**. There is nothing to choose between host and device, the other equipment decides which role the FoxWizard takes.
 
 | What you do | What happens |
 |---|---|
 | Power on | Bluetooth devices you added before reconnect on their own. |
-| Hold 3 seconds, let go | Drops every Bluetooth link and waits a minute for a phone or computer to connect to BLE Device. Then your devices reconnect. |
-| Double press | Adds devices for a minute. Turn on the Bluetooth MIDI device and put it in pairing mode, it connects by itself and is remembered. |
-| Short press | Stops adding. |
+| Hold 3 seconds, let go | Adds devices for a minute. A phone or computer can connect to BLE Device, and the FoxWizard connects to Bluetooth MIDI devices that are on and in pairing mode, up to the room there is. Each one is remembered when it connects. |
+| Short press | Stops adding early. |
 | Hold 10 seconds, let go | Forgets every Bluetooth device. |
 
-The light on the module is off until something happens. It fades blue with Bluetooth MIDI, flashes green for a new connection, blinks blue while it is adding devices and pulses purple while it waits for a phone or computer. While you hold the button it goes white at 3 seconds and red at 10, so you know what letting go will do. Right now the FoxWizard keeps up to 2 Bluetooth devices connected, plus BLE Device.
+The light on the module is off until something happens. It fades blue with Bluetooth MIDI, flashes green for a new connection and blinks blue while it is adding devices. While you hold the button it goes white at 3 seconds and red at 10, so you know what letting go will do. Right now the FoxWizard keeps up to 2 Bluetooth devices connected, plus BLE Device, and up to 4 devices in all on the module.
+
+## Device slots and names (planned)
+
+With Bluetooth, USB Host and BLE Host devices, and USB devices on the module's own port, share the same 8 slots. The module's devices take slot 8 first, then USB Host 5 to 7 when nothing is plugged into those.
+
+- Each slot remembers its device. A device you plug in or connect again gets its own slot back, so your routes keep working.
+- A new device takes a slot that has never been used, then the slot of the device that has been gone longest. Patchling tells you whose slot it took.
+- A device that is connected never loses its slot. **Forget** on a slot frees it at once.
+- When every slot has a connected device, Patchling won't let you add another Bluetooth device and tells you to unplug a USB device first. A USB device plugged in while the slots are full waits until one frees up.
+- Patchling shows each device's name on the input and output switches when it can tell. USB and Bluetooth devices send their names. You can type your own name for any port, which helps with devices that call themselves "USB MIDI Device". Two of the same device show as "Name (2)".
 
 ## Status LEDs
 

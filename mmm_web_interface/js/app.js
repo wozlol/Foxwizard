@@ -682,6 +682,7 @@ let bleInfo = null;   // the newest summary from the unit
 let bleSlots = [];    // by host slot, 1-8, and 9 for BLE Device
 let bleGeneration = -1;
 let bleBusy = false;
+let bleFellBackSaid = false;
 const bluetoothRow = document.getElementById('bluetoothRow');
 
 function escapeHtml(text) {
@@ -696,7 +697,7 @@ function portLabel(p) {
   const slot = p.bleSlot || p.slot;
   const rec = slot ? bleRec(slot) : null;
   if (rec?.name && (rec.kind === 1 || rec.kind === 2)) return rec.name;
-  if (p.bleSlot === 8 || rec?.kind === 2) return 'BLE Host';
+  if (p.bleSlot === 8 || rec?.kind === 2) return rec?.kind === 1 ? 'USB Host' : 'BLE Host';
   return p.label;
 }
 
@@ -705,14 +706,14 @@ function portLive(p) {
   const slot = p.bleSlot || p.slot;
   const rec = slot ? bleRec(slot) : null;
   if (p.bleSlot === 8) return !!rec?.connected;
-  if (p.slot && rec?.kind === 2) return !!rec.connected;
+  if (p.slot && rec?.module) return !!rec.connected;
   return !!(p.slot && sidecarPresent && (hostPortMask & (1 << (p.slot - 1))));
 }
 
 function portTitle(p, live) {
   const slot = p.bleSlot || p.slot;
   const rec = slot ? bleRec(slot) : null;
-  const kind = p.bleSlot === 9 ? 'BLE Device' : (p.bleSlot === 8 || rec?.kind === 2) ? 'BLE Host' : p.label;
+  const kind = p.bleSlot === 9 ? 'BLE Device' : (rec?.kind === 1 && rec?.module) ? `USB device on the Bluetooth module (${p.label})` : (p.bleSlot === 8 || rec?.kind === 2) ? 'BLE Host' : p.label;
   const named = rec?.name && p.bleSlot !== 9 ? `: ${rec.name}` : '';
   return `${kind}${named}${live ? ', connected' : (named ? ', not connected now' : '')}`;
 }
@@ -735,6 +736,10 @@ async function refreshBle() {
       toast(blePresent ? 'Bluetooth module connected' : 'Bluetooth module disconnected', blePresent ? 'success' : 'error');
     }
     if (info.boardCheck && !hadBoardCheck) toast("The Bluetooth module says its Tools settings are wrong. Open its serial monitor to see which.", 'error');
+    if (info.usbFellBack && !bleFellBackSaid) {
+      bleFellBackSaid = true;
+      toast("The Bluetooth module's USB host did not start, so its USB port is a device port for now. Set USB Port to Host to try again.", 'warn');
+    }
     renderBluetoothRow();
     return changed;
   } catch (err) {
@@ -759,8 +764,8 @@ function renderBluetoothRow() {
   bluetoothRow.hidden = !blePresent;
   if (!blePresent || !bleInfo) { bluetoothRow.innerHTML = ''; return; }
   const i = bleInfo;
-  const devices = BLE_SLOT_ORDER.map((slot) => ({ slot, rec: bleRec(slot) })).filter((d) => d.rec?.kind === 2);
-  const usbInTheWay = [5, 6, 7].some((s) => bleRec(s)?.kind === 1 && bleRec(s)?.connected);
+  const devices = BLE_SLOT_ORDER.map((slot) => ({ slot, rec: bleRec(slot) })).filter((d) => d.rec?.module);
+  const usbInTheWay = [5, 6, 7].some((s) => bleRec(s)?.kind === 1 && !bleRec(s)?.module && bleRec(s)?.connected);
   const full = i.free === 0 && !i.learning;
   const state = [
     `BLE Device: ${i.deviceConnected ? 'connected' : 'waiting for a phone or computer'}`,
@@ -775,12 +780,33 @@ function renderBluetoothRow() {
       <h2 class="ble-row-heading">BLUETOOTH</h2>
       <span class="ble-state">${state}</span>
       <button type="button" class="btn btn-ghost btn-tiny" data-ble-action="learn" ${full ? 'disabled' : ''}>${i.learning ? 'Stop Adding' : 'Add Bluetooth Device'}</button>
+      <label class="ble-usb" title="The module's own USB port. As a Host it plays USB MIDI devices, as a Device it is a second device port (for now its serial and update port). The module restarts when this changes.">
+        <span>USB Port</span>
+        <select data-ble-usb>
+          <option value="0" ${i.usbHost ? 'selected' : ''}>Host</option>
+          <option value="1" ${i.usbHost ? '' : 'selected'}>Device</option>
+        </select>
+      </label>
     </div>
     ${note}
     ${devices.length ? `<ul class="ble-devices">${devices.map(({ slot, rec }) => `<li class="ble-device${rec.connected ? '' : ' ble-device-gone'}">
         <span class="ble-dot${rec.connected ? ' ble-dot-on' : ''}"></span><span>${escapeHtml(rec.name || 'Bluetooth device')}</span>
         <button type="button" class="btn btn-ghost btn-tiny" data-ble-forget="${slot}">Forget</button></li>`).join('')}</ul>` : ''}`;
 }
+
+bluetoothRow.addEventListener('change', async (e) => {
+  const select = e.target.closest('[data-ble-usb]');
+  if (!select) return;
+  if (!device.connected) { toast('Not connected to a device', 'error'); return; }
+  try {
+    await device.bleAction(3, parseInt(select.value, 10));
+    bleFellBackSaid = false;
+    toast(`The Bluetooth module restarts as a USB ${select.value === '0' ? 'host' : 'device'} port. Its Bluetooth devices reconnect in a few seconds.`, 'success');
+  } catch (err) {
+    toast("The Bluetooth module didn't answer", 'error');
+  }
+  setTimeout(refreshBle, 2500);
+});
 
 bluetoothRow.addEventListener('click', async (e) => {
   const learn = e.target.closest('[data-ble-action="learn"]');
@@ -1828,7 +1854,7 @@ function visiblePorts(route, field) {
 function portShown(p, route, field) {
   const used = !!(route[field] & (1 << p.bit));
   if (p.ble) return blePresent || used;
-  if (p.slot >= 5 && bleRec(p.slot)?.kind === 2) return true;
+  if (p.slot >= 5 && bleRec(p.slot)?.module) return true;
   return !p.sidecar || sidecarPortShown(p, used);
 }
 

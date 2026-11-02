@@ -314,28 +314,41 @@ For old octave-per-row Launchpads (Mini mk1 and mk2). A route with the Launchpad
 An ESP32-S3 SuperMini or Waveshare ESP32-S3-Zero on a second link to the main brain. It does no routing, like the host brain. Firmware: `Foxwizard_Bluetooth_Sidecar`.
 
 - **BLE Device:** the FoxWizard as a Bluetooth MIDI device to a phone or computer. Always advertising, link port 9, route port bit 14.
-- **BLE Host:** connects to Bluetooth MIDI devices, link ports 1-8 by connection handle. `BLE_HOSTS_MAX` in `board_config.h` is 2, because NimBLE-Arduino allows 3 Bluetooth connections in all by default and BLE Device is one. The main brain tracks 4 handles.
+- **Handles:** a device on the module, Bluetooth or USB, has a handle 1-4 (`MODULE_HANDLES` in `board_config.h`), link port = handle. The main brain tracks 4. Of those, `BLE_HOSTS_MAX` is 2 Bluetooth hosts, because NimBLE-Arduino allows 3 Bluetooth connections in all by default and BLE Device is one.
 - **Link:** the host link's frames and UMP, 1,000,000 baud, on UART1 over the module's GPIO44 (RX) and GPIO43 (TX), the pads the chip's own bootloader listens on. Main brain GP14 (TX) and GP15 (RX).
 - **Light:** the module's own WS2812, `FW_S3_MODULE` in `board_config.h` picks the SuperMini (GPIO48) or the Zero (GPIO21).
-- **USB:** the module's own USB host port is not used in this version. The S3 host has 8 channels, each endpoint takes one and a hub takes some, so about 2 or 3 MIDI devices through a hub.
 - **Timing:** Bluetooth adds up to one connection interval, 7.5 to 15 ms, to a message.
-- **Bench mode:** `FW_BENCH` set to 1 runs the module alone for a first test, no main brain. It connects up to `BLE_HOSTS_MAX` hosts while learning and prints what it hears on the USB serial port.
+- **Bench mode:** `FW_BENCH` set to 1 runs the module alone for a first test, no main brain. The USB port stays serial, it connects up to `BLE_HOSTS_MAX` Bluetooth hosts while adding, and prints what it hears.
+
+### USB port
+
+The module's own USB port hosts USB MIDI devices, best effort. `usb_midi_host.h` is a client of ESP-IDF's USB Host Library, which the Arduino core ships with hub support on, multi-level too, so a hub works as far as the chip's 8 host channels go. Each endpoint of each device takes a channel and a hub takes some, so plan on 2 or 3 MIDI devices through a hub, one device straight in always works.
+
+- **Which devices:** a MIDI Streaming interface (class 1, subclass 3) with bulk endpoints. A hub, or anything else, is closed again. Names come from the device's product string, the id is its vendor and product id and a hash of its serial number, sent as the handle's address (address frame part 3 says it is USB).
+- **Slots:** a USB device takes a handle and a slot like a Bluetooth one. With no room it waits, plugged in and unused, and starts when the main brain says there is a slot. It is never taken out of a slot for another. A refused device is left alone until it is unplugged.
+- **Power:** the S3 module gives a connected device no 5 V, the SuperMini and the Zero do not switch VBUS. Use a powered hub or an adapter that powers it. The Deluxe board supplies it.
+- **Host or device:** the port shares the chip's USB serial and JTAG function, so as a host the module is not a serial port on a computer. The setting is saved in the module's flash (`usbrole`), host by default, changed by a link command (Patchling's USB Port in the Bluetooth row, `clock_check bleaction usb host|device`), and the module restarts to apply it. The Device role is the module's USB serial port, the way it is updated and watched, and a place for a second USB device port, a USB MIDI device, in a later build (it needs the USB-OTG (TinyUSB) Tools setting, so it is not this build).
+- **Fall back:** each time the host starts the module counts it in `usbtry`, and clears the count after 5 seconds of running. If the count is still set at the next start and the last reset was a crash or a watchdog, or three starts in a row never ran 5 seconds, the role goes to Device, the light blinks orange for 30 seconds and Patchling says so. A power cut alone does not move it. The module can always be reached and flashed.
+- **Build:** `FW_USB_HOST` 0 in `board_config.h` leaves the host out. Bench mode never starts it, so the serial monitor works.
+- **Not run on hardware yet.** Written from the IDF 5.5 headers in the core and compiled, nothing more.
 
 ### Button
 
 The module's BOOT button, GPIO0, pressed while it runs (holding it at power-on is the chip's bootloader). `FW_BUTTON_STYLE` in `board_config.h`:
 
-| Gesture | `FW_BUTTON_CME` (default) | `FW_BUTTON_ONE_MODE` |
+| Gesture | `FW_BUTTON_ONE_MODE` (default) | `FW_BUTTON_CME` |
 |---|---|---|
 | Power on | remembered devices reconnect on their own | same |
-| Hold 3 s, let go | force peripheral: drops every Bluetooth link and advertises for a minute so a phone or computer can connect, then the remembered devices reconnect | add devices for a minute, both roles |
-| Double press | learn: connect compatible Bluetooth MIDI devices up to the room there is, remember each | learn, same as the hold |
-| Short press | stop learning | stop adding |
+| Hold 3 s, let go | add devices for a minute, both roles: BLE Device keeps advertising for a phone or computer and the module scans and connects compatible Bluetooth MIDI devices up to the room there is, remembering each | force peripheral: drops every Bluetooth link and advertises for a minute so a phone or computer can connect, then the remembered devices reconnect |
+| Double press | nothing | learn: connect compatible Bluetooth MIDI devices up to the room there is, remember each |
+| Short press | stop adding | stop learning |
 | Hold 10 s, let go | forget every Bluetooth device and bond, USB names are kept | same |
+
+The one-mode layout needs no choice of host or device, the other equipment decides the role. CME's layout is kept as a switch in case it is ever needed, it is CME's way of managing connections, not something Bluetooth requires. USB devices are never dropped by a gesture.
 
 ### Light
 
-Off by default, same no-blink ethic as the other lights. Blue fades up on Bluetooth MIDI (1 s up, 0.5 s down, follows the brightness knob). Green for 350 ms on each new connection. Blue blinking: learning. Purple pulsing slowly: force peripheral. Purple blinking fast: nothing heard from the main brain for a second. Red blinking slowly: the Tools settings are wrong. White at 3 s held, red at 10 s held.
+Off by default, same no-blink ethic as the other lights. Blue fades up on Bluetooth MIDI (1 s up, 0.5 s down, follows the brightness knob). Green for 350 ms on each new connection. Blue blinking: adding devices. Purple pulsing slowly: force peripheral, CME style only. Purple blinking fast: nothing heard from the main brain for a second. Orange blinking, 30 seconds after start: the USB host fell back. Red blinking slowly: the Tools settings are wrong. White at 3 s held, red at 10 s held.
 
 ### Control frames on the Bluetooth link
 
@@ -344,24 +357,52 @@ Port 15, the same frame as the host link. Types 1 (port map: byte 1 = connected 
 | Type | Direction | Contents |
 |---|---|---|
 | 8, device name | Module to main | Byte 1 = chunk << 4 or handle, bytes 2-3 = two characters, as for the host brain. |
-| 9, status | Module to main | Byte 1 = bit 0 BLE Device connected, 1 learning, 2 scanning, 3 force peripheral window. Byte 2 = BLE Hosts connected. Byte 3 = board check, 0 fine. Sent with the port map. |
-| 10, address | Module to main | Byte 1 = part << 4 or handle, bytes 2-3 = two bytes of the device's address, parts 0-2. Sent when a device connects and every 5 s. |
+| 9, status | Module to main | Byte 1 = bit 0 BLE Device connected, 1 adding devices, 2 scanning, 3 force peripheral window, 4 the USB port is a host port, 5 the USB host fell back. Byte 2 = devices connected on handles. Byte 3 = board check, 0 fine, 1 Flash Size wrong. Sent with the port map. |
+| 10, address | Module to main | Byte 1 = part << 4 or handle, bytes 2-3 = two bytes of the device's address, parts 0-2. A USB device's "address" is vendor id, product id and a serial hash. Part 3: byte 2 = 1 USB device, 2 Bluetooth device. Sent with the name when a device connects and every 5 s. |
 | 11, known | Main to module | Byte 1 = part << 4 or slot, bytes 2-3 = two address bytes, parts 0-2. The devices to reconnect to, all zero for none. Sent every 5 s and on a change. |
-| 12, command | Main to module | Byte 1 = 1 learn (value 1 or 0), 2 allow (BLE Hosts it may have connected, 0 to 8, sent every second), 3 disconnect (value = handle), 4 forget (value = handle). |
+| 12, command | Main to module | Byte 1 = 1 add devices (value 1 or 0), 2 allow (devices it may have connected, 0 to 8, sent every second), 3 disconnect (value = handle, a USB device is let go until unplugged), 4 forget (value = handle), 5 USB port (0 host, 1 device, saved, the module restarts). |
 | 13, event | Module to main | Byte 1 = 1: the button was held 10 s and every Bluetooth device is forgotten. Sent 3 times. |
 
 ## Shared slots
 
-USB Host and BLE Host share host slots. Slots 1-7 are the USB Host ports. Slot 8 is route bit 15, only ever a Bluetooth device, and slot 9 is BLE Device, bit 14. A Bluetooth device may take slot 8, then USB Host slots 5, 6 and 7 when no USB device is in them. Slots 1-4 are the hub's jacks and never go to a Bluetooth device, so a hub with 4 devices works as before and a Bluetooth device takes what a chained hub would use.
+USB Host, BLE Host and the USB devices on the module's own USB port share host slots. Slots 1-7 are the USB Host ports. Slot 8 is route bit 15, only ever a device on the Bluetooth module, and slot 9 is BLE Device, bit 14. A module device (Bluetooth or USB) may take slot 8, then USB Host slots 5, 6 and 7 when no USB device is in them. Slots 1-4 are the hub's jacks and never go to a module device, so a hub with 4 devices works as before and a module device takes what a chained hub would use.
 
 - **Saved routes do not change.** A route's port masks are 16 bits and 14 and 15 are 0 in routes saved before. Only what a bit means at run time changes, and that is in `/slots.fw`.
-- **`/slots.fw`** is a 291 byte file in the filesystem, not the 4 KB settings image (4,024 of 4,096 bytes used). One record per slot: kind (USB or Bluetooth), the device's address, its name (24 characters, printable ASCII) and a last-seen count. The count goes up on each connection, there is no clock. It is written 2 s after a change, when nothing has been played for a moment, and removed by Factory Reset.
+- **`/slots.fw`** is a 291 byte file in the filesystem, not the 4 KB settings image (4,024 of 4,096 bytes used). One record per slot: kind (USB on the host module, Bluetooth, or USB on the Bluetooth module), the device's address or id, its name (24 characters, printable ASCII) and a last-seen count. The count goes up on each connection, there is no clock. It is written 2 s after a change, when nothing has been played for a moment, and removed by Factory Reset.
 - **Rules** (`src/ble_slots.h`, `tests/ble_slots_test.cpp`): a device that comes back gets its own slot if it is free. A new device takes a slot nothing has used, else the slot whose device has been gone longest. A connected device's slot is never taken. Forget in Patchling clears a record at once. The 10 second button hold clears every Bluetooth record.
 - **Taking a USB Host slot:** the main brain sends the slot in a slot reserve frame, the host brain stops giving it to USB devices and echoes it back, and only then does the Bluetooth device get it. No echo in 1.5 s, or a USB device got there first, and the device is sent away. A Bluetooth device holding slot 5-7 is announced to the host brain every 500 ms, so a host brain that restarted learns it. With no host brain, slots 5-7 need no agreement. A host brain older than firmware 9 cannot hold a slot, so a Bluetooth device only gets slot 8.
 - **Full:** the main brain tells the module how many Bluetooth devices it may have connected, connected plus the slots it could still give. At 0 the module connects nothing and learning does nothing, and a device that still connects is sent away. Patchling shows why and says to unplug a USB device in USB Host 5 to 7 first, or to forget a Bluetooth device. No device is ever removed to make room.
 - **Names:** USB devices' product strings are read by the host brain once a device has settled and sent as device name frames (without the string it sends `USB vid:pid`), and Bluetooth devices' names come from the module. Patchling shows the name on the port's switch, remembered when the device is gone.
 - **GET_SLOTS and BLE_ACTION** (`SYSEX_PROTOCOL.md`) are how Patchling reads and changes this. `tools/clock_check slots` shows it from a terminal.
 - **Memory:** the Bluetooth support adds 4.4 KB of RAM to the main brain, heap with the filesystem and Patchling in use is the number to watch (`DIAGNOSTICS.md`).
+
+## Wiring and pin numbers
+
+Numbers from the datasheets: RP2040 (QFN-56), ESP32-S3 (QFN-56, the chip under the SuperMini's and the Zero's shield) and ESP32-S3-MINI-1 (the module for the Deluxe). "Module label" is what the pad is printed as on the RP2040-Zero or the S3 module.
+
+### Wires in this build
+
+| Wire | From, module label | From, RP2040 pin | To, module label | To, chip pin | To, MINI-1 pad |
+|---|---|---|---|---|---|
+| Bluetooth link out | main brain GP14 | 17 | S3 RX, GPIO44 | 50 (U0RXD) | 40 (RXD0) |
+| Bluetooth link in | main brain GP15 | 18 | S3 TX, GPIO43 | 49 (U0TXD) | 39 (TXD0) |
+| USB host link out | main brain GP26 | 38 | host brain GP29 | 41 | |
+| USB host link in | main brain GP27 | 39 | host brain GP28 | 40 | |
+| Ground | GND | | GND | | 1, 2, 42, 43, 46 to 65 |
+
+All RP2040 pin numbers are the same on every RP2040 chip, the RP2040-Zero module's own labels are `GP` and the GPIO number.
+
+### Planned wires (flashing from the main brain)
+
+| Wire | From, module label | From, RP2040 pin | To | To, chip pin | To, MINI-1 pad |
+|---|---|---|---|---|---|
+| S3 reset | main brain GP28 | 40 | S3 EN | 4 (CHIP_PU) | 45 (EN) |
+| S3 boot mode | main brain GP29 | 41 | S3 IO0, GPIO0 | 5 | 4 (IO0) |
+| Host brain SWD clock | main brain GP14 (shared with the Bluetooth link) | 17 | host brain SWCLK | 24 | |
+| Host brain SWD data | main brain GP15 (shared with the Bluetooth link) | 18 | host brain SWD, SWDIO | 25 | |
+| Host brain reset (not wired, it resets itself over SWD) | | | host brain RUN | 26 | |
+
+The SuperMini and the Zero have buttons for BOOT (GPIO0) and RESET (EN) and, as far as their pinouts say, no pads for them, so wiring those two means soldering to the buttons' pads. The ESP32-S3-MINI-1 on the Deluxe has both as pins. Other S3 pins in use: the USB port is GPIO19 (USB D-) and GPIO20 (USB D+), chip pins 25 and 26, MINI-1 pads 23 and 24. The SuperMini's light is GPIO48 (chip pin 36, MINI-1 pad 30) and the Zero's is GPIO21.
 
 ## Flashing the modules
 
@@ -388,11 +429,11 @@ One main brain firmware covers every edition, it finds each module by its link.
 
 ## Planned
 
-- **Deluxe:** one PCB with the main brain, the USB host module with its hub and TRS 2-6, the ESP32-S3 and an ES8388 codec on it. WS2812 lights on the same pins the modules' own lights use (GP16 on the RP2040-Zero), no discrete lights. The S3's USB host is not used, the host module does that.
+- **Deluxe:** one PCB with the main brain, the USB host module with its hub and TRS 2-6, the ESP32-S3 and an ES8388 codec on it. WS2812 lights on the same pins the modules' own lights use (GP16 on the RP2040-Zero), no discrete lights. The S3's USB port is on the board too, a USB-C jack with 5 V for the devices, a host port by default and switchable in software to a device port, the same as on the Bluetooth module. The device role becomes a USB MIDI device (a second port to a computer) with a TinyUSB build, a service port for updating the module meanwhile.
 - **AMY Synth and Audio Looper (Deluxe):** AMY runs on the S3 through the codec and takes MIDI as one more port. The audio looper comes from the Loopanini project with layer undo, not its four tracks. Very small audio files (drum hits and simple sampled instruments) go from Patchling to the S3's storage as SysEx through the main brain and the module's link, in checksummed chunks like the firmware update. Patchling's AMY Synth row only shows when the unit reports an S3 with the codec.
 - **Typed names:** a name typed in Patchling for any port, kept in `/slots.fw`.
 - **Protocol floor:** below it, Patchling shows the update badge and does not edit until the unit is updated. The firmware keeps no old protocols.
-- **The module's USB host port,** after a test of how many MIDI devices the S3 host takes through a hub.
+- **The module's USB host,** its test on hardware: how many MIDI devices stay steady through a hub, power, and that the fall back works.
 
 ## Limits
 

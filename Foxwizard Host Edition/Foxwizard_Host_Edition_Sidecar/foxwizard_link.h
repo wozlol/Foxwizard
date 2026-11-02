@@ -39,16 +39,19 @@ constexpr uint8_t CONTROL_HOST_REPORT = 5; // host -> main. byte 1 = index, 2-3 
 // Slots shared by USB Host and BLE Host (host firmware 9, Bluetooth module 1, main 2.2).
 constexpr uint8_t CONTROL_SLOT_RESERVE = 7;  // main -> host: byte 1 = USB Host slots held for a Bluetooth device, slot n is bit n-1. host -> main: the ones it is keeping free
 constexpr uint8_t CONTROL_DEVICE_NAME = 8;   // host or Bluetooth module -> main: byte 1 = chunk << 4 | slot or handle, 2-3 = two name characters, 0 ends it
-constexpr uint8_t CONTROL_BLE_STATUS = 9;    // Bluetooth module -> main: byte 1 = bit 0 BLE Device connected, bit 1 learning, bit 2 scanning, bit 3 peripheral window, 2 = BLE Hosts connected, 3 = board check (0 fine)
-constexpr uint8_t CONTROL_BLE_ADDRESS = 10;  // Bluetooth module -> main: byte 1 = part << 4 | handle, 2-3 = two address bytes, parts 0-2
+constexpr uint8_t CONTROL_BLE_STATUS = 9;    // Bluetooth module -> main: byte 1 = bit 0 BLE Device connected, 1 learning, 2 scanning, 3 peripheral window, 4 USB port is a host port, 5 USB host fell back to service, 2 = devices connected on its handles, 3 = board check (0 fine)
+constexpr uint8_t CONTROL_BLE_ADDRESS = 10;  // Bluetooth module -> main: byte 1 = part << 4 | handle, 2-3 = two address bytes, parts 0-2. Part 3: byte 2 = MODULE_KIND_*. A USB device's "address" is its vendor id, product id and a hash of its serial number
 constexpr uint8_t CONTROL_BLE_KNOWN = 11;    // main -> Bluetooth module: byte 1 = part << 4 | slot, 2-3 = two address bytes, parts 0-2. All zero clears the slot
 constexpr uint8_t CONTROL_BLE_COMMAND = 12;  // main -> Bluetooth module: byte 1 = BLE_CMD_*, byte 2 = its value
 constexpr uint8_t CONTROL_BLE_EVENT = 13;    // Bluetooth module -> main: byte 1 = BLE_EVENT_*
 constexpr uint8_t BLE_EVENT_CLEAR_ALL = 1;   // the button was held 10 seconds: forget every Bluetooth device
 constexpr uint8_t BLE_CMD_LEARN = 1;         // value 1 starts learning (scan, connect and remember compatible devices), 0 stops it
-constexpr uint8_t BLE_CMD_ALLOW = 2;         // value = BLE Hosts it may have connected at once, 0 to 8
+constexpr uint8_t BLE_CMD_ALLOW = 2;         // value = devices (Bluetooth or USB) it may have connected at once, 0 to 8
 constexpr uint8_t BLE_CMD_DISCONNECT = 3;    // value = handle
 constexpr uint8_t BLE_CMD_FORGET = 4;        // value = handle, disconnects it and removes the Bluetooth bond
+constexpr uint8_t BLE_CMD_USB_ROLE = 5;      // value 0 the module's USB port is a host port, 1 a service port (serial and flashing). Saved, then the module restarts
+constexpr uint8_t MODULE_KIND_USB = 1;       // what a handle on the module is: a USB MIDI device on its USB host port
+constexpr uint8_t MODULE_KIND_BLE = 2;       // or a Bluetooth MIDI device
 constexpr uint8_t NAME_CHARS = 24;
 constexpr uint8_t NAME_CHUNKS = NAME_CHARS / 2;
 
