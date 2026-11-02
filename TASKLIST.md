@@ -1,6 +1,6 @@
 # FoxWizard task list
 
-Order matters. Finish the item you are on before starting the next. Anything new goes at the end of its section. Version at last edit: firmware 2.1 (test build), host brain 8, protocol 6.
+Order matters. Finish the item you are on before starting the next. Anything new goes at the end of its section. Version at last edit: firmware 2.2 (test build), host brain 9, Bluetooth module 1, protocol 8.
 
 ## Now (needs the hardware)
 
@@ -58,6 +58,22 @@ Numbers from `./clock_check version` and `session`, the thresholds are in `DIAGN
 - [ ] Aftertouch velocity in loops (1.88 and later).
 - [ ] Auto and Loop Lock with the Zoom (1.92 and later): follow, lead when its clock stops, lock back on, Restart on Clock Start. Which Zoom, and does it send Start and Stop?
 - [ ] JamJum lag and stuck notes with Bluetooth off. The aftertouch flood crash fixed in 1.113 may have been behind some of it. If it still happens, copy the host report before power cycling.
+
+## Editions plan (Hella and Bluetooth first, Deluxe later)
+
+Written and compiling, not yet run on hardware (2.2 test build, protocol 8, host brain 9, Bluetooth module 1). Details in `Foxwizard Host Edition/README.md`.
+
+- [ ] Heap and stack on the main brain with the Bluetooth support in. It adds 4.4 KB of RAM, so the lowest heap is the number to read first (the stack too after a first Bluetooth connection, the slots save has a 368 byte frame, a Green reading is under 4,096): `./clock_check version` after `session 100`. Green above 30 KB, Yellow 20 to 30, Red under 20. Was 28 KB lowest on 2.1, expect about 23 (Yellow) and say so.
+- [ ] Without the Bluetooth module: the unit behaves as 2.1. `./clock_check all --with-arp --send-clock`, `session 100`, a preset save, then `soak a 5`. Nothing should differ.
+- [ ] Bluetooth module alone, bench mode (`-DFW_BENCH=1`): flash it over its USB, open the serial monitor at 115200. The board check line says the settings look right. BLE Device shows up in the Mac's Audio MIDI Setup, Bluetooth MIDI. Double press the button, turn on a Bluetooth MIDI keyboard, it connects and its notes print.
+- [ ] Hella: wire main GP14 to the module's GPIO44 and GP15 to GPIO43 (and GND), flash the main brain 2.2 and the host brain 9. `./clock_check slots` shows the module, a keyboard played over Bluetooth comes out the routes, and a Bluetooth keyboard and a USB keyboard play at once.
+- [ ] Slots: with BLE in slot 8 and 5, plug USB devices until the chained-hub slots are wanted (a device behind two hubs): it waits, never a stuck note. Unplug the Bluetooth keyboard mid-note, no stuck note. Power cycle the unit, the keyboard reconnects to the same slot by itself.
+- [ ] Full: with every slot taken, Patchling's Add Bluetooth Device is greyed with the reason, a fifth device is sent away.
+- [ ] Names: a USB device's product name on its port chip in Patchling, and the Bluetooth keyboard's name.
+- [ ] Hold 3 s (force peripheral, phone connects), double press and short press, hold 10 s (every Bluetooth device forgotten, the slots in Patchling go empty).
+- [ ] Factory reset clears the slots file. Presets, loop and Save to Device still work (the slots file shares the filesystem).
+- [ ] Not built yet: a probe build and SWD flash mode for the host brain, flashing the module from the main brain, typed names, the protocol floor in Patchling, the module's own USB host port, the Deluxe PCB (ES8388, WS2812 lights, TRS 2-6 on board), AMY Synth, the Audio Looper from Loopanini with layer undo, sample transfer over SysEx and Patchling's AMY Synth row. S3 channel test: how many MIDI devices through a hub (8 host channels), and how many Bluetooth links hold steady (NimBLE allows 3 by default).
+- [ ] Open: which S3 module's LED pin to trust for the Zero (`FW_S3_ZERO`, GPIO21 from Waveshare's pinout), and whether the main brain's three activity lights on the Deluxe become the one WS2812.
 
 ## Parked
 

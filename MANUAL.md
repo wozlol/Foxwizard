@@ -4,7 +4,7 @@
 
 USB-C to TRS MIDI adapter and router. Onboard memory for 16 switchable presets, with up to 60 programmable routes each, live performance features (Arp, Scale, Auto Chord, Echo, Stutter, Looper, Launchpad, Per-Note Parameter Lock), all handled live over MIDI via a web app called Patchling.
 
-NOTE: This manual covers multiple versions and configurations of FoxWizard. The only difference is the number of ins and outs. All features (that don't depend on more ins and outs) work on all versions. The Host Edition series adds support for up to seven USB Host ports (using hubs), 5 more TRS outs, one additional TRS in, or future BLE.
+NOTE: This manual covers every edition of the FoxWizard, listed under Editions. All the routing and performance features work on all of them. The editions differ in their ports and, on the Deluxe, in audio.
 
 ## V2 Highlights
 
@@ -15,9 +15,21 @@ NOTE: This manual covers multiple versions and configurations of FoxWizard. The 
 - **Auto clock.** Follows an external clock, takes over with its own when that stops, and locks back on. Loop Lock keeps a loop in the beat. Restart on Clock Start is a switch.
 - **A looper that keeps your performance.** Layer Undo and Redo, Double and Half, Note Delete, held notes carried across layers and the loop top.
 - **Aftertouch that cannot jam the DIN port.** Poly aftertouch and channel pressure thin out gracefully when a flood is more than DIN can carry, and USB stays steady under 1,600 aftertouch messages a second.
-- **MIDI 2.0 ready.** The link between the main board and the Host Edition board carries MIDI 2.0 packets. USB MIDI 2.0 is next. See `MIDI_2_PLAN.md`.
+- **MIDI 2.0 ready.** The parts of a Host Edition already pass MIDI 2.0 packets between them. USB MIDI 2.0 is next.
 - **Patchling keeps up with the unit.** It follows presets switched on the unit, asks before dropping unsaved changes, and has Autosave.
-- **Built to be measured.** `DIAGNOSTICS.md` and the `clock_check` tool test the clock, memory, stuck notes and restarts on a real unit.
+
+## Editions
+
+Find your edition here. Everything in this manual applies to every edition unless a section says otherwise.
+
+| Edition | What it is |
+|---|---|
+| FoxWizard Jr | The FoxWizard without TRS-B. |
+| FoxWizard | The original. USB-C, one TRS/DIN in and one out. |
+| Host Edition | The FoxWizard plus a USB host module. Up to 7 USB MIDI devices through hubs. With the TRS board it also has 5 more TRS outs and one more TRS in. |
+| Bluetooth Edition (planned) | The FoxWizard plus a Bluetooth module. Bluetooth MIDI devices, the FoxWizard as a Bluetooth MIDI device, and one USB Host port. |
+| Hella Edition (planned) | The FoxWizard plus both modules. |
+| Deluxe (planned) | Everything on one board, with the extra TRS ports, an AMY Synth and an Audio Looper. |
 
 ## Connections
 
@@ -28,19 +40,28 @@ NOTE: This manual covers multiple versions and configurations of FoxWizard. The 
 
 ## Host Edition ports
 
-The Host Edition adds a host brain to the FoxWizard, and with it more ports. All of them route through the same routes.
-
-| Port | In | Out | Notes |
-|---|---|---|---|
-| USB Device (USB-C) | 1 | 1 | to a computer |
-| TRS/DIN | 1 | 1 | the FoxWizard's own |
-| USB Host 1-7 | 7 | 7 | one device each. The board's hub has four jacks, a 7-port hub or two chained 4-port hubs gives all seven |
-| TRS 2 | 1 | 1 | needs the TRS board. Patchling shows TRS 2-6 only while a Host Edition with the TRS board is connected |
-| TRS 3-6 | | 4 | needs the TRS board |
-
-That is **13 MIDI connections** on the board, 7 inputs and 11 outputs to route between, and a hub takes it to 16 connections, 10 inputs and 14 outputs. Without the TRS board it is 7 connections on the board, 6 inputs and 6 outputs. Up to 60 routes.
+The Host Edition, the Hella Edition and the Deluxe add USB Host ports, and the TRS board adds more TRS ports. All of them route through the same routes.
 
 Up to seven USB devices work at once, whichever hub jacks they're plugged into. An eighth waits and starts working when a port frees up. Patchling shows only the USB Host ports there's room for. With no hub, that's one, for a device plugged straight in. With a hub it's the hub's jacks, up to seven, and the next port shows up once a device is plugged into the one before it. A hub made of more than one chip, or a hub plugged into a hub, works too. Seven devices on bus power is a lot for one USB supply, so power the hub if they don't all come up.
+
+## Bluetooth (planned)
+
+The Bluetooth Edition, the Hella Edition and the Deluxe add two kinds of Bluetooth port. Each has its own input and output switch on every route.
+
+- **BLE Host:** a Bluetooth MIDI device the FoxWizard connects to, such as a keyboard. It works like a USB Host port.
+- **BLE Device:** the FoxWizard itself, showing up as a Bluetooth MIDI device to a phone or computer. It is one port, like the USB-C one.
+
+The Bluetooth module's button (the small BOOT button on it) does the pairing, and Patchling's Bluetooth card does the same with **Add Bluetooth Device**.
+
+| What you do | What happens |
+|---|---|
+| Power on | Bluetooth devices you added before reconnect on their own. |
+| Hold 3 seconds, let go | Drops every Bluetooth link and waits a minute for a phone or computer to connect to BLE Device. Then your devices reconnect. |
+| Double press | Adds devices for a minute. Turn on the Bluetooth MIDI device and put it in pairing mode, it connects by itself and is remembered. |
+| Short press | Stops adding. |
+| Hold 10 seconds, let go | Forgets every Bluetooth device. |
+
+The light on the module is off until something happens. It fades blue with Bluetooth MIDI, flashes green for a new connection, blinks blue while it is adding devices and pulses purple while it waits for a phone or computer. While you hold the button it goes white at 3 seconds and red at 10, so you know what letting go will do. Right now the FoxWizard keeps up to 2 Bluetooth devices connected, plus BLE Device.
 
 ## Status LEDs
 
@@ -365,6 +386,15 @@ Save to Device and Autosave save the preset in use. Changes you have not saved a
 
 The slot count, the slot in use, the lights brightness and the front button being Preset belong to the unit, not to a preset. The loop is the unit's, not a preset's. A Factory Reset deletes every preset.
 
+## AMY Synth and Audio Looper (Deluxe, planned)
+
+The Deluxe has a synth, a sampler and an audio looper built in, with audio in and out.
+
+- **AMY Synth:** a synth and sampler. Its notes come from your routes like any other MIDI output.
+- **Audio Looper:** records audio and layers it. Undo takes off the last layer, the same way the MIDI Looper's Layer Undo does.
+- **Samples:** AMY Synth plays very small audio files, mainly drum hits and simple sampled instruments. Load them from the AMY Synth row in Patchling over USB. They are small, so loading is quick enough.
+- **The AMY Synth row** only appears in Patchling when the connected unit has the synth and audio hardware.
+
 ## Configuring with Patchling
 
 1. Open the Patchling web app and connect the device over USB-C.
@@ -410,3 +440,7 @@ Updates keep saved settings and routes.
 8. The board reboots automatically once the copy finishes.
 
 The same steps recover a board from any firmware.
+
+## Technical documents
+
+For builders, not needed to use a FoxWizard: `Foxwizard Host Edition/README.md` (modules, pins, flashing), `SYSEX_PROTOCOL.md`, `DIAGNOSTICS.md` and `MIDI_2_PLAN.md`.

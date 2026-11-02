@@ -40,6 +40,19 @@ hide it inside old gear for an easy USB upgrade.
 
 What other adaptors can't do: route and remap MIDI without a computer.
 
+## Editions
+
+| Edition | What it is |
+|---|---|
+| FoxWizard Jr | The FoxWizard without TRS-B. |
+| FoxWizard | The original. USB-C, one TRS/DIN in and one out. |
+| Host Edition | The FoxWizard plus a USB host module. Up to 7 USB MIDI devices through hubs. With the TRS board it also has 5 more TRS outs and one more TRS in. |
+| Bluetooth Edition (planned) | The FoxWizard plus a Bluetooth module. Bluetooth MIDI devices, the FoxWizard as a Bluetooth MIDI device, and one USB Host port. |
+| Hella Edition (planned) | The FoxWizard plus both modules. |
+| Deluxe (planned) | Everything on one board, with the extra TRS ports, an AMY Synth and an Audio Looper. |
+
+Modules, pins and flashing are in [`Foxwizard Host Edition/README.md`](Foxwizard%20Host%20Edition/README.md).
+
 ## Gallery
 
 ![Board front](readme_images/foxwizard1.jpeg)

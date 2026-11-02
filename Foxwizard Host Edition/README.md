@@ -1,6 +1,8 @@
-# FoxWizard Host Edition
+# FoxWizard Host Edition and Bluetooth modules
 
-Two RP2040s joined by a 2-wire serial link.
+Build and protocol notes for the modules that add ports to the FoxWizard. How to use an edition is in `../MANUAL.md`.
+
+The Host Edition is two RP2040s joined by a 2-wire serial link. The Bluetooth module (Bluetooth and Hella editions) is an ESP32-S3 on a second link, see Bluetooth module below.
 
 - **Main brain:** the FoxWizard. Runs all routing, its native USB MIDI device port, and its DIN/TRS IN and OUT.
 - **Host brain:** USB host for a 4-port hub, plus 1 DIN/TRS MIDI IN and 5 DIN/TRS MIDI OUTs. No routing. It tags everything with the port it came from and sends it to the main brain.
@@ -24,6 +26,9 @@ Tested on hardware: it runs with the host brain disconnected and picks it up whe
 |---|---|
 | `../Mini_MIDI_Multitool` | Main brain, the one FoxWizard firmware, for units with and without a host brain. |
 | `Foxwizard_Host_Edition_Sidecar` | Host brain, on the RP2040-Zero or the Host Edition sidecar board. |
+| `Foxwizard_Bluetooth_Sidecar` | Bluetooth module, on an ESP32-S3 SuperMini or Waveshare Zero. |
+
+Each sketch folder has `board_check.h`, which stops the build with the Tools setting to change if one is wrong, and `foxwizard_link.h` and `ump.h`, identical copies kept in all three folders.
 
 ## Test builds through Patchling
 
@@ -40,10 +45,13 @@ The sidecar can't be updated through Patchling. Flash it from the Arduino IDE.
 
 ## Arduino settings
 
-| Sketch | Board | Tools -> USB Stack |
+| Sketch | Board and Tools settings | Library |
 |---|---|---|
-| Main brain | Waveshare RP2040-Zero, Flash Size 2MB (Sketch: 1MB, FS: 1MB) | Adafruit TinyUSB |
-| Host brain | Waveshare RP2040-Zero | Adafruit TinyUSB Host (native) |
+| Main brain | Waveshare RP2040-Zero, Flash Size 2MB (Sketch: 1MB, FS: 1MB), USB Stack Adafruit TinyUSB | Adafruit TinyUSB Library |
+| Host brain | Waveshare RP2040-Zero, USB Stack Adafruit TinyUSB Host (native) | none, TinyUSB is vendored |
+| Bluetooth module | ESP32S3 Dev Module, USB CDC On Boot Enabled, USB Mode Hardware CDC and JTAG, Flash Size 4MB (32Mb), PSRAM Disabled or QSPI PSRAM, Partition Scheme Default 4MB with spiffs, CPU Frequency 240MHz | NimBLE-Arduino 2.x |
+
+CPU Speed stays at the RP2040 board's default, 200 MHz. A wrong setting the compiler can see stops the build with the setting to change, from `board_check.h` in each sketch folder. Flash Size on the ESP32-S3 is not one of them, so the module reads it from the chip when it starts, prints the result on its USB serial port (115200 baud) and shows a slow red light if it is wrong. `tools/build_sketches.sh` builds all three sketches with the right settings.
 
 **Tinkerers:** the host brain must use **Tools -> USB Stack -> Adafruit TinyUSB Host (native)**. With any other USB Stack setting it won't compile, or won't act as a USB host.
 
@@ -75,6 +83,10 @@ Same as the FoxWizard, plus:
 |---|---|
 | GP26 | Link TX to host brain GP29 (PIO serial) |
 | GP27 | Link RX from host brain GP28 (PIO serial) |
+| GP14 | Link TX to the Bluetooth module's GPIO44 (PIO serial) |
+| GP15 | Link RX from the Bluetooth module's GPIO43 (PIO serial) |
+
+GP28 and GP29 are kept for the Bluetooth module's EN and IO0, so the main brain can flash it (planned). GP14 and GP15 are also the host brain's SWCLK and SWDIO pads, see Flashing the modules.
 
 ### Host brain
 
@@ -160,7 +172,7 @@ Each brain turns MIDI at its own edge. The host brain converts the USB MIDI 1.0 
 | 5 | From host DIN IN | DIN OUT 1 only |
 | 6-9 | | DIN OUT 2-5 only |
 | 10-12 | From USB Host slot 5-7 (host firmware 6) | USB Host slot 5-7 only |
-| 13-14 | From C3 BLE MIDI devices (planned) | C3 BLE MIDI devices (planned) |
+| 13-14 | | Reserved. The Bluetooth module has its own link |
 | 15 | Control | Control |
 
 Port 15 carries control frames. The word's four bytes are the frame type (0-15) then three data bytes, all 8 bits:
@@ -173,6 +185,8 @@ Port 15 carries control frames. The word's four bytes are the frame type (0-15) 
 | 6, host hub | Host to main | Byte 1 = downstream jacks of the hubs attached (0 no hub), byte 2 = hubs attached, byte 3 = devices waiting for a free slot. Sent with the port map. Host firmware 4. |
 | 5, host report | Host to main | Byte 1 = index, bytes 2-3 = report bytes 2 x index and 2 x index + 1. The 240-byte host report, sent six times with the heartbeat after a recovery restart. Host firmware 3. |
 | 4, brightness | Main to host | Byte 1 = the LED brightness knob, 0-10. Sent whenever it changes, and once a sidecar (re)appears. |
+| 7, slot reserve | Both ways | Main to host: byte 1 = the USB Host slots held for a Bluetooth device, slot n is bit n-1, sent every 500 ms and on a change. Host to main: the ones it is keeping free (held and not in use by a USB device). Host firmware 9. |
+| 8, device name | Host to main | Byte 1 = chunk << 4 or slot (1-7), bytes 2-3 = two characters of the name, 0 ends it. The whole name, 12 chunks, when the product string has been read and every 5 s after. Host firmware 9. |
 
 `foxwizard_link.h` holds the frame code and queue rules. Both sketch folders carry an identical copy.
 
@@ -242,10 +256,10 @@ Everything fitted: a Host Edition board with the TRS board added on top.
 | DIN/TRS ins | 2 | TRS/DIN on the main brain, TRS 2 on the sidecar |
 | USB Host devices at once | 7 | 4 on the board's own jacks, up to 3 more through a hub plugged into one of them |
 
-- Every port has its own switch in Patchling, as an input and as an output, and a route picks any combination of each. A route's ports are 16 bits, 14 used, 2 kept for BLE MIDI.
+- Every port has its own switch in Patchling, as an input and as an output, and a route picks any combination of each. A route's ports are 16 bits. Bits 14 and 15 are the Bluetooth module's, see Shared slots.
 - The ports do not trade against each other. Each has its own fixed bit, so fewer USB Host devices does not free a bit for more DIN outs, and 7 USB Host with 6 DIN/TRS outs works at once. 5 sidecar DIN outs is the limit, there is no bit for a sixth.
 - Grounding GP14 only shows TRS 2-6 in Patchling and sends nothing else. It takes no USB Host slot, the pins are separate (DIN/TRS GP4-GP9, hub lights GP10-GP13, USB Host is the native USB port).
-- Fewer ports are not a gain today. Letting an empty USB Host slot lend its bit to more TRS or BLE ports is the Planned shared slots below, a route format change.
+- Fewer ports are not a gain, except that a Bluetooth device can take an empty USB Host slot 5-7, see Shared slots. That does not change a saved route.
 
 Sidecar ports exist only while a sidecar is present. Without routes:
 
@@ -295,9 +309,90 @@ For old octave-per-row Launchpads (Mini mk1 and mk2). A route with the Launchpad
 - **Stuck notes:** when the sidecar restarts or disappears, the main brain sends Note Offs for every note still held from USB Host and TRS 2, through the same routes as a real Note Off. When the sidecar restarts or comes back, the main brain also sends All Notes Off (CC 123) on all channels to the sidecar's ports only, for notes those outputs missed while it was gone. The main brain's own ports are left alone.
 - **Main brain:** handles at most 64 USB Device packets and 64 TRS/DIN bytes per loop, so a flood such as a DAW feedback loop can't starve the link, the lights, or the button.
 
+## Bluetooth module
+
+An ESP32-S3 SuperMini or Waveshare ESP32-S3-Zero on a second link to the main brain. It does no routing, like the host brain. Firmware: `Foxwizard_Bluetooth_Sidecar`.
+
+- **BLE Device:** the FoxWizard as a Bluetooth MIDI device to a phone or computer. Always advertising, link port 9, route port bit 14.
+- **BLE Host:** connects to Bluetooth MIDI devices, link ports 1-8 by connection handle. `BLE_HOSTS_MAX` in `board_config.h` is 2, because NimBLE-Arduino allows 3 Bluetooth connections in all by default and BLE Device is one. The main brain tracks 4 handles.
+- **Link:** the host link's frames and UMP, 1,000,000 baud, on UART1 over the module's GPIO44 (RX) and GPIO43 (TX), the pads the chip's own bootloader listens on. Main brain GP14 (TX) and GP15 (RX).
+- **Light:** the module's own WS2812, `FW_S3_MODULE` in `board_config.h` picks the SuperMini (GPIO48) or the Zero (GPIO21).
+- **USB:** the module's own USB host port is not used in this version. The S3 host has 8 channels, each endpoint takes one and a hub takes some, so about 2 or 3 MIDI devices through a hub.
+- **Timing:** Bluetooth adds up to one connection interval, 7.5 to 15 ms, to a message.
+- **Bench mode:** `FW_BENCH` set to 1 runs the module alone for a first test, no main brain. It connects up to `BLE_HOSTS_MAX` hosts while learning and prints what it hears on the USB serial port.
+
+### Button
+
+The module's BOOT button, GPIO0, pressed while it runs (holding it at power-on is the chip's bootloader). `FW_BUTTON_STYLE` in `board_config.h`:
+
+| Gesture | `FW_BUTTON_CME` (default) | `FW_BUTTON_ONE_MODE` |
+|---|---|---|
+| Power on | remembered devices reconnect on their own | same |
+| Hold 3 s, let go | force peripheral: drops every Bluetooth link and advertises for a minute so a phone or computer can connect, then the remembered devices reconnect | add devices for a minute, both roles |
+| Double press | learn: connect compatible Bluetooth MIDI devices up to the room there is, remember each | learn, same as the hold |
+| Short press | stop learning | stop adding |
+| Hold 10 s, let go | forget every Bluetooth device and bond, USB names are kept | same |
+
+### Light
+
+Off by default, same no-blink ethic as the other lights. Blue fades up on Bluetooth MIDI (1 s up, 0.5 s down, follows the brightness knob). Green for 350 ms on each new connection. Blue blinking: learning. Purple pulsing slowly: force peripheral. Purple blinking fast: nothing heard from the main brain for a second. Red blinking slowly: the Tools settings are wrong. White at 3 s held, red at 10 s held.
+
+### Control frames on the Bluetooth link
+
+Port 15, the same frame as the host link. Types 1 (port map: byte 1 = connected handles, bit h-1, byte 2 = module firmware, byte 3 = drops), 2 (flow) and 4 (brightness) are as for the host brain.
+
+| Type | Direction | Contents |
+|---|---|---|
+| 8, device name | Module to main | Byte 1 = chunk << 4 or handle, bytes 2-3 = two characters, as for the host brain. |
+| 9, status | Module to main | Byte 1 = bit 0 BLE Device connected, 1 learning, 2 scanning, 3 force peripheral window. Byte 2 = BLE Hosts connected. Byte 3 = board check, 0 fine. Sent with the port map. |
+| 10, address | Module to main | Byte 1 = part << 4 or handle, bytes 2-3 = two bytes of the device's address, parts 0-2. Sent when a device connects and every 5 s. |
+| 11, known | Main to module | Byte 1 = part << 4 or slot, bytes 2-3 = two address bytes, parts 0-2. The devices to reconnect to, all zero for none. Sent every 5 s and on a change. |
+| 12, command | Main to module | Byte 1 = 1 learn (value 1 or 0), 2 allow (BLE Hosts it may have connected, 0 to 8, sent every second), 3 disconnect (value = handle), 4 forget (value = handle). |
+| 13, event | Module to main | Byte 1 = 1: the button was held 10 s and every Bluetooth device is forgotten. Sent 3 times. |
+
+## Shared slots
+
+USB Host and BLE Host share host slots. Slots 1-7 are the USB Host ports. Slot 8 is route bit 15, only ever a Bluetooth device, and slot 9 is BLE Device, bit 14. A Bluetooth device may take slot 8, then USB Host slots 5, 6 and 7 when no USB device is in them. Slots 1-4 are the hub's jacks and never go to a Bluetooth device, so a hub with 4 devices works as before and a Bluetooth device takes what a chained hub would use.
+
+- **Saved routes do not change.** A route's port masks are 16 bits and 14 and 15 are 0 in routes saved before. Only what a bit means at run time changes, and that is in `/slots.fw`.
+- **`/slots.fw`** is a 291 byte file in the filesystem, not the 4 KB settings image (4,024 of 4,096 bytes used). One record per slot: kind (USB or Bluetooth), the device's address, its name (24 characters, printable ASCII) and a last-seen count. The count goes up on each connection, there is no clock. It is written 2 s after a change, when nothing has been played for a moment, and removed by Factory Reset.
+- **Rules** (`src/ble_slots.h`, `tests/ble_slots_test.cpp`): a device that comes back gets its own slot if it is free. A new device takes a slot nothing has used, else the slot whose device has been gone longest. A connected device's slot is never taken. Forget in Patchling clears a record at once. The 10 second button hold clears every Bluetooth record.
+- **Taking a USB Host slot:** the main brain sends the slot in a slot reserve frame, the host brain stops giving it to USB devices and echoes it back, and only then does the Bluetooth device get it. No echo in 1.5 s, or a USB device got there first, and the device is sent away. A Bluetooth device holding slot 5-7 is announced to the host brain every 500 ms, so a host brain that restarted learns it. With no host brain, slots 5-7 need no agreement. A host brain older than firmware 9 cannot hold a slot, so a Bluetooth device only gets slot 8.
+- **Full:** the main brain tells the module how many Bluetooth devices it may have connected, connected plus the slots it could still give. At 0 the module connects nothing and learning does nothing, and a device that still connects is sent away. Patchling shows why and says to unplug a USB device in USB Host 5 to 7 first, or to forget a Bluetooth device. No device is ever removed to make room.
+- **Names:** USB devices' product strings are read by the host brain once a device has settled and sent as device name frames (without the string it sends `USB vid:pid`), and Bluetooth devices' names come from the module. Patchling shows the name on the port's switch, remembered when the device is gone.
+- **GET_SLOTS and BLE_ACTION** (`SYSEX_PROTOCOL.md`) are how Patchling reads and changes this. `tools/clock_check slots` shows it from a terminal.
+- **Memory:** the Bluetooth support adds 4.4 KB of RAM to the main brain, heap with the filesystem and Patchling in use is the number to watch (`DIAGNOSTICS.md`).
+
+## Flashing the modules
+
+- **Bluetooth module, first time and after:** its own USB-C, with the Tools settings above. The first upload may need BOOT held while plugging in.
+- **Host brain on the Host Edition board:** SWD pads, see above.
+- **Planned, a probe build on the main brain:** for the first flash of a host brain soldered to a board, Raspberry Pi's `debugprobe` firmware with `PROBE_PIN_OFFSET` 14, so SWCLK is GP14 and SWDIO is GP15, the reset, UART and light pins moved off GP1, GP4 and GP5 (DIN in, IN light, button) and GP28 held low so a blank Bluetooth module cannot talk on the SWD wire. Load it over USB with the firmware pads shorted, flash the host brain over SWD from a computer with OpenOCD, short the pads again and load the main firmware.
+- **Planned, an SWD flash mode in the main firmware:** routing paused with a notice, a free PIO state machine borrowed or plain GPIO, the watchdog fed, a restart at the end. Only the SWD engine and the flashing steps, no USB probe side. A failed flash is run again, the host brain cannot be bricked.
+- **Planned, the Bluetooth module from the main brain:** Espressif's `esp-serial-flasher` (it has a Pico host port and ESP32-S3 target), over GP14 and GP15 with GP28 on the module's EN and GP29 on IO0. Patchling streams the image over SysEx, nothing is stored on the main brain.
+
+The exposed pads on the main brain are GP14, GP15, GP26, GP27, GP28 and GP29. GP26 and GP27 are the host brain link, and GP14, GP15, GP28 and GP29 are used by the above.
+
+## Editions
+
+| Edition | Main brain | USB host module | Bluetooth module |
+|---|---|---|---|
+| FoxWizard Jr | RP2040, no TRS-B hardware | | |
+| FoxWizard | RP2040 | | |
+| Host Edition | RP2040 | RP2040-Zero or Host Edition board | |
+| Bluetooth Edition | RP2040 | | ESP32-S3 SuperMini or Zero |
+| Hella Edition | RP2040 | RP2040-Zero or Host Edition board | ESP32-S3 SuperMini or Zero |
+| Deluxe | RP2040 | RP2040 on the board, with its hub and TRS 2-6 | ESP32-S3 on the board, with an ES8388 codec |
+
+One main brain firmware covers every edition, it finds each module by its link.
+
 ## Planned
 
-- **Shared port slots:** a route's ports are 16 switches, 14 in use (USB, TRS/DIN, USB Host 1-7, TRS 2-6). Bits 14-15 and link ports 13-14 are kept for BLE MIDI. Later, a USB Host slot with no device in it, and the TRS and BLE ports, are meant to share the spare slots first come, first served, so a very full setup uses everything the format has. That needs ports numbered by what's plugged in rather than fixed bits, which is a route format change.
+- **Deluxe:** one PCB with the main brain, the USB host module with its hub and TRS 2-6, the ESP32-S3 and an ES8388 codec on it. WS2812 lights on the same pins the modules' own lights use (GP16 on the RP2040-Zero), no discrete lights. The S3's USB host is not used, the host module does that.
+- **AMY Synth and Audio Looper (Deluxe):** AMY runs on the S3 through the codec and takes MIDI as one more port. The audio looper comes from the Loopanini project with layer undo, not its four tracks. Very small audio files (drum hits and simple sampled instruments) go from Patchling to the S3's storage as SysEx through the main brain and the module's link, in checksummed chunks like the firmware update. Patchling's AMY Synth row only shows when the unit reports an S3 with the codec.
+- **Typed names:** a name typed in Patchling for any port, kept in `/slots.fw`.
+- **Protocol floor:** below it, Patchling shows the update badge and does not edit until the unit is updated. The firmware keeps no old protocols.
+- **The module's USB host port,** after a test of how many MIDI devices the S3 host takes through a hub.
 
 ## Limits
 

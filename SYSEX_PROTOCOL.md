@@ -6,6 +6,8 @@ IDENTITY_REPLY's `protocolVersion` says which version a board speaks:
 - **2:** 45-byte routes with port masks, and GET_STATUS for the sidecar.
 - **3:** Global clock settings, LEARN, and the clock in STATUS_DATA.
 - **4:** Host Edition test builds from 1.6. 53-byte routes with feature fields, and feature blocks.
+- **5-7:** presets, Round Robin Priority, Round Robin Velocity.
+- **8:** firmware 2.2. The Bluetooth module, the host slots it shares with USB Host, and device names. Saved routes are unchanged, bits 14 and 15 of a route's port masks are new ports.
 
 Patchling picks the route size from it, so it talks to both.
 
@@ -77,6 +79,9 @@ The route struct is 41 bytes → five groups of 7 + one group of 6 → packed to
 | 0x38   | PRESET_DATA           | dev→host  | slotCount (1-16), activeSlot (0-15), slots holding a saved preset as a 16-bit mask in three 7-bit bytes, low first |
 | 0x39   | SET_PRESET_SLOTS      | host→dev  | slotCount (1-16). ACK checksum is the slot count, extra is the active slot. ERR_FULL when the flash filesystem is not available |
 | 0x3A   | SELECT_PRESET         | host→dev  | slot (0-15). ACKs once the slot is live, checksum is the active slot, extra the slot count. ERR_BAD_INDEX past the slot count |
+| 0x3B   | GET_SLOTS             | host→dev  | index (0 the summary, 1-8 a host slot, 9 BLE Device). Protocol 8 |
+| 0x3C   | SLOT_DATA             | dev→host  | index, then the summary or the record, see Bluetooth slots |
+| 0x3D   | BLE_ACTION            | host→dev  | action (1 learning, 2 forget), value. ACK, ERR_BAD_INDEX with no Bluetooth module or a slot past 8. Protocol 8 |
 | 0x40   | FW_BEGIN              | host→dev  | size(3) + md5 (32 lowercase hex ASCII characters). Firmware 1.2+ |
 | 0x41   | FW_DATA               | host→dev  | index(2) + pack7(up to 128 firmware bytes → up to 147 bytes). Firmware 1.2+ |
 | 0x7C   | DIAG_STACK_DIVE       | host→dev  | frames(1). Only in a build made with `FW_EXTRA_FLAGS=-DFW_DIAG`, never in a release. Recurses that many 64-byte frames so the stack goes that deep, then ACKs with the stack depth in 16-byte units as extra |
@@ -381,7 +386,19 @@ A slot is a copy of the saved settings image (the `FOX2` layout below) in the fl
 - Kept across a change: slot count, active slot, LED brightness, and button action 12.
 - With more than one slot, a mapping to Preset in Note to Feature, CC to Feature or the Launchpad table sets button action 12. SET_GLOBAL and SET_FEATURE apply this too.
 - The active slot is written to `/device.fw` once the unit has been quiet for 2 s, since a flash write holds the clock. At power on the unit loads the file of the active slot.
-- FACTORY_RESET and the boot-time button hold delete every slot file and `/device.fw`.
+- FACTORY_RESET deletes every slot file, `/device.fw` and `/slots.fw`. Holding the button while plugging in does nothing (2.1).
+
+## Bluetooth slots (protocol 8, firmware 2.2)
+
+The Bluetooth module (an ESP32-S3) is on a second link. USB Host and BLE Host share host slots. Slots 1-7 are the USB Host ports, slot 8 is a route's spare port bit (15) and only ever holds a Bluetooth device, slot 9 is BLE Device (port bit 14). A Bluetooth device may take slot 8, then USB Host slots 5, 6 and 7 when no USB device is in them. Slots 1-4 are the hub's jacks and never go to a Bluetooth device. Route port bits: slot 1-4 bits 2-5, slot 5-7 bits 11-13, slot 8 bit 15, slot 9 bit 14. Saved routes do not change.
+
+Who has which slot, and their names, are in `/slots.fw` on the unit's filesystem: a returning device gets its slot back, a new one takes a slot nothing has used, then the one whose device has been gone longest, and a connected device's slot is never taken. Rules and tests: `Mini_MIDI_Multitool/src/ble_slots.h`.
+
+GET_SLOTS index 0, the summary, answers SLOT_DATA with: 0, flags (bit 0 the module is there, 1 BLE Device is connected, 2 learning, 3 scanning, 4 force peripheral, 5 the module says its Tools settings are wrong), module firmware, generation (0-127, changes whenever a record would read differently), free (slots a Bluetooth device could take now), hosts (Bluetooth devices connected). Index 1-8 answers: index, kind (0 empty, 1 USB, 2 Bluetooth), state (bit 0 a device is there now, bit 1 a Bluetooth device may take this slot), name length, the name in ASCII (printable, 24 at most). Index 9 answers: 9, 3, state bit 0 connected, 0. A host reads the summary each poll and the records when the generation changes.
+
+BLE_ACTION action 1 starts (value 1) or stops (0) learning, as the module's button does: connect compatible Bluetooth MIDI devices and remember each. Action 2 forgets a host slot 1-8, disconnecting its device and clearing its name. With no free slot the unit sends a new device away, and Patchling does not offer Add Bluetooth Device.
+
+The names of USB devices come from the host brain (host firmware 9) and those of Bluetooth devices from the module, both over their links as control frames, see the link tables in `Foxwizard Host Edition/README.md`.
 
 ## Terminology: Poly Aftertouch vs. Channel Pressure
 
