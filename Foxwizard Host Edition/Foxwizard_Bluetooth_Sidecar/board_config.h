@@ -5,9 +5,12 @@
 #include <stdint.h>
 
 // ---- Which module this is -------------------------------------------------------------------------------------------------
-// The status light is the module's own WS2812. The SuperMini has it on GPIO48, the Waveshare Zero on GPIO21.
+// The status light is the module's own WS2812. The SuperMini has it on GPIO48, the Waveshare Zero on GPIO21. The Deluxe board has an
+// ESP32-S3-WROOM-1-N16R8 (16 MB flash, 8 MB octal PSRAM) and its WS2812 on GPIO48 too, which stays 3.3 V on the N16R8 (only the R16V
+// parts run it at 1.8 V). Its PSRAM is for the audio looper, the sampler and AMY, the Bluetooth and USB code here does not use it.
 #define FW_S3_SUPERMINI 1
 #define FW_S3_ZERO 2
+#define FW_S3_DELUXE 3
 #ifndef FW_S3_MODULE
 #define FW_S3_MODULE FW_S3_SUPERMINI
 #endif
@@ -15,11 +18,17 @@
 #if FW_S3_MODULE == FW_S3_SUPERMINI
 constexpr uint8_t PIN_STATUS_RGB = 48;
 constexpr const char *MODULE_NAME = "ESP32-S3 SuperMini";
+constexpr uint32_t EXPECTED_FLASH_MB = 4;
 #elif FW_S3_MODULE == FW_S3_ZERO
 constexpr uint8_t PIN_STATUS_RGB = 21;
 constexpr const char *MODULE_NAME = "Waveshare ESP32-S3-Zero";
+constexpr uint32_t EXPECTED_FLASH_MB = 4;
+#elif FW_S3_MODULE == FW_S3_DELUXE
+constexpr uint8_t PIN_STATUS_RGB = 48;
+constexpr const char *MODULE_NAME = "FoxWizard Deluxe, ESP32-S3-WROOM-1-N16R8";
+constexpr uint32_t EXPECTED_FLASH_MB = 16;
 #else
-#error FW_S3_MODULE must be FW_S3_SUPERMINI or FW_S3_ZERO
+#error FW_S3_MODULE must be FW_S3_SUPERMINI, FW_S3_ZERO or FW_S3_DELUXE
 #endif
 
 // ---- The button -------------------------------------------------------------------------------------------------------------

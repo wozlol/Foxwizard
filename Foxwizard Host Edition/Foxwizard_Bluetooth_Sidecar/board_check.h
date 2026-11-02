@@ -14,9 +14,16 @@
 //   CPU Frequency          240MHz (WiFi)
 //   Core Debug Level       None
 // Libraries: NimBLE-Arduino 2.x.
+//
+// Tools settings for the Deluxe (ESP32-S3-WROOM-1-N16R8, FW_S3_MODULE set to FW_S3_DELUXE in board_config.h), the others as above:
+//   Flash Size             16MB (128Mb)
+//   PSRAM                  OPI PSRAM (Disabled also starts, it just leaves the 8 MB unused)
+//   Partition Scheme       16M Flash (3MB APP/9.9MB FATFS), two 3 MB app slots for updates and 9.9 MB for samples
 
 #include <Arduino.h>
 #include <esp_flash.h>
+
+#include "board_config.h"
 
 #ifndef CONFIG_IDF_TARGET_ESP32S3
 #error Tools -> Board must be "ESP32S3 Dev Module" (the esp32 board package by Espressif).
@@ -30,8 +37,14 @@
 #error Tools -> USB Mode must be "Hardware CDC and JTAG".
 #endif
 
+#if FW_S3_MODULE == FW_S3_DELUXE
+#if defined(BOARD_HAS_PSRAM) && defined(CONFIG_SPIRAM_MODE_QUAD)
+#error Tools -> PSRAM must be "OPI PSRAM" or Disabled. The Deluxe's N16R8 has octal PSRAM and will not start with QSPI.
+#endif
+#else
 #if defined(BOARD_HAS_PSRAM) && defined(CONFIG_SPIRAM_MODE_OCT)
 #error Tools -> PSRAM must be Disabled or "QSPI PSRAM". The SuperMini and the Zero have quad PSRAM and will not start with OPI.
+#endif
 #endif
 
 #if F_CPU != 240000000L
@@ -57,7 +70,8 @@ inline uint8_t boardCheckRun(Print &out, const char *moduleName, uint8_t firmwar
   out.printf("  flash: chip %u KB, Flash Size setting %u KB\n", (unsigned)(physical / 1024), (unsigned)(headerBytes / 1024));
   out.printf("  PSRAM %u KB (not used)\n", (unsigned)(ESP.getPsramSize() / 1024));
   out.printf("  heap: %u KB free of %u KB, lowest since start %u KB\n", (unsigned)(ESP.getFreeHeap() / 1024), (unsigned)(ESP.getHeapSize() / 1024), (unsigned)(ESP.getMinFreeHeap() / 1024));
-  if (result == BOARD_CHECK_FLASH_TOO_BIG) out.printf("  CHECK FAILED: Tools -> Flash Size is larger than this chip. Set it to 4MB (32Mb) and upload again.\n");
+  if (result == BOARD_CHECK_FLASH_TOO_BIG) out.printf("  CHECK FAILED: Tools -> Flash Size is larger than this chip. Set it to %uMB and upload again.\n", (unsigned)EXPECTED_FLASH_MB);
+  else if (headerBytes < (uint32_t)EXPECTED_FLASH_MB << 20) out.printf("  Flash Size is set below the %u MB this module has, set %uMB for the whole chip. It still runs.\n", (unsigned)EXPECTED_FLASH_MB, (unsigned)EXPECTED_FLASH_MB);
   else out.printf("  board check: settings look right\n");
   return result;
 }
