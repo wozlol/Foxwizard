@@ -75,6 +75,7 @@ Written and compiling, not yet run on hardware (2.2 test build, protocol 8, host
 - [ ] Factory reset clears the slots file. Presets, loop and Save to Device still work (the slots file shares the filesystem).
 - [ ] Relayed updates from Patchling for the host brain and the Bluetooth module, the Hella included (design in `Foxwizard Host Edition/README.md`, Flashing the modules). Next big build. The host brain's sketch has to move to a layout with a filesystem first.
 - [ ] Not built yet: a probe build and SWD flash mode for the host brain, flashing the module from the main brain over EN and IO0, typed names, the protocol floor in Patchling, a USB MIDI device mode on the module's USB port (a TinyUSB build), the Deluxe PCB (ES8388, WS2812 lights, TRS 2-6 on board), AMY Synth, the Audio Looper from Loopanini with layer undo, sample transfer over SysEx and Patchling's AMY Synth row. How many Bluetooth links hold steady (NimBLE allows 3 by default, 2 hosts and BLE Device).
+- [ ] Open for the Deluxe schematic: the proposed main brain pins for the host brain's SWD (GPIO6, 7, 8), and which pin the Deluxe's lights use (Chart 3 in `Foxwizard Host Edition/README.md`).
 - [ ] Open: which S3 module's LED pin to trust for the Zero (`FW_S3_ZERO`, GPIO21 from Waveshare's pinout), and whether the main brain's three activity lights on the Deluxe become the one WS2812.
 
 ## Parked

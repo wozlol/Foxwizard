@@ -87,7 +87,7 @@ Same as the FoxWizard, plus:
 | GP14 | Link TX to the Bluetooth module's GPIO44 (PIO serial) |
 | GP15 | Link RX from the Bluetooth module's GPIO43 (PIO serial) |
 
-GP26 and GP27 are kept for the Bluetooth module's EN and IO0, so the main brain can flash it (planned). GP14 and GP15 are also the host brain's SWCLK and SWDIO pads, see Flashing the modules.
+GP26 and GP27 are kept for the Bluetooth module's EN and IO0, so the main brain can flash it (planned). On the Deluxe the main brain also has its own pins for the host brain's SWD, see Chart 2.
 
 ### Host brain
 
@@ -403,7 +403,7 @@ There is no separate Host Edition board. The Host Edition is the OG with an RP20
 
 ### Chart 2: the Deluxe PCB, by chip pin numbers
 
-The main brain and the host brain are bare RP2040 chips (QFN-56 pin numbers from the RP2040 datasheet) and the Bluetooth module is an ESP32-S3-WROOM-1 module (pad numbers from its datasheet, Table 3-1). One row per net, each net joins the pins in its row.
+The main brain and the host brain are bare RP2040 chips (QFN-56 pin numbers from the RP2040 datasheet) and the Bluetooth module is an ESP32-S3-WROOM-1 module (pad numbers from its datasheet, Table 3-1). One row per net, each net joins the pins in its row. Power and ground are not listed.
 
 | Net | Main RP2040 | S3 module (ESP32-S3-WROOM-1) | Host RP2040 |
 |---|---|---|---|
@@ -411,13 +411,33 @@ The main brain and the host brain are bare RP2040 chips (QFN-56 pin numbers from
 | Bluetooth link, into the main brain | GPIO15, pin 18 | TXD0 (GPIO43), pad 37 | |
 | USB host link, out of the main brain | GPIO29, pin 41 | | GPIO29, pin 41 |
 | USB host link, into the main brain | GPIO28, pin 40 | | GPIO28, pin 40 |
-| S3 reset, for rescue | GPIO26, pin 38 | EN, pad 3 | |
-| S3 boot mode, for rescue | GPIO27, pin 39 | IO0, pad 27 | |
+| S3 reset, flashing and rescue | GPIO26, pin 38 | EN, pad 3 | |
+| S3 boot mode, flashing and rescue | GPIO27, pin 39 | IO0, pad 27 | |
+| Host brain SWD clock, the main brain as its own probe | GPIO6, pin 8 (proposed) | | SWCLK, pin 24 |
+| Host brain SWD data | GPIO7, pin 9 (proposed) | | SWD, pin 25 |
+| Host brain reset | GPIO8, pin 11 (proposed) | | RUN, pin 26 |
+| TRS 2-6 are on the board | | | GPIO14, pin 17, tied to ground |
 | S3 USB port, to its USB-C jack | | IO19 (USB D-), pad 13 and IO20 (USB D+), pad 14 | |
-| Host brain debug pads, to a probe header | | | SWCLK, pin 24. SWD, pin 25. RUN, pin 26 |
-| Power | | 3V3, pad 2. GND, pads 1, 40 and the ground pad 41 under the module | |
 
-On the Deluxe the host brain's SWD pads, and a few more rescue lines, can have their own main brain pins and a header for a debug probe, the chips have the pins to spare. That is the Deluxe's rescue path for a dead host brain.
+The three SWD nets and the S3's reset, boot and serial nets are the main brain's way to flash and update the host brain and the S3 with no probe, the first flash included. The same nets also go to small backup headers (host brain: SWCLK, SWD, RUN and ground, S3: TXD0, RXD0, EN, IO0 and ground), for a debug probe or a USB-serial adapter if the main brain is ever dead. The main brain's pins sit idle, as inputs, while a probe is on a header. The S3 also has BOOT and RESET buttons on IO0 and EN. SWCLK and SWD are a consecutive pair of main brain pins because the probe code drives SWD from one PIO program, any free consecutive pair will do.
+
+### Chart 3: the other pins on the Deluxe's two RP2040s, by chip pin numbers
+
+Not wires between chips, listed so nothing is lost when the schematic is drawn.
+
+| Chip | Pin | Goes to |
+|---|---|---|
+| Main RP2040 | GPIO0, pin 2 | DIN/TRS MIDI out |
+| Main RP2040 | GPIO1, pin 3 | DIN/TRS MIDI in |
+| Main RP2040 | GPIO5, pin 7 | the front button |
+| Main RP2040 | GPIO2, 3 and 4, pins 4, 5 and 6 | the OUT, USB and IN lights (the Deluxe's lights are WS2812, which pin is open) |
+| Main RP2040 | USB_DP, pin 47 and USB_DM, pin 46 | the USB-C jack to the computer |
+| Host RP2040 | GPIO4, pin 6 | TRS/DIN out 1 (UART1 TX) |
+| Host RP2040 | GPIO5, pin 7 | TRS/DIN in (UART1 RX) |
+| Host RP2040 | GPIO6, 7, 8 and 9, pins 8, 9, 11 and 12 | TRS outs 2 to 5 |
+| Host RP2040 | GPIO10, 11, 12 and 13, pins 13, 14, 15 and 16 | the four hub port lights |
+| Host RP2040 | GPIO16, pin 27 | its WS2812 status light |
+| Host RP2040 | USB_DP, pin 47 and USB_DM, pin 46 | the USB2514B hub's upstream port, 27 ohm resistors in series |
 
 ### The Deluxe's Bluetooth module
 
@@ -428,7 +448,7 @@ ESP32-S3-WROOM-1-N8R8, the version with the PCB antenna: 8 MB flash and 8 MB PSR
 - **Bluetooth module, first time and after:** its own USB-C, with the Tools settings above. The first upload may need BOOT held while plugging in.
 - **Host brain on the Deluxe:** SWD pads, see above. On the Hella and the Host Edition it is an RP2040-Zero, flashed over its own USB-C with BOOT held.
 - **Planned, updating the modules from Patchling, on the Hella as well as the Deluxe:** the main brain relays the same chunked update it already takes (begin, data, end, with a checksum and the whole-file MD5) to a chosen module over its link, and the module installs it itself. Nothing in it needs the Deluxe's extra pins. It needs: the host brain's sketch built with a filesystem to stage the image, as the main brain is (`Flash Size 2MB (Sketch: 1MB, FS: 1MB)`, the sketch is 85 KB), the S3's second app slot (the default 4 MB layout has two), a target byte in the update messages, each module reporting its firmware version so Patchling can show an update badge per module, and the module binaries published next to the main brain's. Until it is built a module is updated by hand: the host brain over its own USB-C and BOOT button (RP2040-Zero, Hella and Host Edition) or SWD pads (the Deluxe), the Bluetooth module over its USB-C.
-- **Planned, a probe build on the main brain:** for the first flash of a host brain soldered to a board, Raspberry Pi's `debugprobe` firmware with `PROBE_PIN_OFFSET` 14, so SWCLK is GP14 and SWDIO is GP15, the reset, UART and light pins moved off GP1, GP4 and GP5 (DIN in, IN light, button) and GP26 held low so a blank Bluetooth module cannot talk on the SWD wire. Load it over USB with the firmware pads shorted, flash the host brain over SWD from a computer with OpenOCD, short the pads again and load the main firmware.
+- **Planned, a probe build on the main brain:** for the first flash of the Deluxe's host brain, Raspberry Pi's `debugprobe` firmware with `PROBE_PIN_OFFSET` 6, so SWCLK is GPIO6 and SWDIO is GPIO7 (the pins in Chart 2), the reset line on GPIO8, and its stock reset, UART and light pins moved off GP1, GP4 and GP5 (DIN in, IN light, button). Load it over USB with the firmware pads shorted, flash the host brain over SWD from a computer with OpenOCD, short the pads again and load the main firmware. The Hella and the Host Edition use an RP2040-Zero as the host brain, which has no debug pads, so none of this applies to them.
 - **Planned, an SWD flash mode in the main firmware:** routing paused with a notice, a free PIO state machine borrowed or plain GPIO, the watchdog fed, a restart at the end. Only the SWD engine and the flashing steps, no USB probe side. A failed flash is run again, the host brain cannot be bricked.
 - **Planned, the Bluetooth module from the main brain:** Espressif's `esp-serial-flasher` (it has a Pico host port and ESP32-S3 target), over GP14 and GP15 with GP26 on the module's EN and GP27 on IO0. Patchling streams the image over SysEx, nothing is stored on the main brain.
 
