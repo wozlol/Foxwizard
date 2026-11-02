@@ -26,9 +26,9 @@ Find your edition here. Everything in this manual applies to every edition unles
 |---|---|
 | FoxWizard Jr | The FoxWizard without TRS-B. |
 | FoxWizard | The original. USB-C, one TRS/DIN in and one out. |
-| Host Edition | The FoxWizard plus a USB host module. Up to 7 USB MIDI devices through hubs. With the TRS board it also has 5 more TRS outs and one more TRS in. |
-| Bluetooth Edition (planned) | The FoxWizard plus a Bluetooth module. Bluetooth MIDI devices, the FoxWizard as a Bluetooth MIDI device, and a USB port that hosts USB MIDI devices as well as it can, how many on a hub is not guaranteed. |
-| Hella Edition (planned) | The FoxWizard plus both modules. |
+| Host Edition | The FoxWizard plus a USB host module (an RP2040 sidecar). Up to 7 USB MIDI devices through hubs. |
+| Bluetooth Edition (planned) | The FoxWizard plus a Bluetooth module (an ESP32-S3 sidecar). Bluetooth MIDI devices, the FoxWizard as a Bluetooth MIDI device, and a USB port that hosts USB MIDI devices as well as it can, how many on a hub is not guaranteed. |
+| Hella Edition (planned) | The FoxWizard plus both sidecar modules, the USB host module and the Bluetooth module. |
 | Deluxe (planned) | Everything on one board, with the extra TRS ports, the Bluetooth module's USB port, an AMY Synth and an Audio Looper. |
 
 ## Connections
@@ -40,7 +40,7 @@ Find your edition here. Everything in this manual applies to every edition unles
 
 ## Host Edition ports
 
-The Host Edition, the Hella Edition and the Deluxe add USB Host ports, and the TRS board adds more TRS ports. All of them route through the same routes.
+The Host Edition, the Hella Edition and the Deluxe add USB Host ports, and the Deluxe adds more TRS ports. All of them route through the same routes.
 
 Up to seven USB devices work at once, whichever hub jacks they're plugged into. An eighth waits and starts working when a port frees up. Patchling shows only the USB Host ports there's room for. With no hub, that's one, for a device plugged straight in. With a hub it's the hub's jacks, up to seven, and the next port shows up once a device is plugged into the one before it. A hub made of more than one chip, or a hub plugged into a hub, works too. Seven devices on bus power is a lot for one USB supply, so power the hub if they don't all come up.
 

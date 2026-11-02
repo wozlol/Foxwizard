@@ -7,7 +7,7 @@ The Host Edition is two RP2040s joined by a 2-wire serial link. The Bluetooth mo
 - **Main brain:** the FoxWizard. Runs all routing, its native USB MIDI device port, and its DIN/TRS IN and OUT.
 - **Host brain:** USB host for a 4-port hub, plus 1 DIN/TRS MIDI IN and 5 DIN/TRS MIDI OUTs. No routing. It tags everything with the port it came from and sends it to the main brain.
 
-The host brain runs on a Waveshare RP2040-Zero module in the Host and Hella editions. The Host Edition board (RP2040, hub, SWD pads) is the Deluxe's host circuit.
+The only custom FoxWizard board today is the original (OG). Every other edition is the OG plus one or both of two sidecar modules: an RP2040-Zero (the USB host module, Host and Hella editions) and an ESP32-S3 SuperMini (the Bluetooth module, Bluetooth and Hella editions). The Deluxe is one new PCB with both modules' circuits on it.
 
 ## Without a host brain
 
@@ -25,7 +25,7 @@ Tested on hardware: it runs with the host brain disconnected and picks it up whe
 | Folder | Firmware |
 |---|---|
 | `../Mini_MIDI_Multitool` | Main brain, the one FoxWizard firmware, for units with and without a host brain. |
-| `Foxwizard_Host_Edition_Sidecar` | Host brain, on the RP2040-Zero or the Host Edition sidecar board. |
+| `Foxwizard_Host_Edition_Sidecar` | Host brain, the RP2040 sidecar module (a Waveshare RP2040-Zero), and the same chip on the Deluxe. |
 | `Foxwizard_Bluetooth_Sidecar` | Bluetooth module, on an ESP32-S3 SuperMini or Waveshare Zero. |
 
 Each sketch folder has `board_check.h`, which stops the build with the Tools setting to change if one is wrong, and `foxwizard_link.h` and `ump.h`, identical copies kept in all three folders.
@@ -66,9 +66,9 @@ How depends on which host sidecar you have.
 
 Over the Zero's own USB-C port, like any Arduino upload. Unplug the OTG adapter and hub first, and hold BOOT while plugging in if the upload doesn't start.
 
-### FoxWizard Host Edition sidecar board
+### Deluxe host brain
 
-The RP2040's USB is wired to the hub on the board, so it can't be flashed over USB. Use SWD instead, which also flashes a blank chip.
+On the Deluxe the RP2040's USB is wired to the hub on the board, so it can't be flashed over USB. Use SWD instead, which also flashes a blank chip.
 
 - **Pads:** SWCLK, SWDIO, and GND. 3V3 and RUN are optional, for voltage sensing and reset.
 - **Probe:** a Raspberry Pi Debug Probe, or any Pico or RP2040-Zero running the `debugprobe` firmware.
@@ -99,14 +99,17 @@ GP28 and GP29 are kept for the Bluetooth module's EN and IO0, so the main brain 
 | GP5 | DIN/TRS MIDI IN (UART1 RX) |
 | GP6, GP7, GP8, GP9 | DIN/TRS MIDI OUT 2-5 (PIO serial TX) |
 | GP10, GP11, GP12, GP13 | Hub port 1-4 status lights, active HIGH |
-| GP14 | TRS board detection, internal pull-up. Floating: a bare sidecar module, no TRS. Grounded: a board with TRS 2-6 added |
+| GP14 | TRS detection, internal pull-up. Floating: the sidecar module alone, no TRS 2-6. Grounded: the Deluxe, with TRS 2-6 |
 | Native USB | USB host to the hub upstream port |
 
 Both brains share ground.
 
 Status lights stay on while a USB MIDI device is mounted on that port and blink off briefly on traffic.
 
-## Host Edition board (the Deluxe's host circuit)
+## Deluxe host circuit (planned)
+
+The Host and Hella editions use an RP2040-Zero as the host brain and need none of this. On the Deluxe the host brain is a bare RP2040 on the board with:
+
 
 - **Hub:** Microchip USB2514B, 4-port USB 2.0 hub, soldered on the board, so hub port numbers always match the same physical jacks.
 - **Upstream:** RP2040 native USB D+ and D- go straight to the hub upstream port with 27 Ω series resistors at the RP2040. No connector and no CC on this link.
@@ -118,12 +121,10 @@ Status lights stay on while a USB MIDI device is mounted on that port and blink 
 
 ## TRS 2-6 detection
 
-The sidecar is a bare module with 4 USB host ports and nothing else, or that module with a board
-added on top of it that wires up TRS 2-6 (shares the main brain's DIN/TRS pin layout: one shared
-DIN IN/TRS OUT 1 plus four more TRS OUTs). GP14 tells the firmware which:
+The sidecar module alone (RP2040-Zero) has the USB host and nothing else. The Deluxe also has the extra TRS jacks, TRS 2-6 (they share the main brain's DIN/TRS pin layout: one shared DIN IN/TRS OUT 1 plus four more TRS OUTs). GP14 tells the firmware which:
 
-- **Floating** (its internal pull-up, nothing wired to it): a bare module. USB Host only.
-- **Grounded:** a TRS board is present. USB Host plus TRS 2-6.
+- **Floating** (its internal pull-up, nothing wired to it): the sidecar module alone. USB Host only.
+- **Grounded:** the Deluxe. USB Host plus TRS 2-6.
 
 The sidecar reads GP14 once at power on, eight times over 8 ms after the pull-up settles, all of which must say grounded, and sends it to the main brain as bit 4 of the port map
 frame (`CONTROL_PORT_MAP`, alongside the hub's mounted-device bits). The main brain reports it to
@@ -247,7 +248,7 @@ The host brain reports its total drop count in its port map frame. The main brai
 
 ### Port maximums
 
-Everything fitted: the Deluxe, the Host Edition board's circuit with the TRS board.
+Everything fitted: the Deluxe.
 
 | | Count | Which |
 |---|---|---|
@@ -398,7 +399,7 @@ Both modules are updated from Patchling through the FoxWizard over wires 1, 2, 5
 
 TX and RX cross, a wire from one board's output goes to the other board's input. If the S3 board prints 43 and 44 or IO43 and IO44 instead of TX and RX, RX is 44 and TX is 43. The SuperMini's pinout pages list pads for many GPIOs but I could not confirm pads for GPIO0 and EN, only the BOOT and RESET buttons, so for wires 3 and 4 check your board with a meter and, if there are no pads, solder to the buttons' pads on the terminal that is not ground. Those two wires are optional.
 
-The Host Edition board (RP2040, USB2514B hub, SWD pads) is the Deluxe's host circuit, not a Hella option. Its rescue is SWD, see the second chart.
+There is no separate Host Edition board. The Host Edition is the OG with an RP2040-Zero, the Hella adds an S3 SuperMini, and the Deluxe is the one new PCB with both modules' circuits. The host brain's rescue on the Deluxe is SWD, see the second chart.
 
 ### Chart 2: the Deluxe PCB, by chip pin numbers
 
@@ -430,7 +431,7 @@ ESP32-S3-WROOM-1-N8R8, the version with the PCB antenna: 8 MB flash and 8 MB PSR
 ## Flashing the modules
 
 - **Bluetooth module, first time and after:** its own USB-C, with the Tools settings above. The first upload may need BOOT held while plugging in.
-- **Host brain on the Deluxe (the Host Edition board's circuit):** SWD pads, see above. On the Hella and the Host Edition it is an RP2040-Zero, flashed over its own USB-C with BOOT held.
+- **Host brain on the Deluxe:** SWD pads, see above. On the Hella and the Host Edition it is an RP2040-Zero, flashed over its own USB-C with BOOT held.
 - **Planned, updating the modules from Patchling, on the Hella as well as the Deluxe:** the main brain relays the same chunked update it already takes (begin, data, end, with a checksum and the whole-file MD5) to a chosen module over its link, and the module installs it itself. Nothing in it needs the Deluxe's extra pins. It needs: the host brain's sketch built with a filesystem to stage the image, as the main brain is (`Flash Size 2MB (Sketch: 1MB, FS: 1MB)`, the sketch is 85 KB), the S3's second app slot (the default 4 MB layout has two), a target byte in the update messages, each module reporting its firmware version so Patchling can show an update badge per module, and the module binaries published next to the main brain's. Until it is built a module is updated by hand: the host brain over its own USB-C and BOOT button (RP2040-Zero, Hella and Host Edition) or SWD pads (the Deluxe), the Bluetooth module over its USB-C.
 - **Planned, a probe build on the main brain:** for the first flash of a host brain soldered to a board, Raspberry Pi's `debugprobe` firmware with `PROBE_PIN_OFFSET` 14, so SWCLK is GP14 and SWDIO is GP15, the reset, UART and light pins moved off GP1, GP4 and GP5 (DIN in, IN light, button) and GP28 held low so a blank Bluetooth module cannot talk on the SWD wire. Load it over USB with the firmware pads shorted, flash the host brain over SWD from a computer with OpenOCD, short the pads again and load the main firmware.
 - **Planned, an SWD flash mode in the main firmware:** routing paused with a notice, a free PIO state machine borrowed or plain GPIO, the watchdog fed, a restart at the end. Only the SWD engine and the flashing steps, no USB probe side. A failed flash is run again, the host brain cannot be bricked.
@@ -447,7 +448,7 @@ The exposed pads on the main brain are GP14, GP15, GP26, GP27, GP28 and GP29. GP
 | Host Edition | RP2040 | RP2040-Zero | |
 | Bluetooth Edition | RP2040 | | ESP32-S3 SuperMini |
 | Hella Edition | RP2040 | RP2040-Zero | ESP32-S3 SuperMini |
-| Deluxe | RP2040 | RP2040 on the board with its hub, SWD pads and TRS 2-6, the Host Edition board's circuit | ESP32-S3-WROOM-1-N16R8 on the board, with an ES8388 codec |
+| Deluxe | RP2040 | RP2040 on the board with its hub, SWD pads and TRS 2-6 | ESP32-S3-WROOM-1-N16R8 on the board, with an ES8388 codec |
 
 One main brain firmware covers every edition, it finds each module by its link.
 
