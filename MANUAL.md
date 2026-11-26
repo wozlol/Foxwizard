@@ -24,14 +24,14 @@ Find your edition here. Everything in this manual applies to both editions unles
 
 | Edition | What it is |
 |---|---|
-| FoxWizard OG MkII | USB-C, a TRS-A and a TRS-B jack for MIDI in, and a TRS-A and a TRS-B jack for MIDI out. Classic DIN works through the Half-DIN port. |
+| FoxWizard OG MkII | USB-C, one MIDI in and one MIDI out. Each has three ways to plug in: a 3.5mm TRS-A jack, a 3.5mm TRS-B jack and a Half-DIN port for classic DIN. |
 | Hella | The OG MkII plus a USB Host port on the right and Bluetooth, with its own USB port, on the left. |
 
 ## Connections
 
 - USB-C: connects to a computer or USB MIDI host.
-- MIDI IN: two 3.5mm jacks, one TRS-A and one TRS-B. Classic DIN MIDI input works through the Half-DIN port.
-- MIDI OUT: two 3.5mm jacks, one TRS-A and one TRS-B. Classic DIN MIDI output works through the Half-DIN port.
+- MIDI IN: one input with three ways to plug in. A 3.5mm TRS-A jack, a 3.5mm TRS-B jack, or the Half-DIN port for a classic DIN cable.
+- MIDI OUT: one output with three ways to plug in. A 3.5mm TRS-A jack, a 3.5mm TRS-B jack, or the Half-DIN port for a classic DIN cable.
 - Button: single multi-function button.
 - Hella only, on the right: the USB Host port, see USB Host port.
 - Hella only, on the left: the Bluetooth-side USB port, see Bluetooth.
