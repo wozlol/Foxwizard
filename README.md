@@ -48,7 +48,7 @@ What other adaptors can't do: route and remap MIDI without a computer.
 | FoxWizard | The original. USB-C, one TRS/DIN in and one out. |
 | Host Edition | The FoxWizard plus a USB host module (an RP2040 sidecar). Up to 7 USB MIDI devices through hubs. |
 | Bluetooth Edition (planned) | The FoxWizard plus a Bluetooth module (an ESP32-S3 sidecar). Bluetooth MIDI devices, the FoxWizard as a Bluetooth MIDI device, and a USB port that hosts USB MIDI devices as well as it can, how many on a hub is not guaranteed. |
-| Hella Edition (planned) | The FoxWizard plus both sidecar modules, the USB host module and the Bluetooth module. |
+| Hella Edition | The FoxWizard plus both sidecar modules, the USB host module and the Bluetooth module. |
 | Deluxe (planned) | Everything on one board, with the extra TRS ports, the Bluetooth module's USB port, an AMY Synth and an Audio Looper. |
 
 Modules, pins and flashing are in [`Foxwizard Host Edition/README.md`](Foxwizard%20Host%20Edition/README.md).

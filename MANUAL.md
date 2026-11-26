@@ -24,14 +24,14 @@ Find your edition here. Everything in this manual applies to both editions unles
 
 | Edition | What it is |
 |---|---|
-| FoxWizard OG MkII | USB-C, one TRS/DIN in and one out. |
-| Hella (planned) | The OG MkII plus a USB Host port on the right and Bluetooth, with its own USB port, on the left. |
+| FoxWizard OG MkII | USB-C, a TRS-A and a TRS-B jack for MIDI in, and a TRS-A and a TRS-B jack for MIDI out. Classic DIN works through the Half-DIN port. |
+| Hella | The OG MkII plus a USB Host port on the right and Bluetooth, with its own USB port, on the left. |
 
 ## Connections
 
 - USB-C: connects to a computer or USB MIDI host.
-- TRS MIDI IN: 3.5mm TRS-A OR TRS-B OR Classic DIN MIDI input.
-- TRS MIDI OUT: 3.5mm TRS-A OR TRS-B OR Classic DIN MIDI output.
+- MIDI IN: two 3.5mm jacks, one TRS-A and one TRS-B. Classic DIN MIDI input works through the Half-DIN port.
+- MIDI OUT: two 3.5mm jacks, one TRS-A and one TRS-B. Classic DIN MIDI output works through the Half-DIN port.
 - Button: single multi-function button.
 - Hella only, on the right: the USB Host port, see USB Host port.
 - Hella only, on the left: the Bluetooth-side USB port, see Bluetooth.
@@ -42,7 +42,7 @@ The Hella adds a USB Host port, always on the right. It takes up to 7 USB MIDI d
 
 Up to seven USB devices work at once, whichever hub jacks they're plugged into. An eighth waits and starts working when a port frees up. Patchling shows only the USB Host ports there's room for. With no hub, that's one, for a device plugged straight in. With a hub it's the hub's jacks, up to seven, and the next port shows up once a device is plugged into the one before it. A hub made of more than one chip, or a hub plugged into a hub (2 hubs in all), works too. Seven devices on bus power is a lot for one USB supply, so power the hub if they don't all come up.
 
-## Bluetooth (planned)
+## Bluetooth
 
 The Hella adds two kinds of Bluetooth port and a Bluetooth-side USB port, always on the left. Each has its own input and output switch on every route.
 
@@ -71,7 +71,7 @@ The light is off until something happens. It fades blue with Bluetooth MIDI, fla
 
 Bluetooth restarts a moment after you let go. Right now the FoxWizard keeps up to 2 BLE Hosts connected, plus BLE Device, and the Bluetooth-side USB port takes up to 2 USB devices.
 
-## Device slots and names (planned)
+## Device slots and names
 
 USB Host devices, BLE Host devices and USB devices on the Bluetooth-side USB port share the same 8 slots. The Bluetooth-side devices take slot 8 first, then USB Host 5 to 7 when nothing is plugged into those.
 
@@ -83,9 +83,9 @@ USB Host devices, BLE Host devices and USB devices on the Bluetooth-side USB por
 
 ## Status LEDs
 
-- IN LED: flashes on TRS MIDI input activity.
+- IN LED: flashes on MIDI input activity on the TRS and DIN jacks.
 - USB LED: flashes on USB MIDI activity.
-- OUT LED: flashes on TRS MIDI output activity.
+- OUT LED: flashes on MIDI output activity on the TRS and DIN jacks.
 - Brightness: 0-10 steps, set with the Lights knob in Patchling.
 
 With Button Action set to Looper, the lights show the looper instead: OUT recording, IN armed, USB playing. After Double or Half, all three flash together once per bar of the new loop length.
