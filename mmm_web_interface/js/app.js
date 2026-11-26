@@ -1,6 +1,8 @@
 import { ACT, MAP_ENTRIES, defaultAction, defaultLpActions, actionEditorHtml, applyActionField, usesLooper, usesLiveChannel } from './mapper.js';
-import { DeviceLink, DATA_TYPE_BITS, ROUTE_NAME_MAX_LEN, PORTS, PORT_TRS, PORT_USB, BLE_PORTS, SIDECAR_INPUT_PORTS, SIDECAR_OUTPUT_PORTS, SIDECAR_TRS_PORTS, FEATURE, SCALES, LAYOUTS, routeChannelOrder, SWING_AMOUNTS, defaultScale, ARP_SLOTS, ARP_MODES, ARP_MODE_ORDER, ARP_SQUARES, DIVISIONS, defaultArp, defaultEcho, defaultStutter, defaultLooper, defaultLpQuad, noTrigger, STUTTER_RUNOUTS, snapRunout, defaultPlock } from './midi.js';
+import { DeviceLink, DATA_TYPE_BITS, ROUTE_NAME_MAX_LEN, PRESET_NAME_MAX_LEN, PRESET_NAME_COUNT, PORTS, PORT_TRS, PORT_USB, BLE_PORTS, SIDECAR_INPUT_PORTS, SIDECAR_OUTPUT_PORTS, SIDECAR_TRS_PORTS, FEATURE, SCALES, LAYOUTS, routeChannelOrder, SWING_AMOUNTS, defaultScale, ARP_SLOTS, ARP_MODES, ARP_MODE_ORDER, ARP_SQUARES, DIVISIONS, defaultArp, defaultEcho, defaultStutter, defaultLooper, defaultLpQuad, noTrigger, STUTTER_RUNOUTS, snapRunout, defaultPlock } from './midi.js';
 import { serializePreset, parsePreset, downloadPreset, readPresetFile, channelsToRangeString } from './presetXml.js';
+import { imageToPreset, presetToImage } from './slotImage.js';
+import { makeZip, readZip } from './zip.js';
 import { attachDragReorder } from './dragReorder.js';
 import { parseHostReport, hostReportSummary, hostReportText } from './hostReport.js';
 
@@ -98,8 +100,8 @@ function defaultRoute() {
     _ccMapEnabled: false, // UI-only — off means the CC Map Start field just mirrors ccStart (no remap)
     name: '',
     enabled: true,
-    // Every port this FoxWizard has right now, so a fresh route is a full passthrough.
-    inPorts: PORT_TRS | PORT_USB | (sidecarPresent ? sidecarInputPorts() : 0) | (blePresent ? BLE_PORTS : 0),
+    // Every port this FoxWizard has right now, so a fresh route is a full passthrough. With no unit connected, every port a unit could have.
+    inPorts: PORT_TRS | PORT_USB | (sidecarPresent || !device.connected ? sidecarInputPorts() : 0) | (blePresent || !device.connected ? BLE_PORTS : 0),
     inputChannels: 0x0001, // ch1 only
     // All top-level input data types on by default (every bit except bit7/aftertouchMap, which is
     // a sub-switch under Poly Aftertouch, not one of the top-level switches the master toggle
@@ -107,7 +109,7 @@ function defaultRoute() {
     typeFlags: 0x7F,
     noteStart: 0, noteEnd: 127,
     ccStart: 0, ccEnd: 127,
-    outPorts: PORT_TRS | PORT_USB | (sidecarPresent ? sidecarOutputPorts() : 0) | (blePresent ? BLE_PORTS : 0),
+    outPorts: PORT_TRS | PORT_USB | (sidecarPresent || !device.connected ? sidecarOutputPorts() : 0) | (blePresent || !device.connected ? BLE_PORTS : 0),
     outputChannels: 0x0001, // ch1 only
     transpose: 0,
     velocityScale: 100,
@@ -129,8 +131,15 @@ function defaultRoute() {
   };
 }
 
+// Presets made with no unit connected, kept in this browser, see the section by that name below.
+// xml[slot] is the preset as XML, pending[slot] is made here and not yet sent to a unit. names[0-15] are the presets' names, names[16] is the
+// bundle's, bundlePending is a bundle name set here and not yet sent.
+const bank = { count: 16, active: 0, pending: {}, xml: {}, names: {}, bundlePending: false };
+let bankEditorChanged = false; // the preset on screen has changes the bank does not hold yet
+let offeringBank = false;
+
 const state = {
-  presetName: 'Untitled Preset',
+  presetNames: Array(PRESET_NAME_COUNT).fill(''), // the unit's preset names while one is connected, see Preset names below
   global: defaultGlobal(),
   routes: [],
   // Feature blocks, shared by the route that switches the feature on (firmware 1.6 and later).
@@ -308,6 +317,12 @@ function toast(message, kind, sticky, copyWith) {
 
 const saveToDeviceBtn = document.getElementById('saveToDeviceBtn');
 function markDirty() {
+  if (!device.connected) { // no unit: the change is kept in this browser's presets instead
+    bank.pending[bank.active] = true;
+    bankEditorChanged = true;
+    scheduleBankSave();
+    return;
+  }
   dirty = true;
   saveToDeviceBtn.classList.add('has-unsaved');
   if (enforcePresetButton()) renderGlobalCard();
@@ -365,8 +380,98 @@ function clearDirty() {
 // flash its number, then the editor loads what the unit now runs. Saving, Autosave, Download and Upload work on the slot in use.
 // ============================================================================================
 let presetSwitching = false;
+const PRESET_SLOTS_MAX = 16; // the most slots the unit has, PRESET_SLOTS_MAX in the firmware
 
 function presetsSupported() { return device.connected && device.protocolVersion >= 5; }
+function noUnit() { return !device.connected; }
+function presetsShown() { return noUnit() || presetsSupported(); } // the preset controls show with no unit too
+function unitCanTakeAllPresets() { return presetsSupported() && device.protocolVersion >= 11; }
+
+// ============================================================================================
+// Preset names and the bundle name (firmware 2.8, protocol 12). Index 0-15 is a slot, 16 is the bundle, the set of presets in a zip.
+// With a unit connected the names are the unit's: state.presetNames holds them and unitNames is what the unit holds. A name typed
+// here waits in namesToSend until syncPresetNames writes it. A name that came with an uploaded preset file waits in namesAwaitSave
+// until that preset is saved. With no unit the names are in the browser bank. A name is only a label, the unit never reads it.
+// ============================================================================================
+const BUNDLE_NAME_INDEX = PRESET_SLOTS_MAX;
+let unitNames = null;
+const namesToSend = new Map();
+const namesAwaitSave = new Map();
+let namesQueue = Promise.resolve();
+
+function presetNamesShown() { return noUnit() || (presetsSupported() && device.protocolVersion >= 12); }
+
+// What a name is kept as: printable ASCII, 24 characters at most, like a route's name. The placeholder of an unnamed slot (Preset 3)
+// and the "Untitled Preset" that older files carry are no name.
+function cleanName(name, index) {
+  const clean = String(name ?? '').replace(/[^\x20-\x7E]/g, '?').trim().slice(0, PRESET_NAME_MAX_LEN).trim();
+  if (clean === 'Untitled Preset' || (index < PRESET_SLOTS_MAX && clean === `Preset ${index + 1}`)) return '';
+  return clean;
+}
+
+function nameAt(index) { return (noUnit() ? bank.names[index] : state.presetNames[index]) || ''; }
+
+function setNameAt(index, name, awaitSave = false) {
+  if (noUnit()) {
+    if (name) bank.names[index] = name; else delete bank.names[index];
+    return;
+  }
+  state.presetNames[index] = name;
+  if (awaitSave) { namesAwaitSave.set(index, name); return; }
+  namesAwaitSave.delete(index);
+  namesToSend.set(index, name);
+}
+
+// The unit's names into state, nothing waiting to be sent.
+async function refreshNames() {
+  unitNames = null;
+  namesToSend.clear();
+  namesAwaitSave.clear();
+  state.presetNames = Array(PRESET_NAME_COUNT).fill('');
+  if (noUnit() || !presetNamesShown()) return;
+  try {
+    unitNames = await device.getPresetNames();
+    state.presetNames = [...unitNames];
+  } catch (err) { /* the boxes show no names. A name typed now reads the unit's names first. */ }
+}
+
+// Writes the names that wait to the unit, one after another. Returns whether all of them are written.
+function syncPresetNames() {
+  namesQueue = namesQueue.then(async () => {
+    if (noUnit() || !presetNamesShown() || !namesToSend.size) return true;
+    const sending = new Map(namesToSend);
+    try {
+      const current = unitNames || await device.getPresetNames();
+      const next = [...current];
+      const indexes = [];
+      for (const [i, n] of sending) if ((current[i] || '') !== n) { next[i] = n; indexes.push(i); }
+      if (indexes.length) await device.setPresetNames(next, indexes);
+      unitNames = next;
+      for (const [i, n] of sending) if (namesToSend.get(i) === n) namesToSend.delete(i);
+      return true;
+    } catch (err) {
+      toast('Could not save the names to the unit', 'error');
+      return false;
+    }
+  });
+  return namesQueue;
+}
+
+// A name box was changed: the name is kept, the unit gets it, and every box for it shows what was kept.
+function commitNameInput(input) {
+  const index = parseInt(input.dataset.nameIndex, 10);
+  const name = cleanName(input.value, index);
+  if (name !== nameAt(index)) {
+    setNameAt(index, name);
+    if (noUnit()) {
+      if (index === BUNDLE_NAME_INDEX) { bank.bundlePending = true; saveBank(); } else markDirty();
+    } else {
+      settleAutosave().then(syncPresetNames);
+    }
+    paintPresetRow();
+  }
+  document.querySelectorAll(`input[data-name-index="${index}"]`).forEach((el) => { el.value = name; });
+}
 
 // A Note to Feature, CC to Feature or Launchpad button set to Preset.
 function presetMapped() {
@@ -384,6 +489,7 @@ function enforcePresetButton() {
 }
 
 async function refreshPresets() {
+  if (noUnit()) { state.presets = offlinePresets(); return; }
   state.presets = { slots: 1, active: 0, used: 0 };
   if (!presetsSupported()) return;
   try { state.presets = await device.getPresets(); } catch (err) { /* the buttons stay hidden */ }
@@ -391,13 +497,20 @@ async function refreshPresets() {
 
 function presetRowHtml() {
   const p = state.presets;
-  if (!presetsSupported() || p.slots < 2) return '';
+  if (!presetsShown() || p.slots < 2) return '';
   const buttons = Array.from({ length: p.slots }, (_, i) => {
     const used = (p.used >> i) & 1;
-    const title = i === p.active ? `Preset ${i + 1} is live` : (used ? `Switch to preset ${i + 1}` : `Preset ${i + 1} is empty, switch to start it`);
-    return `<button type="button" class="btn preset-slot${i === p.active ? ' active' : ''}${used ? '' : ' empty'}" data-preset-slot="${i}" title="${title}" aria-pressed="${i === p.active}">${i + 1}</button>`;
+    return `<button type="button" class="btn preset-slot${i === p.active ? ' active' : ''}${used ? '' : ' empty'}" data-preset-slot="${i}" title="${escapeHtml(slotTitle(i, p))}" aria-pressed="${i === p.active}">${i + 1}</button>`;
   }).join('');
-  return `<div class="preset-row"><span class="preset-row-label">Preset</span>${buttons}</div>`;
+  const nameBox = presetNamesShown() ? `<input type="text" class="preset-name-input" maxlength="${PRESET_NAME_MAX_LEN}" placeholder="Preset ${p.active + 1}" value="${escapeHtml(nameAt(p.active))}" aria-label="Preset Name" data-name-index="${p.active}">` : '';
+  return `<div class="preset-row"><span class="preset-row-label">Preset</span>${buttons}${nameBox}</div>`;
+}
+
+// A slot button's tooltip, with the preset's name after it when it has one.
+function slotTitle(i, p) {
+  const used = (p.used >> i) & 1;
+  const title = i === p.active ? `Preset ${i + 1} is live` : (used ? `Switch to preset ${i + 1}` : `Preset ${i + 1} is empty, switch to start it`);
+  return nameAt(i) && presetNamesShown() ? `${title} (${nameAt(i)})` : title;
 }
 
 // After a save the slot in use holds a saved preset: restyle the buttons without redrawing the card under a field being edited.
@@ -407,6 +520,7 @@ function paintPresetRow() {
     b.classList.toggle('active', i === state.presets.active);
     b.classList.toggle('empty', !((state.presets.used >> i) & 1));
     b.setAttribute('aria-pressed', String(i === state.presets.active));
+    b.title = slotTitle(i, state.presets);
   });
 }
 
@@ -448,6 +562,7 @@ async function settleAutosave() {
 }
 
 async function selectPreset(slot, dropChanges) {
+  if (noUnit()) { selectOfflinePreset(slot); return; }
   if (!presetsSupported() || slot === state.presets.active || presetSwitching) return;
   if (dirty && !dropChanges) {
     if (autosaveSwitch.checked) await settleAutosave();
@@ -475,6 +590,7 @@ function askSwitchWithChanges(slot) {
 }
 
 async function changePresetSlots(count) {
+  if (noUnit()) { changeOfflineSlots(count); return; }
   if (!presetsSupported() || count === state.presets.slots) return;
   const was = state.presets.active;
   try {
@@ -497,12 +613,19 @@ const dialogTitle = document.getElementById('dialogTitle');
 const dialogBody = document.getElementById('dialogBody');
 const dialogActions = document.getElementById('dialogActions');
 
-function closeDialog() { dialogEl.hidden = true; }
+let dialogPersistent = false; // a window that can only be closed by one of its own buttons
+function closeDialog() {
+  const focused = document.activeElement;
+  if (focused && dialogEl.contains(focused)) focused.blur(); // a name box still being typed in keeps what was typed
+  dialogEl.hidden = true;
+  dialogPersistent = false;
+}
 
 /** actions: [{ label, kind: 'primary'|'accent'|'ghost', href?, onClick? }]. Every action closes the dialog. */
-function openDialog(title, bodyHtml, actions) {
+function openDialog(title, bodyHtml, actions, options = {}) {
   dialogTitle.textContent = title;
   dialogBody.innerHTML = bodyHtml;
+  dialogPersistent = !!options.persistent;
   dialogActions.innerHTML = '';
   for (const a of actions) {
     const el = document.createElement(a.href ? 'a' : 'button');
@@ -516,12 +639,15 @@ function openDialog(title, bodyHtml, actions) {
   dialogActions.lastElementChild?.focus();
 }
 
-dialogEl.addEventListener('click', (e) => { if (e.target === dialogEl) closeDialog(); });
-document.addEventListener('keydown', (e) => { if (e.key === 'Escape' && !dialogEl.hidden) closeDialog(); });
+dialogEl.addEventListener('click', (e) => { if (e.target === dialogEl && !dialogPersistent) closeDialog(); });
+document.addEventListener('keydown', (e) => { if (e.key === 'Escape' && !dialogEl.hidden && !dialogPersistent) closeDialog(); });
 
 // ============================================================================================
 // Firmware check
-// firmware/firmware.json describes the newest firmware: { major, minor, bin, size, md5 }.
+// firmware/firmware.json describes the newest firmware: { major, minor, bin, size, md5, host, bluetooth, previous }. host and bluetooth are
+// the modules' own images, { version, bin, size, md5 }, which the FoxWizard passes on to the module (protocol 9). previous is the release
+// before this one, the same shape, which the version in the connection pill offers as a roll back. publish_to_server.sh sets it at every
+// publish from what the server had.
 // Firmware older than FW_UPDATE_MIN can't update over MIDI, so it's updated once by hand with the
 // FIRMWARE pads. Everything from FW_UPDATE_MIN on updates from the yellow pill.
 // ============================================================================================
@@ -529,6 +655,7 @@ const FW_UPDATE_MIN = { major: 1, minor: 2 };
 const FIRMWARE_DOWNLOAD_URL = 'https://woz.lol/foxwizard-midi-multitool-firmware/';
 const FIRMWARE_DOWNLOAD_LABEL = 'woz.lol/foxwizard-midi-multitool-firmware';
 const RECONNECT_WAIT_MS = 30000;
+const MODULE_RESTART_WAIT_MS = 40000; // a module installs and restarts in a few seconds, the Bluetooth module's link needs a moment more
 
 // Test channel: Patchling served from this computer (serve.sh) or opened with ?test offers the test
 // builds in firmware/test/ (build_firmware.sh --test-channel), falling back to the live firmware if
@@ -553,21 +680,74 @@ function deviceVersion() {
   return d ? { major: d.fwMajor, minor: d.fwMinor } : null;
 }
 
-/** 'current', 'updatable' (over MIDI), 'manual' (FIRMWARE pads), or 'unknown' (couldn't check). */
-function firmwareStatus() {
+/** The main firmware alone: 'current', 'updatable' (over MIDI), 'manual' (FIRMWARE pads), or 'unknown' (couldn't check). */
+function mainFirmwareStatus() {
   const v = deviceVersion();
   if (!v || !latestFirmware) return 'unknown';
   if (compareVersion(v, latestFirmware) >= 0) return 'current';
   return compareVersion(v, FW_UPDATE_MIN) >= 0 ? 'updatable' : 'manual';
 }
 
+// The two modules a FoxWizard can have, each with its own firmware number. min is the first version that takes an update through the
+// FoxWizard, an older one is flashed once over its own USB-C. target is the byte FW_BEGIN carries.
+const MODULES = {
+  host: { label: 'USB Host side', min: 10, target: 1, present: () => sidecarPresent, version: () => lastHostStatus?.hostFwVersion ?? 0 },
+  bluetooth: { label: 'Bluetooth side', min: 2, target: 2, present: () => blePresent, version: () => bleInfo?.fw ?? 0 }
+};
+// Why a relayed module update was refused, the ACK's extra field.
+const UPDATE_ERRORS = {
+  0x70: "isn't connected",
+  0x71: "didn't answer",
+  0x72: 'has firmware too old to update from here. Flash it once over its own USB-C',
+  0x73: 'is busy with a block',
+  0x74: 'kept receiving damaged data',
+  0x75: "wasn't ready"
+};
+
+/** The modules that are here, new enough to take an update from Patchling, and older than the newest. */
+function moduleUpdates() {
+  if (!latestFirmware || device.protocolVersion < 9) return [];
+  return Object.keys(MODULES).filter((key) => {
+    const m = MODULES[key], entry = latestFirmware[key];
+    return entry && m.present() && m.version() >= m.min && m.version() < entry.version;
+  });
+}
+
+/** The modules that are here and older than the newest but too old for that, they need a flash by hand once. */
+function modulesNeedingFlash() {
+  if (!latestFirmware) return [];
+  return Object.keys(MODULES).filter((key) => {
+    const m = MODULES[key], entry = latestFirmware[key];
+    return entry && m.present() && m.version() > 0 && m.version() < m.min && m.version() < entry.version;
+  });
+}
+
+/** 'current', 'updatable' (over MIDI, the main firmware or a module), 'manual' (FIRMWARE pads), or 'unknown' (couldn't check). */
+function firmwareStatus() {
+  const status = mainFirmwareStatus();
+  if (status === 'current' && moduleUpdates().length) return 'updatable';
+  return status;
+}
+
 function openUpdateDialog() {
-  const unsavedWarning = dirty
+  const unsavedWarning = dirty && mainFirmwareStatus() === 'updatable'
     ? `<p class="dialog-warn">You have changes that aren't saved to the FoxWizard. When it reconnects after the update, Patchling reloads its saved settings, which replaces them. Click Cancel, then Save to Device, to keep them.</p>`
     : '';
+  const mainLine = mainFirmwareStatus() === 'updatable'
+    ? `<p>This FoxWizard has firmware ${versionText(deviceVersion())}. Firmware ${versionText(latestFirmware)} is available.</p>`
+    : '';
+  // A unit that gets new main firmware first may have modules to update after it, which it can only say once it is back.
+  const moduleKeys = moduleUpdates();
+  const moduleLines = moduleKeys.length
+    ? `<p>${mainLine ? 'Then, in this FoxWizard' : 'In this FoxWizard'}:</p><ul>${moduleKeys.map((key) => `<li>${MODULES[key].label}, version ${MODULES[key].version()} to ${latestFirmware[key].version}</li>`).join('')}</ul>`
+    : '';
+  const flashLines = modulesNeedingFlash().length
+    ? `<p>The ${modulesNeedingFlash().map((key) => MODULES[key].label).join(' and ')} must be flashed once over ${modulesNeedingFlash().length > 1 ? 'their' : 'its'} own USB-C before ${modulesNeedingFlash().length > 1 ? 'they' : 'it'} can update from here.</p>`
+    : '';
+  const time = moduleKeys.includes('bluetooth') ? 'The Bluetooth side takes about a minute, the rest a few seconds.' : 'The update takes a few seconds.';
   openDialog('Firmware update', `
-    <p>This FoxWizard has firmware ${versionText(deviceVersion())}. Firmware ${versionText(latestFirmware)} is available.</p>
-    <p>The update takes a few seconds. Keep the FoxWizard plugged in until it restarts and reconnects. Saved settings and routes are kept.</p>
+    ${mainLine}${moduleLines}${flashLines}
+    <p>${time} Keep the FoxWizard plugged in until it finishes. Saved settings and routes are kept.</p>
     ${unsavedWarning}`,
   [
     { label: 'Cancel', kind: 'ghost' },
@@ -612,25 +792,48 @@ function waitForReconnect(fromCount, timeoutMs) {
   });
 }
 
+// The main firmware, then each module that needs it. One overlay, one click. Each part is checked before the next starts, and the
+// first that fails stops the rest, so the unit is never left with a half-done chain it doesn't say anything about.
 async function runFirmwareUpdate() {
   if (!device.connected || !latestFirmware) return;
   updateInProgress = true;
-  const countBefore = connectionCount;
-  showOverlay('Updating firmware. Keep the FoxWizard plugged in.');
   try {
-    const res = await fetch(`${firmwareDir}${latestFirmware.bin}`, { cache: 'no-store' });
+    const hadModules = Object.keys(MODULES).filter((key) => MODULES[key].present());
+    if (mainFirmwareStatus() === 'updatable') {
+      if (!(await runMainUpdate())) return;
+      // The unit takes a moment after a restart to hear its modules again.
+      for (let i = 0; i < 8; i++) {
+        await refreshModuleVersions();
+        if (hadModules.every((key) => MODULES[key].present() && MODULES[key].version() > 0)) break;
+        await new Promise((r) => setTimeout(r, 1000));
+      }
+    }
+    for (const key of moduleUpdates()) {
+      if (!(await runModuleUpdate(key))) return;
+    }
+  } finally {
+    updateInProgress = false;
+    hideOverlay();
+    renderConnectionPill();
+  }
+}
+
+/** Sends the main firmware (the newest, or the release a roll back goes to) and waits for the unit to come back. True when it did and has that version. */
+async function runMainUpdate(entry = latestFirmware, rollBack = false) {
+  const countBefore = connectionCount;
+  showOverlay(rollBack ? 'Going back to the earlier firmware. Keep the FoxWizard plugged in.' : 'Updating firmware. Keep the FoxWizard plugged in.');
+  try {
+    const res = await fetch(`${firmwareDir}${entry.bin}`, { cache: 'no-store' });
     if (!res.ok) throw new Error('download');
     const bin = new Uint8Array(await res.arrayBuffer());
-    if (bin.length !== latestFirmware.size) throw new Error('size');
-    await device.updateFirmware(bin, latestFirmware.md5, (sent, total) => {
+    if (bin.length !== entry.size) throw new Error('size');
+    await device.updateFirmware(bin, entry.md5, (sent, total) => {
       overlayProgress.textContent = `${Math.floor((sent * 100) / total)}%`;
     });
   } catch (err) {
     if (!err.fwEndUnconfirmed) {
-      updateInProgress = false;
-      hideOverlay();
-      toast('Firmware update failed. The FoxWizard kept its current firmware.', 'error');
-      return;
+      toast(`${rollBack ? 'Going back' : 'Firmware update'} failed. The FoxWizard kept its current firmware.`, 'error');
+      return false;
     }
     // The last step went unconfirmed, but the device may still be installing. Wait and see.
   }
@@ -638,15 +841,72 @@ async function runFirmwareUpdate() {
   overlayText.textContent = 'Installing. The FoxWizard restarts by itself.';
   overlayProgress.textContent = '';
   const back = await waitForReconnect(countBefore, RECONNECT_WAIT_MS);
-  updateInProgress = false;
-  hideOverlay();
   if (!back) {
     toast("The FoxWizard didn't reconnect. Unplug it and plug it back in.", 'error');
-  } else if (firmwareStatus() === 'current') {
-    toast(`Firmware updated to ${versionText(deviceVersion())}`, 'success');
-  } else {
-    toast(`Update didn't install, the FoxWizard still has ${versionText(deviceVersion())}`, 'error');
+    return false;
   }
+  if (compareVersion(deviceVersion(), entry) !== 0) {
+    toast(`${rollBack ? 'Going back' : 'Update'} didn't install, the FoxWizard still has ${versionText(deviceVersion())}`, 'error');
+    return false;
+  }
+  toast(`Firmware ${rollBack ? 'rolled back' : 'updated'} to ${versionText(deviceVersion())}`, 'success');
+  return true;
+}
+
+/** Reads the modules' versions now, for use while the regular status check is paused. */
+async function refreshModuleVersions() {
+  try {
+    lastHostStatus = await device.getStatus();
+    sidecarPresent = lastHostStatus.sidecar;
+  } catch (err) { /* the next try will do */ }
+  try {
+    if (device.protocolVersion >= 8) {
+      const info = await device.getSlots(bleGeneration);
+      if (info) { blePresent = info.present; bleInfo = info; }
+    }
+  } catch (err) { /* same */ }
+}
+
+/** Waits for a module to report this version, as it does once it has restarted into the new firmware. */
+async function waitForModuleVersion(key, version, timeoutMs) {
+  const started = Date.now();
+  while (Date.now() - started < timeoutMs) {
+    await new Promise((r) => setTimeout(r, 1000));
+    await refreshModuleVersions();
+    if (MODULES[key].present() && MODULES[key].version() === version) return true;
+  }
+  return false;
+}
+
+/** Sends one module's firmware through the FoxWizard. True when the module reports the new version. */
+async function runModuleUpdate(key, entry = latestFirmware[key], rollBack = false) {
+  const m = MODULES[key];
+  showOverlay(`${rollBack ? 'Going back on' : 'Updating'} the ${m.label}. Keep the FoxWizard plugged in.`);
+  overlayProgress.textContent = '0%';
+  try {
+    const res = await fetch(`${firmwareDir}${entry.bin}`, { cache: 'no-store' });
+    if (!res.ok) throw new Error('download');
+    const bin = new Uint8Array(await res.arrayBuffer());
+    if (bin.length !== entry.size) throw new Error('size');
+    await device.updateFirmware(bin, entry.md5, (sent, total) => {
+      overlayProgress.textContent = `${Math.floor((sent * 100) / total)}%`;
+    }, m.target);
+  } catch (err) {
+    if (!err.fwEndUnconfirmed) {
+      const why = UPDATE_ERRORS[err.extra];
+      toast(`The ${m.label} ${rollBack ? 'roll back' : 'update'} failed${why ? `, it ${why}` : ''}. It kept its current firmware.`, 'error');
+      return false;
+    }
+    // The module may have installed it anyway. Wait and see.
+  }
+  overlayText.textContent = `Installing. The ${m.label} restarts by itself.`;
+  overlayProgress.textContent = '';
+  if (!(await waitForModuleVersion(key, entry.version, MODULE_RESTART_WAIT_MS))) {
+    toast(`The ${m.label} didn't report the new version. Unplug the FoxWizard and plug it back in.`, 'error');
+    return false;
+  }
+  toast(`${m.label} ${rollBack ? 'rolled back' : 'updated'} to version ${entry.version}`, 'success');
+  return true;
 }
 
 // ============================================================================================
@@ -682,7 +942,6 @@ let bleInfo = null;   // the newest summary from the unit
 let bleSlots = [];    // by host slot, 1-8, and 9 for BLE Device
 let bleGeneration = -1;
 let bleBusy = false;
-let bleFellBackSaid = false;
 const bluetoothRow = document.getElementById('bluetoothRow');
 
 function escapeHtml(text) {
@@ -713,7 +972,7 @@ function portLive(p) {
 function portTitle(p, live) {
   const slot = p.bleSlot || p.slot;
   const rec = slot ? bleRec(slot) : null;
-  const kind = p.bleSlot === 9 ? 'BLE Device' : (rec?.kind === 1 && rec?.module) ? `USB device on the Bluetooth module (${p.label})` : (p.bleSlot === 8 || rec?.kind === 2) ? 'BLE Host' : p.label;
+  const kind = p.bleSlot === 9 ? 'BLE Device' : (rec?.kind === 1 && rec?.module) ? `USB device on the Bluetooth-side USB port (${p.label})` : (p.bleSlot === 8 || rec?.kind === 2) ? 'BLE Host' : p.label;
   const named = rec?.name && p.bleSlot !== 9 ? `: ${rec.name}` : '';
   return `${kind}${named}${live ? ', connected' : (named ? ', not connected now' : '')}`;
 }
@@ -733,13 +992,9 @@ async function refreshBle() {
     bleInfo = info;
     if (blePresent !== before) {
       changed = true;
-      toast(blePresent ? 'Bluetooth module connected' : 'Bluetooth module disconnected', blePresent ? 'success' : 'error');
+      toast(blePresent ? 'Bluetooth connected' : 'Bluetooth disconnected', blePresent ? 'success' : 'error');
     }
-    if (info.boardCheck && !hadBoardCheck) toast("The Bluetooth module says its Tools settings are wrong. Open its serial monitor to see which.", 'error');
-    if (info.usbFellBack && !bleFellBackSaid) {
-      bleFellBackSaid = true;
-      toast("The Bluetooth module's USB host did not start, so its USB port is a device port for now. Set USB Port to Host to try again.", 'warn');
-    }
+    if (info.boardCheck && !hadBoardCheck) toast("Bluetooth did not start properly, its light blinks red. It needs to be flashed again.", 'error');
     renderBluetoothRow();
     return changed;
   } catch (err) {
@@ -767,26 +1022,38 @@ function renderBluetoothRow() {
   const devices = BLE_SLOT_ORDER.map((slot) => ({ slot, rec: bleRec(slot) })).filter((d) => d.rec?.module);
   const usbInTheWay = [5, 6, 7].some((s) => bleRec(s)?.kind === 1 && !bleRec(s)?.module && bleRec(s)?.connected);
   const full = i.free === 0 && !i.learning;
-  const state = [
-    `BLE Device: ${i.deviceConnected ? 'connected' : 'waiting for a phone or computer'}`,
-    `${i.hosts} Bluetooth device${i.hosts === 1 ? '' : 's'} connected`
-  ].join(' · ');
+  const state = i.radioOff
+    ? 'Bluetooth radio off'
+    : [
+      `BLE Device: ${i.deviceConnected ? 'connected' : 'waiting for a phone or computer'}`,
+      `${i.hosts} Bluetooth device${i.hosts === 1 ? '' : 's'} connected`
+    ].join(' · ');
   let note = '';
-  if (i.peripheral) note = '<p class="ble-note">Waiting for a phone or computer to connect to BLE Device. Your Bluetooth devices reconnect after a minute.</p>';
+  if (i.radioOff) note = '<p class="ble-note">The Bluetooth radio is off. No Bluetooth devices connect and the FoxWizard is not visible to phones. Turn the radio on to use Bluetooth.</p>';
+  else if (i.peripheral) note = '<p class="ble-note">Waiting for a phone or computer to connect to BLE Device. Your Bluetooth devices reconnect after a minute.</p>';
   else if (i.learning) note = '<p class="ble-note">Turn on the Bluetooth MIDI device you want to add and put it in pairing mode. It connects by itself and is remembered. This stops after a minute.</p>';
   else if (full) note = `<p class="ble-note ble-note-warn">${usbInTheWay ? 'Every slot is taken. Unplug a USB device in USB Host 5 to 7 first, then add the Bluetooth device.' : 'Every slot has a Bluetooth device. Forget one first.'}</p>`;
   bluetoothRow.innerHTML = `
     <div class="ble-row-header">
       <h2 class="ble-row-heading">BLUETOOTH</h2>
       <span class="ble-state">${state}</span>
-      <button type="button" class="btn btn-ghost btn-tiny" data-ble-action="learn" ${full ? 'disabled' : ''}>${i.learning ? 'Stop Adding' : 'Add Bluetooth Device'}</button>
-      <label class="ble-usb" title="The module's own USB port. As a Host it plays USB MIDI devices, as a Device it is a second device port (for now its serial and update port). The module restarts when this changes.">
-        <span>USB Port</span>
-        <select data-ble-usb>
-          <option value="0" ${i.usbHost ? 'selected' : ''}>Host</option>
-          <option value="1" ${i.usbHost ? '' : 'selected'}>Device</option>
-        </select>
-      </label>
+      <button type="button" class="btn btn-ghost btn-tiny" data-ble-action="learn" ${full || i.radioOff ? 'disabled' : ''}>${i.learning ? 'Stop Adding' : 'Add Bluetooth Device'}</button>
+      <div class="ble-switches">
+        ${device.protocolVersion >= 10 ? `<label class="ble-usb" title="Turns Bluetooth off completely. With it off no Bluetooth device connects and phones cannot see the FoxWizard. Bluetooth restarts when this changes.">
+          <span>Bluetooth Radio</span>
+          <select data-ble-radio>
+            <option value="0" ${i.radioOff ? '' : 'selected'}>On</option>
+            <option value="1" ${i.radioOff ? 'selected' : ''}>Off</option>
+          </select>
+        </label>` : ''}
+        <label class="ble-usb" title="The Bluetooth-side USB port. As a Host it plays USB MIDI devices, as a Device it is a USB MIDI port to a computer, the same port as BLE Device. Bluetooth restarts when this changes.">
+          <span>USB Port</span>
+          <select data-ble-usb>
+            <option value="0" ${i.usbHost ? 'selected' : ''}>Host</option>
+            <option value="1" ${i.usbHost ? '' : 'selected'}>Device</option>
+          </select>
+        </label>
+      </div>
     </div>
     ${note}
     ${devices.length ? `<ul class="ble-devices">${devices.map(({ slot, rec }) => `<li class="ble-device${rec.connected ? '' : ' ble-device-gone'}">
@@ -795,15 +1062,20 @@ function renderBluetoothRow() {
 }
 
 bluetoothRow.addEventListener('change', async (e) => {
-  const select = e.target.closest('[data-ble-usb]');
+  const radio = e.target.closest('[data-ble-radio]');
+  const select = radio || e.target.closest('[data-ble-usb]');
   if (!select) return;
   if (!device.connected) { toast('Not connected to a device', 'error'); return; }
   try {
-    await device.bleAction(3, parseInt(select.value, 10));
-    bleFellBackSaid = false;
-    toast(`The Bluetooth module restarts as a USB ${select.value === '0' ? 'host' : 'device'} port. Its Bluetooth devices reconnect in a few seconds.`, 'success');
+    if (radio) {
+      await device.bleAction(4, parseInt(select.value, 10));
+      toast(`Bluetooth restarts ${select.value === '0' ? 'turned on. Your Bluetooth devices reconnect' : 'turned off. Devices on the Bluetooth-side USB port come back'} in a few seconds.`, 'success');
+    } else {
+      await device.bleAction(3, parseInt(select.value, 10));
+      toast(`Bluetooth restarts with the Bluetooth-side USB port as a USB MIDI ${select.value === '0' ? 'Host' : 'Device'}. Its devices reconnect in a few seconds.`, 'success');
+    }
   } catch (err) {
-    toast("The Bluetooth module didn't answer", 'error');
+    toast("Bluetooth didn't answer", 'error');
   }
   setTimeout(refreshBle, 2500);
 });
@@ -817,7 +1089,7 @@ bluetoothRow.addEventListener('click', async (e) => {
     if (learn) await device.bleAction(1, bleInfo?.learning ? 0 : 1);
     else await device.bleAction(2, parseInt(forget.dataset.bleForget, 10));
   } catch (err) {
-    toast("The Bluetooth module didn't answer", 'error');
+    toast("Bluetooth didn't answer", 'error');
     return;
   }
   if (await refreshBle()) { renderRoutes(); renderConnectionPill(); }
@@ -927,7 +1199,7 @@ function renderConnectionPill() {
     } else {
       connectionPill.classList.add('connected');
       connectionLabel.textContent = `Connected · Firmware ${version}${sidecarPresent ? ' · Host' : ''}${blePresent ? ' · Bluetooth' : ''}`;
-      connectionPill.title = status === 'current' ? 'Firmware is up to date' : "Couldn't check for firmware updates";
+      connectionPill.title = status === 'current' ? (canRollBack() ? 'Firmware is up to date. Click to go back to the release before it' : 'Firmware is up to date') : "Couldn't check for firmware updates";
     }
   } else if (s === 'connecting') {
     connectionPill.classList.add('connecting');
@@ -948,6 +1220,7 @@ function renderConnectionPill() {
   }
 }
 
+let portsViewNoUnit = true; // which port view the routes were last drawn for
 device.addEventListener('status', async (e) => {
   connectionState = e.detail.state;
   if (connectionState !== 'connected') {
@@ -961,7 +1234,11 @@ device.addEventListener('status', async (e) => {
   if (connectionState !== 'connected' && sidecarPresent) {
     sidecarPresent = false;
     hostPortMask = 0;
-    renderRoutes();
+  }
+  if (connectionState !== 'connected' && !portsViewNoUnit) goOffline();
+  if ((connectionState !== 'connected') !== portsViewNoUnit) {
+    portsViewNoUnit = connectionState !== 'connected';
+    renderRoutes(); // the ports a unit lacks hide when it is connected, and all of them show when none is
   }
   renderConnectionPill();
   if (connectionState !== 'connected') return;
@@ -969,7 +1246,8 @@ device.addEventListener('status', async (e) => {
   connectionCount++;
   if (!updateInProgress) toast('Device connected', 'success');
   await refreshSidecarStatus();
-  await loadFromDevice(true);
+  if (bankHasPending() && !updateInProgress && !offeringBank) await offerOfflinePresets(); // asks before anything made with no unit is replaced
+  else await loadFromDevice(true);
   await latestFirmwareReady;
   renderConnectionPill();
   if (!updateInProgress) promptForFirmwareIfNeeded();
@@ -992,10 +1270,64 @@ connectionPill.addEventListener('click', async () => {
     return;
   }
   const status = firmwareStatus();
-  if (status === 'current') toast(`Firmware ${versionText(deviceVersion())} is up to date`, 'success');
+  if (status === 'current') { if (canRollBack()) openRollBackDialog(); else toast(`Firmware ${versionText(deviceVersion())} is up to date`, 'success'); }
   else if (status === 'unknown') toast("Couldn't check for firmware updates", 'error');
   else promptForFirmwareIfNeeded();
 });
+
+// Roll back: the version in the connection pill, when firmware is up to date, offers the release before this one. Which release that is
+// was set when the newest was published (firmware.json, previous).
+function canRollBack() {
+  const prev = latestFirmware && latestFirmware.previous;
+  const v = deviceVersion();
+  return !!(prev && v && compareVersion(v, prev) > 0);
+}
+
+/** The modules that go back with the main firmware: here, able to take an update through the FoxWizard, and not already on that version. */
+function rollBackModules(prev) {
+  if (device.protocolVersion < 9) return [];
+  return Object.keys(MODULES).filter((key) => {
+    const m = MODULES[key];
+    return prev[key] && m.present() && m.version() >= m.min && m.version() !== prev[key].version;
+  });
+}
+
+function openRollBackDialog() {
+  const prev = latestFirmware.previous;
+  const copy = allPresetsAvailable() ? 'Download All' : 'Download';
+  const sides = rollBackModules(prev).map((key) => MODULES[key].label);
+  const sidesLine = sides.length ? `<p>The ${sides.join(' and ')} go${sides.length > 1 ? '' : 'es'} back too.</p>` : '';
+  const unsavedWarning = dirty
+    ? `<p class="dialog-warn">You have changes that aren't saved to the FoxWizard. When it reconnects after going back, Patchling reloads its saved settings, which replaces them. Click Close, then Save to Device, to keep them.</p>`
+    : '';
+  openDialog('Firmware', `
+    <p>This FoxWizard has firmware ${versionText(deviceVersion())}, the newest.</p>
+    <p>If it is giving you trouble, you can go back to ${versionText(prev)}, the release before it. ${versionText(prev)} may not read settings and presets saved by ${versionText(deviceVersion())}, so click Presets, then ${copy}, first if you want a copy. Patchling will then offer the newest firmware again.</p>
+    ${sidesLine}
+    <p>Keep the FoxWizard plugged in until it finishes.</p>
+    ${unsavedWarning}`,
+  [
+    { label: 'Close', kind: 'ghost' },
+    { label: `Go Back to ${versionText(prev)}`, kind: 'accent', onClick: runRollBack }
+  ]);
+}
+
+// Each module that goes back first, while the main firmware still passes it on, then the main firmware. The first part that fails stops the rest.
+async function runRollBack() {
+  if (!device.connected || !canRollBack()) return;
+  const prev = latestFirmware.previous;
+  updateInProgress = true;
+  try {
+    for (const key of rollBackModules(prev)) {
+      if (!(await runModuleUpdate(key, prev[key], true))) return;
+    }
+    await runMainUpdate(prev, true);
+  } finally {
+    updateInProgress = false;
+    hideOverlay();
+    renderConnectionPill();
+  }
+}
 
 // ============================================================================================
 // Global settings card
@@ -1082,7 +1414,7 @@ function renderGlobalCard() {
   }
 
   const presetForced = presetButtonForced();
-  const presetSlotsBox = presetsSupported() ? `
+  const presetSlotsBox = presetsShown() ? `
       <div class="mini-box">
         ${miniBoxMain('Number of Preset Slots Total', `<select data-preset-slots>${Array.from({ length: 16 }, (_, i) => `<option value="${i + 1}" ${state.presets.slots === i + 1 ? 'selected' : ''}>${i + 1}</option>`).join('')}</select>`)}
       </div>` : '';
@@ -1155,7 +1487,7 @@ const looperRow = document.getElementById('looperRow');
 // Whether the looper is reachable at all right now: Button Action set to it, or mapped on any
 // Note/CC to Feature entry or Launchpad button (all three lists are global, shared by the whole
 // device, like the firmware's own tables). Until one of these is true there's nothing to record
-// with, so the row stays collapsed to just its title and hint instead of showing dead settings.
+// with, so the row stays collapsed to just its title, hint and Looper Button instead of showing dead settings. The hint goes once something activates the Looper.
 function looperMapped() {
   // A mapping only counts while some route has that feature switched on, so the default
   // Launchpad table's two Looper buttons don't count with no Launchpad route.
@@ -1226,7 +1558,7 @@ function renderLooperRow() {
   looperRow.innerHTML = `
     <div class="looper-row-header">
       <h2 class="looper-row-heading">LOOPER</h2>
-      <p class="note-hint">Set Button Action to Looper, or use 'Note/CC to Feature' and select Looper.</p>
+      ${mapped ? '' : '<p class="note-hint">The Looper needs something to activate it. For a one-button looper, press Learn below then press a key or button on your MIDI controller. Or, set the Button Action to Looper above. For advanced controls, use CC to Feature or Note to Feature in a Route.</p>'}
       ${looperTriggerHtml()}
     </div>
     ${mapped ? `<div class="looper-settings">${[
@@ -1278,8 +1610,9 @@ function clockRowActive() {
 
 const CLOCK_SOURCE_AUTO = 15; // Clock: follow the clock of any port while one arrives, lead with its own while none does (1.92)
 
+// The Bluetooth ports are left out: the unit follows ports 1 to 14 only, and BLE Device's value would be 15, which is Auto.
 function clockSourceOptions(g) {
-  const ports = PORTS.filter((p) => p.input && (!p.sidecar || sidecarPortShown(p, false) || g.clockSource === p.bit + 1));
+  const ports = PORTS.filter((p) => p.input && !p.ble && (!p.sidecar || sidecarPortShown(p, false) || g.clockSource === p.bit + 1));
   return [`<option value="0" ${g.clockSource === 0 ? 'selected' : ''}>FoxWizard is master</option>`,
     `<option value="${CLOCK_SOURCE_AUTO}" ${g.clockSource === CLOCK_SOURCE_AUTO ? 'selected' : ''}>Auto</option>`]
     .concat(ports.map((p) => `<option value="${p.bit + 1}" ${g.clockSource === p.bit + 1 ? 'selected' : ''}>Follow ${p.label}</option>`))
@@ -1647,7 +1980,7 @@ function applyModeVisual(animate) {
 // Factory Reset of the unit itself (its routes, presets and settings), only from here. Holding the button while plugging in used to do it, which an
 // accidental press could. A small button that shows while connected, and one plain question.
 factoryResetBtn.addEventListener('click', async () => {
-  if (connectionState !== 'connected' || !confirm('Factory reset the FoxWizard? This clears its routes, presets and settings.')) return;
+  if (connectionState !== 'connected' || !confirm('Factory reset the FoxWizard? This clears its routes, presets, settings and Bluetooth devices, and sets it back to how it came.')) return;
   showOverlay('Resetting the FoxWizard…');
   try {
     await device.factoryReset();
@@ -1657,6 +1990,7 @@ factoryResetBtn.addEventListener('click', async () => {
     return;
   }
   hideOverlay();
+  unitNames = null; // the reset cleared the names
   await loadFromDevice(true);
   toast('FoxWizard reset to factory settings', 'success');
 });
@@ -1670,11 +2004,8 @@ function wireGlobalHeader() {
 // asks first since it's a total wipe of whatever's currently configured, not a small edit.
 function resetEverything() {
   if (!confirm("Clear all settings? Remember to click 'Save to Device' next.")) return;
-  state.global = defaultGlobal();
-  state.routes = [];
-  renderGlobalCard();
-  renderRoutes();
-  markDirty();
+  // The whole open preset starts over, the same as a slot that was never used. Its name is a label and stays.
+  applyPresetToEditor({ ...emptyPresetData(), name: nameAt(state.presets.active) }, true);
   toast('Routes cleared and settings reset to default', 'success');
 }
 
@@ -1770,7 +2101,11 @@ globalCard.addEventListener('click', (e) => {
   const button = e.target.closest('[data-preset-slot]');
   if (button) selectPreset(parseInt(button.dataset.presetSlot, 10));
 });
+globalCard.addEventListener('keydown', (e) => {
+  if (e.key === 'Enter' && e.target.matches?.('.preset-name-input')) e.target.blur(); // leaving the box keeps the name
+});
 globalCard.addEventListener('change', (e) => {
+  if (e.target.matches?.('.preset-name-input')) { commitNameInput(e.target); return; }
   if (e.target.dataset.presetSlots !== undefined) { changePresetSlots(parseInt(e.target.value, 10)); return; }
   const field = e.target.dataset.globalField;
   if (!field) return;
@@ -1834,13 +2169,16 @@ function updateHostPortsShown() {
   return hostPortsShown !== before;
 }
 
-// Whether a sidecar port's chip shows. USB Host chips follow the room the hubs have once the host
-// brain says. The rest show while a sidecar is detected, or when something already uses them.
+// Whether a sidecar port's chip shows. With no unit connected every port a unit could have shows, TRS 2 to 6 excepted (they
+// need a TRS board on the USB Host side, which no edition has yet), so presets can be made before a unit is there. With a unit
+// connected, USB Host chips follow the room the hubs have once the host brain says, and the rest show only while the USB Host
+// side is detected, even when a route has them on. Those port settings stay in the preset and a unit without them ignores them.
 function sidecarPortShown(p, used) {
   if (trsUnavailable(p)) return false;
+  if (!device.connected) return true;
   if (p.slot && sidecarPresent && p.slot > hostSlots) return false; // a host brain with fewer slots than this port
   if (p.slot && sidecarPresent && hostHub.known) return p.slot <= hostPortsShown;
-  return sidecarPresent || used;
+  return sidecarPresent;
 }
 
 // Port switches. Each switch and its label sit inside one chip, so it's always clear which label
@@ -1850,18 +2188,18 @@ function visiblePorts(route, field) {
   return PORTS.filter((p) => (field === 'outPorts' || p.input) && portShown(p, route, field));
 }
 
-// The Bluetooth module's ports show while it is there. A Bluetooth device holding USB Host 5-7 shows that port whatever the hubs say.
+// The Bluetooth module's ports show while it is there, and with no unit connected. A Bluetooth device holding USB Host 5-7 shows that port whatever the hubs say.
 function portShown(p, route, field) {
   const used = !!(route[field] & (1 << p.bit));
-  if (p.ble) return blePresent || used;
+  if (p.ble) return blePresent || !device.connected;
   if (p.slot >= 5 && bleRec(p.slot)?.module) return true;
   return !p.sidecar || sidecarPortShown(p, used);
 }
 
 // Sidecar port masks this board actually has: Host 1-4 always, TRS 2-6 only when a TRS board is
 // added on top of the bare sidecar module.
-function sidecarInputPorts() { return sidecarHasTrs ? SIDECAR_INPUT_PORTS : (SIDECAR_INPUT_PORTS & ~SIDECAR_TRS_PORTS); }
-function sidecarOutputPorts() { return sidecarHasTrs ? SIDECAR_OUTPUT_PORTS : (SIDECAR_OUTPUT_PORTS & ~SIDECAR_TRS_PORTS); }
+function sidecarInputPorts() { return sidecarPresent && sidecarHasTrs ? SIDECAR_INPUT_PORTS : (SIDECAR_INPUT_PORTS & ~SIDECAR_TRS_PORTS); }
+function sidecarOutputPorts() { return sidecarPresent && sidecarHasTrs ? SIDECAR_OUTPUT_PORTS : (SIDECAR_OUTPUT_PORTS & ~SIDECAR_TRS_PORTS); }
 
 function visiblePortMask(route, field) {
   return visiblePorts(route, field).reduce((mask, p) => mask | (1 << p.bit), 0);
@@ -3063,10 +3401,86 @@ document.getElementById('addRouteBtn').addEventListener('click', addRoute);
 document.getElementById('addRouteBtnTop').addEventListener('click', addRoute);
 document.getElementById('emptyHintAddRoute').addEventListener('click', (e) => { e.preventDefault(); addRoute(); });
 
-document.getElementById('downloadPresetBtn').addEventListener('click', () => {
-  downloadPreset({ name: state.presetName, global: state.global, routes: state.routes, noteMap: state.noteMap, ccMap: state.ccMap, lpActions: state.lpActions, scale: state.scale, arps: state.arps, echo: state.echo, stutter: state.stutter, looper: state.looper, plock: state.plock });
-  toast('Preset downloaded', 'success');
-});
+// ============================================================================================
+// Presets button. This preset as one XML file. With firmware 2.7 and several preset slots, every saved preset as one zip, read
+// from and written to the unit without switching it to each slot.
+// ============================================================================================
+function currentPresetData() {
+  return { name: nameAt(state.presets.active), global: state.global, routes: state.routes, noteMap: state.noteMap, ccMap: state.ccMap, lpActions: state.lpActions, scale: state.scale, arps: state.arps, echo: state.echo, stutter: state.stutter, looper: state.looper, plock: state.plock };
+}
+
+// Puts a preset on screen. Nothing reaches the unit until Save to Device.
+function applyPresetToEditor(preset, markChanged = true) {
+  if (markChanged) setNameAt(state.presets.active, cleanName(preset.name, state.presets.active), true); // the file's name, kept when the preset is saved
+  state.global = { ...defaultGlobal(), ...preset.global };
+  state.noteMap = preset.noteMap || [];
+  state.ccMap = preset.ccMap || [];
+  state.lpActions = preset.lpActions || defaultLpActions();
+  state.scale = preset.scale || defaultScale();
+  state.arps = preset.arps || Array.from({ length: ARP_SLOTS }, defaultArp);
+  state.echo = preset.echo || defaultEcho();
+  state.stutter = preset.stutter || defaultStutter();
+  state.looper = preset.looper || defaultLooper();
+  state.plock = preset.plock || defaultPlock();
+  state.routes = preset.routes.map((r) => ({
+    _uid: nextUid++, _collapsed: false, _ccMapEnabled: r.ccMapStart !== r.ccStart, ...r
+  }));
+  renderGlobalCard();
+  renderRoutes();
+  if (markChanged) markDirty(); else clearDirty();
+}
+
+function downloadBlob(blob, filename) {
+  const url = URL.createObjectURL(blob);
+  const a = document.createElement('a');
+  a.href = url;
+  a.download = filename;
+  document.body.appendChild(a);
+  a.click();
+  a.remove();
+  URL.revokeObjectURL(url);
+}
+
+function allPresetsAvailable() { return noUnit() || (unitCanTakeAllPresets() && state.presets.slots > 1); }
+
+function openPresetsDialog() {
+  const several = presetsShown() && state.presets.slots > 1;
+  const names = presetNamesShown();
+  const nameField = (label, index, placeholder) => `<label class="presets-name-field"><span>${label}</span><input type="text" maxlength="${PRESET_NAME_MAX_LEN}" placeholder="${placeholder}" value="${escapeHtml(nameAt(index))}" data-name-index="${index}"></label>`;
+  openDialog('Presets', `<div class="presets-dialog">
+      <div class="presets-section">
+        <p class="presets-heading">${several ? `Preset ${state.presets.active + 1}` : 'This Preset'}</p>
+        ${names ? nameField('Preset Name', state.presets.active, `Preset ${state.presets.active + 1}`) : ''}
+        <div class="presets-buttons">
+          <button type="button" class="btn btn-ghost" data-presets-action="download">Download</button>
+          <button type="button" class="btn btn-ghost" data-presets-action="upload">Upload</button>
+        </div>
+        <p class="note-hint">One XML file. Upload fills what is on screen, then click Save to Device to send it.</p>
+      </div>
+      ${allPresetsAvailable() ? `<div class="presets-section">
+        <p class="presets-heading">All Presets</p>
+        ${names ? nameField('Bundle Name', BUNDLE_NAME_INDEX, 'Preset Bundle') : ''}
+        <div class="presets-buttons">
+          <button type="button" class="btn btn-ghost" data-presets-action="downloadAll">Download All</button>
+          <button type="button" class="btn btn-ghost" data-presets-action="uploadAll">Upload All</button>
+        </div>
+        <p class="note-hint">One zip with every saved preset, named by slot. Upload All writes each one into its slot and leaves the other slots as they are.${noUnit() ? ' With no FoxWizard connected the presets are kept in this browser, so Download All is also the backup.' : ''}</p>
+      </div>` : ''}
+    </div>`, [{ label: 'Close', kind: 'ghost' }]);
+  dialogBody.querySelectorAll('input[data-name-index]').forEach((input) => {
+    input.addEventListener('change', () => commitNameInput(input));
+    input.addEventListener('keydown', (e) => { if (e.key === 'Enter') input.blur(); });
+  });
+  dialogBody.querySelectorAll('[data-presets-action]').forEach((btn) => btn.addEventListener('click', () => {
+    closeDialog();
+    const action = btn.dataset.presetsAction;
+    if (action === 'download') { downloadPreset(currentPresetData()); toast('Preset downloaded', 'success'); }
+    else if (action === 'upload') document.getElementById('uploadPresetInput').click();
+    else if (action === 'downloadAll') downloadAllPresets();
+    else if (action === 'uploadAll') document.getElementById('uploadPresetsZipInput').click();
+  }));
+}
+document.getElementById('presetsBtn').addEventListener('click', openPresetsDialog);
 
 document.getElementById('uploadPresetInput').addEventListener('change', async (e) => {
   const file = e.target.files[0];
@@ -3074,23 +3488,7 @@ document.getElementById('uploadPresetInput').addEventListener('change', async (e
   if (!file) return;
   try {
     const preset = await readPresetFile(file);
-    state.presetName = preset.name;
-    state.global = { ...defaultGlobal(), ...preset.global };
-    state.noteMap = preset.noteMap || [];
-    state.ccMap = preset.ccMap || [];
-    state.lpActions = preset.lpActions || defaultLpActions();
-    state.scale = preset.scale || defaultScale();
-    state.arps = preset.arps || Array.from({ length: ARP_SLOTS }, defaultArp);
-    state.echo = preset.echo || defaultEcho();
-    state.stutter = preset.stutter || defaultStutter();
-    state.looper = preset.looper || defaultLooper();
-    state.plock = preset.plock || defaultPlock();
-    state.routes = preset.routes.map((r) => ({
-      _uid: nextUid++, _collapsed: false, _ccMapEnabled: r.ccMapStart !== r.ccStart, ...r
-    }));
-    renderGlobalCard();
-    renderRoutes();
-    markDirty();
+    applyPresetToEditor(preset);
     if (state.routes.length > routeLimit()) {
       toast(`This preset has ${state.routes.length} routes. The FoxWizard holds ${routeLimit()}, delete some before saving.`, 'error');
     } else {
@@ -3100,6 +3498,379 @@ document.getElementById('uploadPresetInput').addEventListener('change', async (e
     toast('Could not read that preset file', 'error');
   }
 });
+
+const pad2 = (n) => String(n).padStart(2, '0');
+function presetFileName(slot, name) { return `${pad2(slot + 1)} ${name.replace(/[^a-z0-9\-_ ]+/gi, '_')}.xml`; }
+
+// The zip is named after the bundle, and the bundle's name is also inside it in bundle.txt, so renaming the zip loses nothing.
+const BUNDLE_FILE = 'bundle.txt';
+function bundleZipName(bundle) { return `${bundle ? bundle.replace(/[^a-z0-9\-_ ]+/gi, '_') : `foxwizard-presets-${new Date().toISOString().slice(0, 10)}`}.zip`; }
+function bundleFiles(bundle, enc) { return bundle ? [{ name: BUNDLE_FILE, data: enc.encode(bundle) }] : []; }
+
+async function downloadAllPresets() {
+  if (!allPresetsAvailable()) return;
+  if (noUnit()) { await downloadAllOffline(); return; }
+  await settleAutosave();
+  showOverlay('Reading every preset from the unit…');
+  try {
+    await refreshPresets();
+    await syncPresetNames();
+    const p = state.presets;
+    const slots = [];
+    for (let s = 0; s < p.slots; s++) if ((p.used >> s) & 1) slots.push(s);
+    const enc = new TextEncoder();
+    const files = [];
+    for (let i = 0; i < slots.length; i++) {
+      const slot = slots[i];
+      setOverlayProgress(i, slots.length);
+      // The preset open now comes from the screen, the others from their saved files on the unit. Names come from the unit's names.
+      const preset = slot === p.active ? currentPresetData() : imageToPreset(await device.getPresetImage(slot));
+      const name = nameAt(slot);
+      files.push({ name: presetFileName(slot, name || `Preset ${slot + 1}`), data: enc.encode(serializePreset({ ...preset, name })) });
+    }
+    const bundle = nameAt(BUNDLE_NAME_INDEX);
+    files.push(...bundleFiles(bundle, enc));
+    downloadBlob(new Blob([await makeZip(files)], { type: 'application/zip' }), bundleZipName(bundle));
+    toast(`Downloaded ${slots.length} preset${slots.length === 1 ? '' : 's'}`, 'success');
+  } catch (err) {
+    toast('Could not read every preset from the unit', 'error');
+  } finally {
+    hideOverlay();
+  }
+}
+
+function userError(message) { const e = new Error(message); e.userMessage = message; return e; }
+
+function numberList(nums) {
+  if (nums.length < 2) return String(nums[0]);
+  return `${nums.slice(0, -1).join(', ')} and ${nums[nums.length - 1]}`;
+}
+
+// One preset ready to write: its slot, the preset, its image for the unit and its XML for the browser. Throws when the unit could not hold it.
+function presetEntry(slot, preset, xml) {
+  if (preset.routes.length > routeLimit()) throw userError(`Preset ${slot + 1} has ${preset.routes.length} routes. The FoxWizard holds ${routeLimit()}.`);
+  let image;
+  try { image = presetToImage({ ...preset, global: { ...defaultGlobal(), ...preset.global } }); } catch (err) { throw userError(`Preset ${slot + 1} is too big for the FoxWizard to hold.`); }
+  return { slot, preset, image, xml };
+}
+
+// Reads the zip into what would be written: each preset with its slot and its image. A leading number in the file name is the slot,
+// files without one take the lowest free slots in the order they are listed. bundle.txt holds the bundle's name, bundle is null when
+// the zip has none. Nothing is sent here.
+async function planPresetZip(bytes) {
+  const all = (await readZip(bytes)).filter((f) => !/(^|\/)(__MACOSX|\.)/.test(f.name));
+  const found = all.filter((f) => /\.xml$/i.test(f.name));
+  const bundleFile = all.find((f) => /(^|\/)bundle\.txt$/i.test(f.name));
+  const bundle = bundleFile ? cleanName(new TextDecoder().decode(bundleFile.data), BUNDLE_NAME_INDEX) : null;
+  if (!found.length) throw userError('That zip has no preset files.');
+  found.sort((a, b) => a.name.localeCompare(b.name, undefined, { numeric: true }));
+  if (found.length > PRESET_SLOTS_MAX) throw userError(`That zip has ${found.length} presets. The most the FoxWizard holds is ${PRESET_SLOTS_MAX}.`);
+  const dec = new TextDecoder();
+  const taken = new Set();
+  const slotOf = found.map((f) => {
+    const m = /^(\d{1,2})(?!\d)/.exec(f.name.split('/').pop());
+    const n = m ? parseInt(m[1], 10) : 0;
+    if (n >= 1 && n <= PRESET_SLOTS_MAX) {
+      if (taken.has(n - 1)) throw userError(`Two files are for preset ${n}.`);
+      taken.add(n - 1);
+      return n - 1;
+    }
+    return null;
+  });
+  let free = 0;
+  const entries = found.map((f, i) => {
+    let slot = slotOf[i];
+    if (slot === null) { while (taken.has(free)) free++; slot = free; taken.add(slot); }
+    let preset;
+    try { preset = parsePreset(dec.decode(f.data)); } catch (err) { throw userError(`${f.name.split('/').pop()} is not a preset file.`); }
+    return presetEntry(slot, preset, dec.decode(f.data));
+  });
+  entries.sort((a, b) => a.slot - b.slot);
+  return { entries, highest: entries[entries.length - 1].slot, bundle };
+}
+
+document.getElementById('uploadPresetsZipInput').addEventListener('change', async (e) => {
+  const file = e.target.files[0];
+  e.target.value = '';
+  if (!file) return;
+  if (!allPresetsAvailable()) { toast('Connect a FoxWizard with preset slots first', 'error'); return; }
+  try {
+    askUploadAll(await planPresetZip(new Uint8Array(await file.arrayBuffer())));
+  } catch (err) {
+    toast(err.userMessage || 'Could not read that zip', 'error');
+  }
+});
+
+function askUploadAll(plan) {
+  const offline = noUnit();
+  const have = offline ? bank.count : state.presets.slots;
+  const active = offline ? bank.active : state.presets.active;
+  const nums = plan.entries.map((e) => e.slot + 1);
+  const many = nums.length !== 1;
+  const grows = plan.highest + 1 > have;
+  const open = plan.entries.some((e) => e.slot === active);
+  openDialog('Upload All Presets', `<p>This zip has ${nums.length} preset${many ? 's' : ''}. It replaces preset${many ? 's' : ''} ${numberList(nums)} ${offline ? 'in this browser' : 'on the FoxWizard'}. Other presets stay as they are.</p>
+    ${grows ? `<p>Number of Preset Slots Total goes from ${have} to ${plan.highest + 1}.</p>` : ''}
+    ${presetNamesShown() ? `<p>Preset names come from the files.${plan.bundle !== null ? ` Bundle Name ${plan.bundle ? `becomes ${escapeHtml(plan.bundle)}` : 'is cleared'}.` : ''}</p>` : ''}
+    ${open ? `<p>Preset ${active + 1} is open now, so what is on screen is replaced${!offline && dirty ? ' and its unsaved changes are lost' : ''}.</p>` : ''}`, [
+    { label: 'Cancel', kind: 'ghost' },
+    { label: 'Replace', kind: 'primary', onClick: () => (offline ? runUploadAllOffline(plan) : runUploadAll(plan)) }
+  ]);
+}
+
+// Writes the plan to the unit. Returns whether all of it was written.
+async function runUploadAll(plan) {
+  if (!unitCanTakeAllPresets()) return false;
+  await settleAutosave();
+  showOverlay('Writing presets to the unit…');
+  let at = null;
+  let namesOk = true;
+  try {
+    await refreshPresets();
+    if (plan.highest + 1 > state.presets.slots) await device.setPresetSlots(plan.highest + 1);
+    await refreshPresets();
+    const others = plan.entries.filter((e) => e.slot !== state.presets.active);
+    for (let i = 0; i < others.length; i++) {
+      at = others[i].slot;
+      setOverlayProgress(i, others.length);
+      await device.putPresetImage(others[i].slot, others[i].image);
+    }
+    at = null;
+    await refreshPresets();
+    if (presetNamesShown()) { // each preset takes the name in its file, an unnamed file clears the slot's name
+      for (const e of plan.entries) setNameAt(e.slot, cleanName(e.preset.name, e.slot));
+      if (plan.bundle !== null && plan.bundle !== undefined) setNameAt(BUNDLE_NAME_INDEX, plan.bundle);
+      namesOk = await syncPresetNames();
+    }
+    const open = plan.entries.find((e) => e.slot === state.presets.active);
+    hideOverlay();
+    if (open) {
+      applyPresetToEditor(open.preset);
+      if (!(await saveToDevice())) { toast(`Preset ${open.slot + 1} is open and not saved yet. Click Save to Device.`, 'warn'); return false; }
+    }
+    await refreshPresets();
+    renderGlobalCard();
+    toast(`Wrote ${plan.entries.length} preset${plan.entries.length === 1 ? '' : 's'} to the unit`, 'success');
+    return namesOk;
+  } catch (err) {
+    toast(at === null ? 'Could not write the presets to the unit' : `Could not write preset ${at + 1}. Presets before it were written.`, 'error');
+    try { await refreshPresets(); renderGlobalCard(); } catch (e) { /* the buttons stay as they were */ }
+    return false;
+  } finally {
+    hideOverlay();
+  }
+}
+
+// ============================================================================================
+// Presets with no unit connected. Patchling keeps a bank of presets in this browser, one per slot, and the slot controls work on it
+// the way they do on a unit. Every change is kept as it is made. A preset made here is marked pending until it has been sent to a
+// unit, and connecting a unit asks before anything pending is replaced. Browser storage can be cleared, so Presets, Download All
+// is the backup.
+// ============================================================================================
+const BANK_KEY = 'patchling.presetBank';
+let bankTimer = null;
+let bankStorageToldOnce = false;
+
+function loadBank() {
+  try {
+    const b = JSON.parse(localStorage.getItem(BANK_KEY) || 'null');
+    if (b && b.xml && typeof b.xml === 'object') {
+      bank.count = Math.min(PRESET_SLOTS_MAX, Math.max(1, (b.count | 0) || 16));
+      bank.active = Math.min(bank.count - 1, Math.max(0, b.active | 0));
+      bank.pending = b.pending && typeof b.pending === 'object' ? b.pending : {};
+      bank.xml = b.xml;
+      bank.bundlePending = !!b.bundlePending;
+      if (b.names && typeof b.names === 'object') bank.names = b.names;
+      else { // a bank kept before names existed: the names its files carry
+        bank.names = {};
+        for (const s of Object.keys(bank.xml)) {
+          try { const n = cleanName(parsePreset(bank.xml[s]).name, Number(s)); if (n) bank.names[s] = n; } catch (err) { /* that slot has no name */ }
+        }
+      }
+    }
+  } catch (err) { /* no storage, or nothing kept yet: the bank starts empty */ }
+}
+
+function saveBank() {
+  try {
+    localStorage.setItem(BANK_KEY, JSON.stringify(bank));
+  } catch (err) {
+    if (!bankStorageToldOnce) { bankStorageToldOnce = true; toast('This browser would not keep the presets. Use Presets, Download All to keep them.', 'warn'); }
+  }
+}
+
+function bankUsedMask() {
+  let mask = 0;
+  for (let s = 0; s < bank.count; s++) if (bank.xml[s] || s === bank.active) mask |= 1 << s;
+  return mask;
+}
+
+function offlinePresets() { return { slots: bank.count, active: bank.active, used: bankUsedMask() }; }
+
+function bankPendingSlots() {
+  return Object.keys(bank.pending).map(Number).filter((s) => s < bank.count && bank.xml[s]).sort((a, b) => a - b);
+}
+
+function clearBankPending(clearBundle = true) { bank.pending = {}; if (clearBundle) bank.bundlePending = false; saveBank(); }
+
+// Something made with no unit that a connected unit has not been asked about. A bundle name waits for a unit that keeps names.
+function bankHasPending() { return bankPendingSlots().length > 0 || (bank.bundlePending && presetNamesShown() && device.connected); }
+
+function emptyPresetData() {
+  return {
+    name: 'Untitled Preset', global: defaultGlobal(), routes: [], noteMap: [], ccMap: [], lpActions: defaultLpActions(), scale: defaultScale(),
+    arps: Array.from({ length: ARP_SLOTS }, defaultArp), echo: defaultEcho(), stutter: defaultStutter(), looper: defaultLooper(), plock: defaultPlock()
+  };
+}
+
+function scheduleBankSave() { clearTimeout(bankTimer); bankTimer = setTimeout(flushEditorToBank, 400); }
+
+// What is on screen into its slot of the bank, when it has changed.
+function flushEditorToBank() {
+  clearTimeout(bankTimer);
+  if (!bankEditorChanged) return;
+  bankEditorChanged = false;
+  bank.xml[bank.active] = serializePreset(currentPresetData());
+  saveBank();
+}
+window.addEventListener('pagehide', () => { if (noUnit()) flushEditorToBank(); });
+document.addEventListener('visibilitychange', () => { if (document.hidden && noUnit()) flushEditorToBank(); });
+
+// Puts a slot of the bank on screen. An empty slot starts from the defaults, nothing is stored for it until it is changed.
+function showBankSlot(slot, carry = {}) {
+  let preset = emptyPresetData();
+  if (bank.xml[slot]) {
+    try { preset = parsePreset(bank.xml[slot]); } catch (err) { toast(`Preset ${slot + 1} could not be read, it starts empty`, 'error'); }
+  }
+  preset = { ...preset, global: { ...defaultGlobal(), ...preset.global } };
+  if (carry.buttonPreset) preset.global.buttonAction = 12; // the unit keeps the front button on Preset across slots too
+  if (carry.brightness !== undefined) preset.global.ledBrightnessStep = carry.brightness;
+  bank.active = slot;
+  saveBank();
+  state.presets = offlinePresets();
+  applyPresetToEditor(preset, false);
+  bankEditorChanged = false;
+}
+
+function selectOfflinePreset(slot) {
+  if (slot === bank.active || slot < 0 || slot >= bank.count) return;
+  flushEditorToBank();
+  showBankSlot(slot, { buttonPreset: state.global.buttonAction === 12 && bank.count > 1, brightness: state.global.ledBrightnessStep });
+}
+
+function changeOfflineSlots(count) {
+  if (count === bank.count) return;
+  if (bank.active >= count) selectOfflinePreset(count - 1); // the slot in use is cut, the last one takes over
+  bank.count = count;
+  saveBank();
+  state.presets = offlinePresets();
+  renderGlobalCard();
+}
+
+// The unit went away. What is on screen carries on as the same slot, kept in this browser.
+function goOffline() {
+  const carried = state.presetNames[state.presets.active] || ''; // the open preset keeps the name the unit had for it
+  bank.active = Math.min(bank.count - 1, state.presets.active || 0);
+  if (carried) bank.names[bank.active] = carried; else delete bank.names[bank.active];
+  unitNames = null;
+  namesToSend.clear();
+  namesAwaitSave.clear();
+  state.presetNames = Array(PRESET_NAME_COUNT).fill('');
+  bankEditorChanged = true;
+  flushEditorToBank();
+  clearDirty();
+  state.presets = offlinePresets();
+  renderGlobalCard();
+}
+
+async function downloadAllOffline() {
+  flushEditorToBank();
+  const enc = new TextEncoder();
+  const files = [];
+  for (let s = 0; s < bank.count; s++) {
+    if (!bank.xml[s]) continue;
+    const name = bank.names[s] || '';
+    let xml = bank.xml[s];
+    try { xml = serializePreset({ ...parsePreset(xml), name }); } catch (err) { /* the file is kept as it is */ }
+    files.push({ name: presetFileName(s, name || `Preset ${s + 1}`), data: enc.encode(xml) });
+  }
+  if (!files.length) { toast('No presets made yet', 'error'); return; }
+  const count = files.length;
+  const bundle = bank.names[BUNDLE_NAME_INDEX] || '';
+  files.push(...bundleFiles(bundle, enc));
+  try {
+    downloadBlob(new Blob([await makeZip(files)], { type: 'application/zip' }), bundleZipName(bundle));
+    toast(`Downloaded ${count} preset${count === 1 ? '' : 's'}`, 'success');
+  } catch (err) {
+    toast('Could not make the zip', 'error');
+  }
+}
+
+function runUploadAllOffline(plan) {
+  flushEditorToBank();
+  if (plan.highest + 1 > bank.count) bank.count = plan.highest + 1;
+  for (const e of plan.entries) {
+    bank.xml[e.slot] = e.xml;
+    bank.pending[e.slot] = true;
+    setNameAt(e.slot, cleanName(e.preset.name, e.slot)); // the file's name, an unnamed file clears the slot's name
+  }
+  if (plan.bundle !== null && plan.bundle !== undefined) { setNameAt(BUNDLE_NAME_INDEX, plan.bundle); bank.bundlePending = true; }
+  saveBank();
+  state.presets = offlinePresets();
+  if (plan.entries.some((e) => e.slot === bank.active)) showBankSlot(bank.active); else renderGlobalCard();
+  toast(`Wrote ${plan.entries.length} preset${plan.entries.length === 1 ? '' : 's'} to this browser`, 'success');
+}
+
+// A unit just connected and presets were made without one. Nothing is replaced until the choice is made.
+function offerOfflinePresets() {
+  offeringBank = true;
+  flushEditorToBank();
+  const slots = bankPendingSlots();
+  const nums = slots.map((s) => s + 1);
+  const many = nums.length !== 1;
+  const canAll = unitCanTakeAllPresets();
+  const sendBundle = bank.bundlePending && presetNamesShown();
+  const bundleName = bank.names[BUNDLE_NAME_INDEX] || '';
+  const bundleText = `Bundle Name is ${bundleName ? escapeHtml(bundleName) : 'empty'}`;
+  const body = `${nums.length
+    ? `<p>You made ${nums.length} preset${many ? 's' : ''} with no FoxWizard connected: ${numberList(nums)}.${sendBundle ? ` ${bundleText}.` : ''}</p>`
+    : `<p>You set the bundle name with no FoxWizard connected. ${bundleText}.</p>`}
+    ${!nums.length
+    ? '<p><b>Send to Unit</b> sets Bundle Name on the FoxWizard. Its presets stay as they are.</p>'
+    : canAll
+      ? `<p><b>Send to Unit</b> replaces preset${many ? 's' : ''} ${numberList(nums)} on the FoxWizard${sendBundle ? ' and sets Bundle Name' : ''}. Its other presets stay as they are, and Number of Preset Slots Total goes up if it has to.</p>`
+      : `<p>This FoxWizard needs firmware 2.7 to take more than one preset at a time. <b>Send to Unit</b> sends the preset that is open (preset ${bank.active + 1}) into the one open on the FoxWizard.</p>`}
+    <p><b>Load from Unit</b> shows what the FoxWizard holds. Your presets stay in this browser.</p>`;
+  return new Promise((resolve) => {
+    const done = () => { offeringBank = false; resolve(); };
+    openDialog('Presets Made Without a Unit', body, [
+      { label: 'Load from Unit', kind: 'ghost', onClick: async () => { clearBankPending(); await loadFromDevice(true); done(); } },
+      { label: 'Send to Unit', kind: 'primary', onClick: async () => { await sendBankToUnit(slots); done(); } }
+    ], { persistent: true });
+  });
+}
+
+async function sendBankToUnit(slots) {
+  let sent = false;
+  const bundle = bank.bundlePending && presetNamesShown() ? (bank.names[BUNDLE_NAME_INDEX] || '') : null; // null: nothing to send
+  try {
+    await refreshPresets();
+    await refreshNames();
+    if (!slots.length) {
+      if (bundle !== null) { setNameAt(BUNDLE_NAME_INDEX, bundle); sent = await syncPresetNames(); }
+    } else if (unitCanTakeAllPresets()) {
+      const entries = slots.map((s) => presetEntry(s, { ...parsePreset(bank.xml[s]), name: bank.names[s] || '' }, bank.xml[s]));
+      sent = await runUploadAll({ entries, highest: entries[entries.length - 1].slot, bundle });
+    } else {
+      markDirty();
+      sent = await saveToDevice();
+    }
+  } catch (err) {
+    toast(err.userMessage || 'Could not send the presets to the unit', 'error');
+  }
+  if (sent) clearBankPending(bundle !== null); // what stays pending is offered again the next time a unit connects
+  await loadFromDevice(true);
+}
 
 document.getElementById('loadFromDeviceBtn').addEventListener('click', () => loadFromDevice(false));
 
@@ -3122,6 +3893,7 @@ async function loadFromDevice(silent) {
       _uid: nextUid++, _collapsed: false, _ccMapEnabled: r.ccMapStart !== r.ccStart, name: '', ...r
     }));
     await refreshPresets();
+    if (!silent || unitNames === null) await refreshNames(); // names belong to no slot, so switching presets does not read them again
     renderGlobalCard();
     renderRoutes();
     clearDirty(); // freshly pulled from the device, so local state now matches it exactly
@@ -3146,6 +3918,9 @@ async function saveToDevice() {
     const saved = await device.saveAll(state.global, state.routes, { noteMap: state.noteMap, ccMap: state.ccMap, lpActions: state.lpActions, scale: state.scale, arps: state.arps, echo: state.echo, stutter: state.stutter, looper: state.looper, plock: state.plock }, (done, total) => setOverlayProgress(done, total));
     clearDirty();
     toast('Saved to device', 'success');
+    for (const [i, n] of namesAwaitSave) namesToSend.set(i, n); // a name that came with an uploaded preset is kept now that its preset is
+    namesAwaitSave.clear();
+    await syncPresetNames();
     if (saved?.rrOrderDropped) toast(`${saved.rrOrderDropped} Priority order${saved.rrOrderDropped > 1 ? 's' : ''} did not fit and play lowest channel first`, 'warn');
     refreshPresets().then(paintPresetRow).catch(() => {});
     return true;
@@ -3185,6 +3960,9 @@ if (!runningStandalone) {
 // ============================================================================================
 // Boot
 // ============================================================================================
+loadBank();
+state.presets = offlinePresets();
+if (bank.xml[bank.active]) showBankSlot(bank.active); // the preset that was open when this page was last used
 renderGlobalCard();
 renderRoutes();
 device.init();

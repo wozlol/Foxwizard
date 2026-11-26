@@ -1209,7 +1209,7 @@ case "slots":
     print("  Bluetooth devices connected: \(summary[5]), slots a new device could take: \(summary[4])")
     if flags & 32 != 0 { print("  The module says its Arduino Tools settings are wrong. Open its serial monitor.") }
   }
-  if flags & 1 != 0, summary.count >= 7 { print("  The module's USB port: \(summary[6] & 1 != 0 ? "a host port" : "a device port")\(summary[6] & 2 != 0 ? " (the host did not start, it fell back)" : "")") }
+  if flags & 1 != 0, summary.count >= 7 { print("  The module's USB port: \(summary[6] & 1 != 0 ? "a USB MIDI host" : "a USB MIDI device")\(summary[6] & 2 != 0 ? " (the host did not start, it fell back)" : ""), Bluetooth radio \(summary[6] & 4 != 0 ? "off" : "on")") }
   print("  slot list generation \(summary[3])")
   for i in 1...9 {
     guard let r = ask(link, 0x3B, [UInt8(i)], reply: 0x3C, timeout: 1.5), r.count >= 4 else { print("  slot \(i): no answer"); continue }
@@ -1229,7 +1229,8 @@ case "bleaction":
   if words.count >= 2, words[0] == "learn" { payload = [1, words[1] == "on" ? 1 : 0] }
   if words.count >= 2, words[0] == "forget", let n = UInt8(words[1]) { payload = [2, n] }
   if words.count >= 2, words[0] == "usb" { payload = [3, words[1] == "device" ? 1 : 0] } // the module's USB port, it restarts
-  guard let p = payload else { print("clock_check bleaction learn on|off   |   forget SLOT   |   usb host|device"); exit(2) }
+  if words.count >= 2, words[0] == "radio" { payload = [4, words[1] == "off" ? 1 : 0] } // the module's Bluetooth radio, it restarts
+  guard let p = payload else { print("clock_check bleaction learn on|off   |   forget SLOT   |   usb host|device   |   radio on|off"); exit(2) }
   let reply = ask(link, 0x3D, p, reply: 0x7E, timeout: 2.0)
   print(reply == nil ? "No answer" : (reply!.count > 1 && reply![1] == 0 ? "Done" : "The unit said no (status \(reply!.count > 1 ? Int(reply![1]) : -1))"))
   exit(0)
@@ -1272,6 +1273,7 @@ case "soak":
 case "update":
   // Flashes a firmware .bin over MIDI the way Patchling does: FW_BEGIN with the size and MD5, 128 byte chunks each confirmed by its checksum,
   // FW_END, which checks the MD5 of the whole file and restarts the unit into it. Nothing is installed if any step fails.
+  // --target host or --target bluetooth (protocol 9) sends the file through the unit to that module instead, which restarts into it.
   guard let (source, destination) = findEndpoints(matching: portName), let link = Link(source: source, destination: destination), let path = args.dropFirst().first, let file = FileManager.default.contents(atPath: path) else { print("clock_check update FILE.bin"); exit(2) }
   let md5Task = Process(); md5Task.executableURL = URL(fileURLWithPath: "/sbin/md5"); md5Task.arguments = ["-q", path]
   let md5Pipe = Pipe(); md5Task.standardOutput = md5Pipe
@@ -1280,8 +1282,14 @@ case "update":
   guard md5.count == 32 else { print("could not take the MD5 of the file"); exit(2) }
   let bytes = [UInt8](file)
   func sum7(_ b: [UInt8]) -> UInt8 { UInt8(b.reduce(0) { $0 + Int($1) } % 128) }
-  let begin: [UInt8] = [UInt8(bytes.count & 0x7F), UInt8((bytes.count >> 7) & 0x7F), UInt8((bytes.count >> 14) & 0x7F)] + Array(md5.utf8)
-  guard let b = ask(link, 0x40, begin, reply: 0x7E, timeout: 10.0), b.count > 2, b[1] == 0, b[2] == sum7(begin) else { print("the unit did not accept the start of the update"); exit(1) }
+  let targetName = option("--target") ?? "main"
+  guard let target = ["main": 0, "host": 1, "bluetooth": 2][targetName] else { print("--target is main, host or bluetooth"); exit(2) }
+  let begin: [UInt8] = [UInt8(bytes.count & 0x7F), UInt8((bytes.count >> 7) & 0x7F), UInt8((bytes.count >> 14) & 0x7F)] + Array(md5.utf8) + (target == 0 ? [] : [UInt8(target)])
+  let beginReply = ask(link, 0x40, begin, reply: 0x7E, timeout: 10.0)
+  guard let b = beginReply, b.count > 2, b[1] == 0, b[2] == sum7(begin) else {
+    let why = beginReply.map { " (status \($0.count > 1 ? Int($0[1]) : -1), reason code \($0.count > 4 ? Int($0[3]) | (Int($0[4]) << 7) : 0), 112 not there, 113 silent, 114 too old to update)" } ?? ""
+    print("the unit did not accept the start of the update" + why); exit(1)
+  }
   let chunks = (bytes.count + 127) / 128
   for i in 0..<chunks {
     let raw = Array(bytes[(i * 128)..<min(bytes.count, (i + 1) * 128)])

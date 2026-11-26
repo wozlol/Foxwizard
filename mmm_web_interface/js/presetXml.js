@@ -202,7 +202,7 @@ export function serializePreset(state) {
   const lines = [];
   lines.push('<?xml version="1.0" encoding="UTF-8"?>');
   lines.push(`<foxwizardPatchlingPreset version="1" device="FoxWizard Mini MIDI Multitool">`);
-  lines.push(`  <name>${esc(state.name || 'Untitled Preset')}</name>`);
+  lines.push(`  <name>${esc(state.name || '')}</name>`);
   lines.push(`  <mode>${MODE_NAMES[g.mode] || 'usbAdaptor'}</mode>`);
   lines.push(`  <ledBrightness>${g.ledBrightnessStep * 10}</ledBrightness>`);
   const clockPort = PORTS.find((p) => p.bit + 1 === g.clockSource);
@@ -301,7 +301,9 @@ export function parsePreset(xmlText) {
   const root = doc.querySelector('foxwizardPatchlingPreset');
   if (!root) throw new Error('Not a FoxWizard Patchling preset file');
 
-  const name = root.querySelector('name')?.textContent?.trim() || 'Untitled Preset';
+  // A file with no name, or the "Untitled Preset" that earlier versions wrote into every file, has no name.
+  const rawName = root.querySelector('name')?.textContent?.trim() || '';
+  const name = rawName === 'Untitled Preset' ? '' : rawName;
   const modeText = root.querySelector('mode')?.textContent?.trim() || 'usbAdaptor';
   const mode = Math.max(0, MODE_NAMES.indexOf(modeText));
   const ledPct = parseInt(root.querySelector('ledBrightness')?.textContent || '100', 10);

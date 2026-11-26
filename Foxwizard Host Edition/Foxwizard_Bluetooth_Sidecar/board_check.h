@@ -1,24 +1,9 @@
 #pragma once
 
 // Checks the Arduino Tools settings for the Bluetooth module, so a first flash with a wrong one stops with the setting to change
-// rather than a module that boots wrong. The build stops on a setting it can see. Flash size is not one of them, the compiler
-// cannot see it, so boardCheckRun() reads it from the chip when the module starts and the status light blinks red if it is wrong.
-//
-// Tools settings for the ESP32-S3 SuperMini and Waveshare ESP32-S3-Zero (both 4 MB flash, 2 MB quad PSRAM):
-//   Board                  ESP32S3 Dev Module
-//   USB CDC On Boot        Enabled
-//   USB Mode               Hardware CDC and JTAG
-//   Flash Size             4MB (32Mb)
-//   PSRAM                  Disabled (QSPI PSRAM also works, OPI PSRAM does not)
-//   Partition Scheme       Default 4MB with spiffs
-//   CPU Frequency          240MHz (WiFi)
-//   Core Debug Level       None
-// Libraries: NimBLE-Arduino 2.x.
-//
-// Tools settings for the Deluxe (ESP32-S3-WROOM-1-N16R8, FW_S3_MODULE set to FW_S3_DELUXE in board_config.h), the others as above:
-//   Flash Size             16MB (128Mb)
-//   PSRAM                  OPI PSRAM (Disabled also starts, it just leaves the 8 MB unused)
-//   Partition Scheme       16M Flash (3MB APP/9.9MB FATFS), two 3 MB app slots for updates and 9.9 MB for samples
+// rather than a module that boots wrong. The settings are listed at the top of the sketch. The build stops on a setting it can see.
+// Flash size is not one of them, the compiler cannot see it, so boardCheckRun() reads it from the chip when the module starts and the
+// status light blinks red if it is wrong.
 
 #include <Arduino.h>
 #include <esp_flash.h>
@@ -29,12 +14,12 @@
 #error Tools -> Board must be "ESP32S3 Dev Module" (the esp32 board package by Espressif).
 #endif
 
-#if !defined(ARDUINO_USB_CDC_ON_BOOT) || !ARDUINO_USB_CDC_ON_BOOT
-#error Tools -> USB CDC On Boot must be Enabled. Disabled puts Serial on GPIO43 and GPIO44, the wires to the main brain.
+#if !defined(ARDUINO_USB_MODE) || ARDUINO_USB_MODE
+#error Tools -> USB Mode must be "USB-OTG (TinyUSB)". The module's USB port is a USB MIDI host or device, which Hardware CDC and JTAG cannot be.
 #endif
 
-#if !defined(ARDUINO_USB_MODE) || !ARDUINO_USB_MODE
-#error Tools -> USB Mode must be "Hardware CDC and JTAG".
+#if defined(ARDUINO_USB_CDC_ON_BOOT) && ARDUINO_USB_CDC_ON_BOOT
+#error Tools -> USB CDC On Boot must be Disabled. Enabled makes the module a serial port on a computer as well as a MIDI device.
 #endif
 
 #if FW_S3_MODULE == FW_S3_DELUXE
@@ -48,7 +33,7 @@
 #endif
 
 #if F_CPU != 240000000L
-#warning Tools -> CPU Frequency should be 240MHz. The Bluetooth module was written for that.
+#error Tools -> CPU Frequency should be 240MHz. The Bluetooth module was written for that.
 #endif
 
 constexpr uint8_t BOARD_CHECK_OK = 0;

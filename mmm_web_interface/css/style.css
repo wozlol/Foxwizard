@@ -365,11 +365,13 @@ button.connection-pill.connecting { cursor: default; transform: none; }
    button text shows instead of the shortened mobile-only labels. */
 .label-short { display: none; }
 @media (max-width: 500px) {
-  .toolbar { display: flex; flex-direction: column; gap: 8px; }
-  .toolbar-group:first-of-type { display: grid; grid-template-columns: repeat(3, 1fr); gap: 8px; }
-  .toolbar-group:nth-of-type(2) { display: grid; grid-template-columns: repeat(2, 1fr); gap: 8px; }
+  .toolbar { display: flex; flex-direction: row; flex-wrap: nowrap; align-items: center; gap: 8px; }
+  .toolbar-group:first-of-type { display: flex; flex-wrap: nowrap; flex: 1 1 auto; min-width: 0; gap: 8px; }
+  .toolbar-group:nth-of-type(2) { display: flex; flex: 0 0 auto; }
   .toolbar-group:last-of-type { display: none; }
-  .toolbar .btn, .toolbar .file-btn, .toolbar .autosave-switch { width: 100%; justify-content: center; }
+  .toolbar .btn, .toolbar .file-btn { width: auto; justify-content: center; }
+  .toolbar-group:first-of-type .btn { flex: 1 1 0; min-width: 0; }
+  .toolbar .autosave-switch { width: auto; flex: 0 0 auto; margin-left: 0; justify-content: center; }
   .label-full { display: none; }
   .label-short { display: inline; }
 }
@@ -689,6 +691,11 @@ button.connection-pill.connecting { cursor: default; transform: none; }
 .dialog-warn { color: #fde68a; border: 1px solid rgba(245, 158, 11, 0.35); background: rgba(245, 158, 11, 0.08); border-radius: var(--radius-sm); padding: 9px 12px; }
 .dialog-actions { display: flex; justify-content: flex-end; flex-wrap: wrap; gap: 10px; margin-top: 18px; }
 .dialog-actions a.btn { text-decoration: none; }
+.presets-section { margin-bottom: 18px; }
+.presets-section:last-child { margin-bottom: 0; }
+.presets-heading { font-family: 'Russo One', sans-serif; font-size: 0.95rem; margin: 0 0 8px; }
+.presets-buttons { display: flex; flex-wrap: wrap; gap: 10px; }
+.presets-section .note-hint { margin-top: 8px; }
 
 /* ---------------------------------------------------------------------------------------------
    Staple toggle — reused as each route's enable/disable control. Bending shut = "stapling" the
@@ -1163,5 +1170,19 @@ body.dragging-active { overflow: hidden; }
 .ble-device-gone { opacity: 0.6; }
 .ble-dot { width: 8px; height: 8px; border-radius: 50%; background: #475569; }
 .ble-dot-on { background: var(--green, #22c55e); box-shadow: 0 0 6px rgba(34, 197, 94, 0.8); }
-.ble-usb { display: inline-flex; align-items: center; gap: 6px; margin-left: auto; font-size: 0.8rem; color: var(--muted, #94a3b8); }
+.ble-switches { display: inline-flex; flex-wrap: wrap; align-items: center; gap: 6px 16px; margin-left: auto; }
+.ble-usb { display: inline-flex; align-items: center; gap: 6px; font-size: 0.8rem; color: var(--muted, #94a3b8); }
 .ble-usb select { font-size: 0.8rem; }
+
+/* Preset names and the bundle name */
+.preset-name-input { flex: 1 1 180px; min-width: 150px; max-width: 320px; margin-left: 6px; }
+.presets-name-field { display: flex; flex-direction: column; gap: 4px; margin: 0 0 10px; font-size: 0.8rem; color: var(--text-dim); }
+.presets-name-field input { width: 100%; }
+
+/* Phone width: the Preset label on its own line, the slot buttons in an even grid of 8, the name box the full width with its left edge in line with the rest of the card. */
+@media (max-width: 640px) {
+  .preset-row { display: grid; grid-template-columns: repeat(8, 1fr); gap: 6px; }
+  .preset-row-label { grid-column: 1 / -1; margin: 0 0 2px; }
+  .preset-slot { min-width: 0; padding: 8px 0; }
+  .preset-name-input { grid-column: 1 / -1; width: 100%; max-width: none; min-width: 0; margin: 4px 0 0; box-sizing: border-box; }
+}

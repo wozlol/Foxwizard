@@ -1,7 +1,26 @@
 {
   "major": 2,
-  "minor": 1,
-  "bin": "foxwizard-firmware-2.1.bin",
-  "size": 230252,
-  "md5": "f9dfa54712ebcc4cb33dfe816a5937d5"
+  "minor": 8,
+  "bin": "foxwizard-firmware-2.8.bin",
+  "size": 241100,
+  "md5": "ade8d745afb7dd3526c372bb9d4260af",
+  "host": {
+    "version": 11,
+    "bin": "foxwizard-host-11.bin",
+    "size": 131844,
+    "md5": "9f648169372ff23450baa9a5c68c717f"
+  },
+  "bluetooth": {
+    "version": 13,
+    "bin": "foxwizard-bluetooth-13.bin",
+    "size": 721952,
+    "md5": "fdc038cadbf98c20f67fb0ebb54e8f7a"
+  },
+  "previous": {
+    "major": 2,
+    "minor": 1,
+    "bin": "foxwizard-firmware-2.1.bin",
+    "size": 230252,
+    "md5": "f9dfa54712ebcc4cb33dfe816a5937d5"
+  }
 }

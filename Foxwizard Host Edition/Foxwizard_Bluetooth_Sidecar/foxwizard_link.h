@@ -39,7 +39,7 @@ constexpr uint8_t CONTROL_HOST_REPORT = 5; // host -> main. byte 1 = index, 2-3 
 // Slots shared by USB Host and BLE Host (host firmware 9, Bluetooth module 1, main 2.2).
 constexpr uint8_t CONTROL_SLOT_RESERVE = 7;  // main -> host: byte 1 = USB Host slots held for a Bluetooth device, slot n is bit n-1. host -> main: the ones it is keeping free
 constexpr uint8_t CONTROL_DEVICE_NAME = 8;   // host or Bluetooth module -> main: byte 1 = chunk << 4 | slot or handle, 2-3 = two name characters, 0 ends it
-constexpr uint8_t CONTROL_BLE_STATUS = 9;    // Bluetooth module -> main: byte 1 = bit 0 BLE Device connected, 1 learning, 2 scanning, 3 peripheral window, 4 USB port is a host port, 5 USB host fell back to service, 2 = devices connected on its handles, 3 = board check (0 fine)
+constexpr uint8_t CONTROL_BLE_STATUS = 9;    // Bluetooth module -> main: byte 1 = bit 0 BLE Device connected, 1 learning, 2 scanning, 3 peripheral window, 4 USB port is a host port, 5 unused, the port never changes role by itself, 6 Bluetooth radio is off, 2 = devices connected on its handles, 3 = board check (0 fine)
 constexpr uint8_t CONTROL_BLE_ADDRESS = 10;  // Bluetooth module -> main: byte 1 = part << 4 | handle, 2-3 = two address bytes, parts 0-2. Part 3: byte 2 = MODULE_KIND_*. A USB device's "address" is its vendor id, product id and a hash of its serial number
 constexpr uint8_t CONTROL_BLE_KNOWN = 11;    // main -> Bluetooth module: byte 1 = part << 4 | slot, 2-3 = two address bytes, parts 0-2. All zero clears the slot
 constexpr uint8_t CONTROL_BLE_COMMAND = 12;  // main -> Bluetooth module: byte 1 = BLE_CMD_*, byte 2 = its value
@@ -49,11 +49,35 @@ constexpr uint8_t BLE_CMD_LEARN = 1;         // value 1 starts learning (scan, c
 constexpr uint8_t BLE_CMD_ALLOW = 2;         // value = devices (Bluetooth or USB) it may have connected at once, 0 to 8
 constexpr uint8_t BLE_CMD_DISCONNECT = 3;    // value = handle
 constexpr uint8_t BLE_CMD_FORGET = 4;        // value = handle, disconnects it and removes the Bluetooth bond
-constexpr uint8_t BLE_CMD_USB_ROLE = 5;      // value 0 the module's USB port is a host port, 1 a service port (serial and flashing). Saved, then the module restarts
+constexpr uint8_t BLE_CMD_USB_ROLE = 5;      // value 0 the module's USB port is a USB MIDI host, 1 a USB MIDI device. Saved, then the module restarts
+constexpr uint8_t BLE_CMD_RADIO = 6;         // value 0 the Bluetooth radio is on, 1 it is off. Saved, then the module restarts. USB devices on the module carry on
+constexpr uint8_t BLE_CMD_FACTORY = 7;       // the main brain was factory reset: forget every Bluetooth device and bond, the USB port is a host, the radio is on, as a new unit. Saved, then the module restarts
 constexpr uint8_t MODULE_KIND_USB = 1;       // what a handle on the module is: a USB MIDI device on its USB host port
 constexpr uint8_t MODULE_KIND_BLE = 2;       // or a Bluetooth MIDI device
 constexpr uint8_t NAME_CHARS = 24;
 constexpr uint8_t NAME_CHUNKS = NAME_CHARS / 2;
+
+// Relayed firmware update (main 2.3, host brain 10, Bluetooth module 2). Patchling sends the image to the main brain as it always has,
+// and the main brain passes each piece to the chosen module as a block: a head frame, the bytes three to a frame, and a tail frame with
+// a CRC-16. The module checks the block, acts on it and answers with a reply frame, and the main brain sends the next block only then.
+// So nothing is in flight while the module writes flash, and a block that arrives damaged is sent again. The module's own MD5 check at
+// the end covers the whole image. Byte 0 of an update frame is CONTROL_UPDATE in the low nibble and the op in the high nibble.
+constexpr uint8_t CONTROL_UPDATE = 14;
+constexpr uint8_t UPD_HEAD = 1;     // main -> module: byte 1 = UPD_CMD_*, 2 = block length
+constexpr uint8_t UPD_BYTES = 2;    // main -> module: three bytes of the block, the last frame padded with zeros
+constexpr uint8_t UPD_TAIL = 3;     // main -> module: bytes 1-2 = CRC-16 (high first) of the command, length and block, 3 = UPD_CMD_*
+constexpr uint8_t UPD_REPLY = 4;    // module -> main: byte 1 = UPD_CMD_*, 2 = UPD_* status, 3 = see the statuses
+constexpr uint8_t UPD_CMD_BEGIN = 1; // block: image size (3 bytes, high first), MD5 (16 bytes). Starts an update, dropping any half-sent one
+constexpr uint8_t UPD_CMD_DATA = 2;  // block: chunk number (2 bytes, high first), then up to 128 bytes of the image
+constexpr uint8_t UPD_CMD_END = 3;   // no block: checks the size and MD5, stages the image and restarts the module
+constexpr uint8_t UPD_OK = 0;        // reply byte 3 = for DATA the chunk number's low byte, else 0
+constexpr uint8_t UPD_BAD_BLOCK = 1; // the block arrived damaged or short, send it again
+constexpr uint8_t UPD_BAD_INDEX = 2; // a chunk other than the next one, byte 3 = the chunk it wants, low byte
+constexpr uint8_t UPD_NOT_READY = 3; // no update was begun
+constexpr uint8_t UPD_ERROR = 4;     // the module's updater refused, byte 3 = its error code
+constexpr uint8_t UPD_BLOCK_MAX = 132;
+constexpr uint8_t UPD_CHUNK_BYTES = 128;
+constexpr uint32_t UPD_SILENCE_MS = 15000; // a module with an update open and nothing heard this long gives it up
 
 // The host report (host fw 3): what the host brain knew when it last restarted, sent a few times
 // after a recovery restart. Multi-byte values are little-endian.
@@ -131,6 +155,77 @@ inline uint8_t decodeLinkFrame(const LinkFrame &f, uint8_t pkt[4]) {
   pkt[0] = (uint8_t)(word >> 24); pkt[1] = (uint8_t)(word >> 16); pkt[2] = (uint8_t)(word >> 8); pkt[3] = (uint8_t)word;
   return port;
 }
+
+inline uint16_t updCrc16(const uint8_t *p, uint16_t n, uint16_t crc = 0xFFFF) {
+  for (uint16_t i = 0; i < n; ++i) {
+    crc ^= (uint16_t)p[i] << 8;
+    for (uint8_t b = 0; b < 8; ++b) crc = (crc & 0x8000) ? (uint16_t)((crc << 1) ^ 0x1021) : (uint16_t)(crc << 1);
+  }
+  return crc;
+}
+
+inline void updControl(uint8_t op, uint8_t d1, uint8_t d2, uint8_t d3, uint8_t pkt[4]) {
+  pkt[0] = (uint8_t)(CONTROL_UPDATE | (op << 4));
+  pkt[1] = d1; pkt[2] = d2; pkt[3] = d3;
+}
+
+struct UpdBlock {
+  uint8_t cmd = 0;
+  uint8_t len = 0;
+  uint8_t data[UPD_BLOCK_MAX];
+
+  uint16_t crc() const {
+    const uint8_t head[2] = {cmd, len};
+    return updCrc16(data, len, updCrc16(head, 2));
+  }
+  uint8_t frames() const { return (uint8_t)(2 + (len + 2) / 3); }
+  // Frame i of the block: 0 is the head, the last is the tail, the ones between carry the bytes.
+  void frame(uint8_t i, LinkFrame &f) const {
+    uint8_t pkt[4];
+    const uint8_t last = (uint8_t)(frames() - 1);
+    if (i == 0) {
+      updControl(UPD_HEAD, cmd, len, 0, pkt);
+    } else if (i == last) {
+      const uint16_t c = crc();
+      updControl(UPD_TAIL, (uint8_t)(c >> 8), (uint8_t)c, cmd, pkt);
+    } else {
+      const uint8_t at = (uint8_t)((i - 1) * 3);
+      updControl(UPD_BYTES, at < len ? data[at] : 0, at + 1 < len ? data[at + 1] : 0, at + 2 < len ? data[at + 2] : 0, pkt);
+    }
+    encodeLinkFrame(LINK_PORT_CONTROL, pkt, f);
+  }
+};
+
+// The module's end: feed it each update frame, it says when a block is whole (DONE, block holds it) or arrived damaged (BAD, block.cmd
+// is the command, 0 if the head was lost).
+struct UpdBlockReader {
+  enum Result : uint8_t { NONE, DONE, BAD };
+  UpdBlock block;
+  uint8_t got = 0;
+  bool open = false;
+
+  Result feed(const uint8_t pkt[4]) {
+    const uint8_t op = pkt[0] >> 4;
+    if (op == UPD_HEAD) {
+      block.cmd = pkt[1];
+      block.len = pkt[2];
+      got = 0;
+      open = block.len <= UPD_BLOCK_MAX;
+      return open ? NONE : BAD;
+    }
+    if (op == UPD_BYTES) {
+      for (uint8_t i = 1; i <= 3 && open && got < block.len; ++i) block.data[got++] = pkt[i];
+      return NONE;
+    }
+    if (op == UPD_TAIL) {
+      const bool whole = open && got == block.len && block.cmd == pkt[3] && block.crc() == (uint16_t)(((uint16_t)pkt[1] << 8) | pkt[2]);
+      if (!whole) block.cmd = pkt[3];
+      open = false;
+      return whole ? DONE : BAD;
+    }
+    return NONE;
+  }
+};
 
 // Clock, Start, Continue, Stop, Active Sensing, Reset. These skip every normal queue.
 inline bool isRealtimeWord(uint32_t w) { return (w >> 28) == 0x1 && ((w >> 16) & 0xFF) >= 0xF8; }

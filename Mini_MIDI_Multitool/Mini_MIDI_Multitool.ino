@@ -1,4 +1,14 @@
 /*
+  ARDUINO TOOLS SETTINGS, set these right before uploading. The build stops with the one to change if it can see a wrong one.
+  Board package: Raspberry Pi Pico/RP2040 (arduino-pico) 5.x. Library: Adafruit TinyUSB Library.
+    Board          Waveshare RP2040 Zero
+    Flash Size     2MB (Sketch: 1MB, FS: 1MB)
+    USB Stack      Adafruit TinyUSB
+    CPU Speed      200 MHz (the default)
+  Putting the board in upload mode: short the two FIRMWARE pads, plug in USB, let go of the short, and upload (or drag the .uf2 onto the
+  RPI-RP2 drive).
+*/
+/*
   Mini_MIDI_Multitool.ino by woz.lol
   FoxWizard Mini MIDI Multitool firmware, for every FoxWizard. On a Host Edition it also runs a serial
   link to the host brain (../Foxwizard Host Edition/Foxwizard_Host_Edition_Sidecar), which adds a USB
@@ -31,8 +41,8 @@
   - GP3 = USB activity light
   - GP4 = IN activity light
   - GP5 = front button, active LOW with INPUT_PULLUP
-  - GP29 = host link TX to host brain GP29 (PIO serial), the same pad number on both boards (2.2, before that GP26 and GP27)
-  - GP28 = host link RX from host brain GP28 (PIO serial)
+  - GP27 = host link TX to host brain GP29 (PIO serial, 2.5, in 2.2 to 2.4 it was GP29 and GP28)
+  - GP26 = host link RX from host brain GP28 (PIO serial)
 
   Arduino setup:
   - Board: Waveshare RP2040-Zero
@@ -65,6 +75,7 @@
 #include "src/swing.h"
 #include "src/usb_coalesce.h"
 #include "src/ble_slots.h"
+#include "src/fw_relay.h"
 #include "hardware/watchdog.h"
 
 // ============================================================================================
@@ -81,8 +92,8 @@ constexpr uint8_t PIN_LED_USB = 3;
 constexpr uint8_t PIN_LED_IN = 4;
 constexpr uint8_t PIN_BUTTON = 5;
 constexpr uint32_t DIN_BAUD = 31250;
-constexpr uint8_t PIN_LINK_TX = 29; // pad 29 on this board to pad 29 on the host module, and 28 to 28 (2.2, it was 26 and 27 to 29 and 28)
-constexpr uint8_t PIN_LINK_RX = 28;
+constexpr uint8_t PIN_LINK_TX = 27; // GP27 to host module GP29, and host module GP28 to GP26 (2.5, in 2.2 to 2.4 it was 29 to 29 and 28 to 28)
+constexpr uint8_t PIN_LINK_RX = 26;
 constexpr uint8_t PIN_S3_TX = 14;               // to the Bluetooth module (ESP32-S3) RX, GPIO44. Also the USB host module's SWCLK pad
 constexpr uint8_t PIN_S3_RX = 15;               // from its TX, GPIO43. Also the USB host module's SWDIO pad
 constexpr size_t S3_RX_BUFFER = 1024;
@@ -106,11 +117,11 @@ constexpr uint32_t BRIGHTNESS_PREVIEW_HOLD_MS = 400;
 
 constexpr uint8_t SYSEX_MFR_ID = 0x7D;   // reserved for non-commercial/educational use
 constexpr uint8_t SYSEX_DEVICE_ID = 0x4D; // 'M'
-constexpr uint8_t PROTOCOL_VERSION = 8; // 2: 45-byte routes with port masks, GET_STATUS. 3: clock settings, LEARN. 4: 53-byte routes with feature fields, feature blocks. 5: presets. 6: Round Robin Priority order block. 7: Round Robin Velocity. 8: Bluetooth slots and device names
+constexpr uint8_t PROTOCOL_VERSION = 12; // 2: 45-byte routes with port masks, GET_STATUS. 3: clock settings, LEARN. 4: 53-byte routes with feature fields, feature blocks. 5: presets. 6: Round Robin Priority order block. 7: Round Robin Velocity. 8: Bluetooth slots and device names. 9: module updates, FW_BEGIN takes a target byte. 10: Bluetooth radio switch. 11: read and write another slot's saved image. 12: preset names and the bundle name
 // Both go out as single bytes in the identity reply, a SysEx data byte, so neither may pass 127. 1.128 did: the byte went out as 0x80, a Note Off
 // status that cut the reply in two, and Patchling called the unit old firmware. The major number moved to 2 for that reason.
 constexpr uint8_t FW_VERSION_MAJOR = 2;
-constexpr uint8_t FW_VERSION_MINOR = 2;
+constexpr uint8_t FW_VERSION_MINOR = 8;
 static_assert(FW_VERSION_MAJOR <= 127 && FW_VERSION_MINOR <= 127, "a firmware version number goes out as a 7-bit SysEx data byte, 127 at most");
 constexpr uint8_t FW_CHUNK_BYTES = 128;          // firmware bytes per FW_DATA message, 147 once packed
 constexpr uint32_t FW_REBOOT_DELAY_MS = 300;     // lets the FW_END ACK reach the host before rebooting
@@ -158,12 +169,18 @@ enum SysexCmd : uint8_t {
   CMD_SELECT_PRESET = 0x3A, // payload: the slot, 0-15. Silences everything, loads it, acknowledged once it is live
   CMD_GET_SLOTS = 0x3B, // 2.2: payload 0 for the summary, 1-8 for a host slot, 9 for BLE Device
   CMD_SLOT_DATA = 0x3C, // the index, then that record
-  CMD_BLE_ACTION = 0x3D, // 2.2: payload action, value. 1 learning on or off, 2 forget a slot, 3 the module's USB port (0 host, 1 device)
+  CMD_GET_PRESET_IMAGE = 0x3E, // 2.7: payload slot, offset (2 bytes). Another slot's saved image, 64 bytes at a time, without switching to it
+  CMD_PRESET_IMAGE = 0x3F, // slot, offset (2), the image's size (2), then pack7 of up to 64 bytes from that offset
+  CMD_BLE_ACTION = 0x3D, // 2.2: payload action, value. 1 learning on or off, 2 forget a slot, 3 the module's USB port (0 USB MIDI host, 1 USB MIDI device), 4 the module's Bluetooth radio (0 on, 1 off)
   CMD_COMMIT = 0x31,
   CMD_FACTORY_RESET = 0x32,
   CMD_FW_BEGIN = 0x40,
   CMD_FW_DATA = 0x41,
   CMD_FW_END = 0x42,
+  CMD_PUT_PRESET_IMAGE = 0x43, // 2.7: payload slot, step. Step 0 begins with the image's size (2 bytes), step 1 sends offset (2 bytes) then pack7 of up to 64 bytes, step 2 ends
+  CMD_GET_PRESET_NAMES = 0x44, // 2.8: payload page 0-4. Four names to a page, answered with CMD_PRESET_NAMES
+  CMD_PRESET_NAMES = 0x45, // page, then four names of 24 ASCII characters each, zero-padded. Names 0-15 are the presets, 16 is the bundle
+  CMD_SET_PRESET_NAMES = 0x46, // 2.8: payload page, then the page's four names. Acknowledged once the names file is written
 #ifdef FW_DIAG
   CMD_DIAG_STACK_DIVE = 0x7C, // test builds only: really uses the stack, payload the number of frames (64 bytes each)
 #endif
@@ -412,7 +429,7 @@ uint32_t lastS3FlowSentMs = 0;
 uint32_t s3LastStatusMs = 0;
 uint8_t s3FwVersion = 0;
 uint8_t s3Mask = 0;      // BLE Host handles connected, handle h is bit h-1
-uint8_t s3Flags = 0;     // bit 0 BLE Device connected, 1 learning, 2 scanning, 3 peripheral window
+uint8_t s3Flags = 0;     // bit 0 BLE Device connected (Bluetooth or its USB device port), 1 learning, 2 scanning, 3 peripheral window, 4 USB host, 5 unused, 6 radio off
 uint8_t s3Hosts = 0;
 uint8_t s3BoardCheck = 0;
 bool s3WasPresent = false;
@@ -870,6 +887,14 @@ uint16_t fwNextChunk = 0;
 uint8_t fwLastChecksum = 0;
 bool fwRebootPending = false;
 uint32_t fwRebootAtMs = 0;
+// A relayed module update (2.3): FW_BEGIN with a target byte sends the image to a module instead of this unit. The main brain
+// passes each piece over the module's link and answers Patchling when the module has answered it, see src/fw_relay.h.
+constexpr uint8_t UPDATE_HOST_MIN = 10; // the first firmware of each module that takes a relayed update
+constexpr uint8_t UPDATE_BLE_MIN = 2;
+constexpr uint32_t FW_RELAY_QUIET_MS = 20000; // MIDI to the module being updated stays off this long after the last piece
+fw::relay::Relay fwRelay;
+uint8_t fwTarget = fw::relay::TARGET_MAIN; // where the update in progress is going
+uint32_t fwRelayLastMs = 0;
 uint8_t replyLen;
 
 bool lastButtonReading = HIGH;
@@ -1867,10 +1892,13 @@ void resetLinkConversion() {
   for (uint8_t i = 0; i < LINK_PORT_COUNT; ++i) { linkUp[i].reset(); linkDown[i].reset(); }
 }
 
+// True while the module is being updated: no MIDI goes to it, so nothing arrives during its flash writes.
+bool fwRelayQuiet(uint8_t target) { return fwTarget == target && millis() - fwRelayLastMs < FW_RELAY_QUIET_MS; }
+
 // pkt is a USB MIDI 1.0 packet for a host port, or a control frame's 4 bytes.
 void linkSend(uint8_t port, const uint8_t pkt[4]) {
   if (port >= S3_VPORT) { s3Send((uint8_t)(port - S3_VPORT), pkt); return; } // the Bluetooth module's link
-  if (port != LINK_PORT_CONTROL && !hostPresent()) return;
+  if (port != LINK_PORT_CONTROL && (!hostPresent() || fwRelayQuiet(fw::relay::TARGET_HOST))) return;
   if (port == LINK_PORT_CONTROL) {
     LinkFrame f;
     encodeLinkFrame(port, pkt, f);
@@ -4168,6 +4196,19 @@ constexpr uint32_t PRESET_DEVICE_QUIET_MS = 2000;
 const char *const PRESET_DEVICE_FILE = "/device.fw";
 const char *const PRESET_TMP_FILE = "/preset.tmp";
 
+// Preset names and the bundle name (2.8, protocol 12). Names live in their own small file, not in the settings image, which has
+// no room to spare. They are only labels for Patchling: nothing on the unit reads them. Names 0-15 belong to the slots, name 16
+// is the bundle's. Patchling reads and writes four at a time. Names are printable ASCII, zero-padded, like a route's name.
+constexpr uint8_t PRESET_NAME_LEN = 24;
+constexpr uint8_t PRESET_NAME_COUNT = PRESET_SLOTS_MAX + 1;
+constexpr uint8_t PRESET_NAMES_PER_PAGE = 4;
+constexpr uint8_t PRESET_NAME_PAGES = (PRESET_NAME_COUNT + PRESET_NAMES_PER_PAGE - 1) / PRESET_NAMES_PER_PAGE;
+const char *const PRESET_NAMES_FILE = "/names.fw";
+uint8_t presetNames[PRESET_NAME_PAGES * PRESET_NAMES_PER_PAGE][PRESET_NAME_LEN]; // the last three are never used and stay zero
+bool presetNamesWritePending = false;
+uint8_t presetNamesWritePort = 0;
+uint8_t presetNamesWritePage = 0;
+
 void resetButtonRuntimeState(); // defined with the front button, further down
 
 void presetPath(uint8_t slot, char *out) {
@@ -4214,7 +4255,19 @@ bool presetWriteDevice() {
   return ok;
 }
 
-// Every preset file and the device file go, the unit has one slot again. A factory reset.
+// The names table into its file, replacing the old one in one step.
+bool presetNamesWrite() {
+  if (!loopFsReady) return false;
+  File file = LittleFS.open(PRESET_TMP_FILE, "w");
+  if (!file) return false;
+  bool ok = file.write((const uint8_t *)"FPNM", 4) == 4 && file.write(&presetNames[0][0], sizeof(presetNames)) == sizeof(presetNames);
+  file.close();
+  ok = ok && LittleFS.rename(PRESET_TMP_FILE, PRESET_NAMES_FILE);
+  if (!ok) LittleFS.remove(PRESET_TMP_FILE);
+  return ok;
+}
+
+// Every preset file, the device file and the names go, the unit has one slot again. A factory reset.
 void presetWipe() {
   if (loopFsReady) {
     char path[16];
@@ -4223,7 +4276,10 @@ void presetWipe() {
       if (LittleFS.exists(path)) LittleFS.remove(path);
     }
     if (LittleFS.exists(PRESET_DEVICE_FILE)) LittleFS.remove(PRESET_DEVICE_FILE);
+    if (LittleFS.exists(PRESET_NAMES_FILE)) LittleFS.remove(PRESET_NAMES_FILE);
   }
+  memset(presetNames, 0, sizeof(presetNames));
+  presetNamesWritePending = false;
   presetSlots = 1;
   presetActive = 0;
   presetFileMask = 0;
@@ -4334,6 +4390,183 @@ void servicePresets() {
   }
 }
 
+// ============================================================================================
+// Another slot's saved image (2.7, protocol 11). Patchling reads and writes the files of the slots that are not live, 64 bytes
+// at a time, so Download All and Upload All never switch the unit. The file work waits for the top of the main loop, like a
+// slot change, because flash and the filesystem are the deepest chain of calls the firmware has. The live slot is never written
+// this way, Patchling saves it as always. An upload goes into its own temporary file and replaces the slot's file in one step at
+// the end, so an upload that stops halfway leaves the slot as it was.
+// ============================================================================================
+constexpr uint8_t PRESET_IMAGE_CHUNK = 64;
+constexpr uint32_t PRESET_UPLOAD_IDLE_MS = 10000; // an upload with nothing heard for this long is dropped
+const char *const PRESET_UPLOAD_FILE = "/upload.tmp";
+enum : uint8_t { PIMG_NONE = 0, PIMG_READ, PIMG_BEGIN, PIMG_DATA, PIMG_END };
+
+struct PresetImageJob {
+  uint8_t kind;
+  uint8_t slot;
+  uint8_t port;
+  uint8_t len;
+  uint16_t offset; // read and data: where in the image. begin: the whole image's size
+  uint8_t data[PRESET_IMAGE_CHUNK];
+};
+PresetImageJob presetImageJob = {};
+File presetUploadFile;
+bool presetUploadOpen = false;
+uint8_t presetUploadSlot = 0;
+uint16_t presetUploadSize = 0, presetUploadNext = 0, presetUploadLastOffset = 0;
+uint8_t presetUploadLastLen = 0, presetUploadLastSum = 0;
+uint8_t presetUploadMagic[4] = {0, 0, 0, 0};
+uint32_t presetUploadMs = 0;
+
+void presetUploadDrop() {
+  if (presetUploadOpen) { presetUploadFile.close(); presetUploadOpen = false; }
+  if (loopFsReady && LittleFS.exists(PRESET_UPLOAD_FILE)) LittleFS.remove(PRESET_UPLOAD_FILE);
+}
+
+void servicePresetImage() {
+  if (presetUploadOpen && presetImageJob.kind == PIMG_NONE && millis() - presetUploadMs > PRESET_UPLOAD_IDLE_MS) {
+    rp2040.wdt_reset();
+    pauseHostForFlash();
+    presetUploadDrop();
+    resumeHostAfterFlash();
+  }
+  if (presetImageJob.kind == PIMG_NONE) return;
+  const PresetImageJob job = presetImageJob;
+  presetImageJob.kind = PIMG_NONE;
+  rp2040.wdt_reset();
+  switch (job.kind) {
+    case PIMG_READ: {
+      File file;
+      if (loopFsReady && (presetFileMask & (1u << job.slot))) {
+        char path[16];
+        presetPath(job.slot, path);
+        file = LittleFS.open(path, "r");
+      }
+      if (!file) { sendAck(job.port, CMD_GET_PRESET_IMAGE, ACK_ERR_BAD_INDEX, 0, 0); break; } // nothing saved in that slot
+      const uint32_t size = file.size();
+      uint8_t raw[PRESET_IMAGE_CHUNK];
+      uint8_t n = 0;
+      if (job.offset < size && file.seek(job.offset)) {
+        const size_t want = min((size_t)PRESET_IMAGE_CHUNK, (size_t)(size - job.offset));
+        n = (uint8_t)file.read(raw, want);
+      }
+      file.close();
+      uint8_t packed[96];
+      const uint8_t packedLen = pack7(raw, n, packed);
+      beginReply(CMD_PRESET_IMAGE);
+      appendReply(job.slot);
+      appendReply(job.offset & 0x7F);
+      appendReply((job.offset >> 7) & 0x7F);
+      appendReply(size & 0x7F);
+      appendReply((size >> 7) & 0x7F);
+      for (uint8_t i = 0; i < packedLen; ++i) appendReply(packed[i]);
+      sendReply(job.port);
+      break;
+    }
+    case PIMG_BEGIN: {
+      if (!loopFsReady) { sendAck(job.port, CMD_PUT_PRESET_IMAGE, ACK_ERR_FULL, 0, 0); break; }
+      if (job.slot == presetActive) { sendAck(job.port, CMD_PUT_PRESET_IMAGE, ACK_ERR_BAD_INDEX, 0, 0); break; } // the live slot is saved the usual way
+      if (job.offset < 8 || job.offset > EEPROM_SIZE) { sendAck(job.port, CMD_PUT_PRESET_IMAGE, ACK_ERR_BAD_DATA, 0, 0); break; }
+      pauseHostForFlash();
+      presetUploadDrop();
+      presetUploadFile = LittleFS.open(PRESET_UPLOAD_FILE, "w");
+      presetUploadOpen = (bool)presetUploadFile;
+      resumeHostAfterFlash();
+      if (!presetUploadOpen) { sendAck(job.port, CMD_PUT_PRESET_IMAGE, ACK_ERR_FULL, 0, 0); break; }
+      presetUploadSlot = job.slot;
+      presetUploadSize = job.offset;
+      presetUploadNext = 0;
+      presetUploadLastLen = 0;
+      presetUploadMs = millis();
+      sendAck(job.port, CMD_PUT_PRESET_IMAGE, ACK_OK, 0, presetUploadSize);
+      break;
+    }
+    case PIMG_DATA: {
+      if (!presetUploadOpen || job.slot != presetUploadSlot || job.len == 0) { sendAck(job.port, CMD_PUT_PRESET_IMAGE, ACK_ERR_BAD_INDEX, 0, 0); break; }
+      const uint8_t sum = checksum7(job.data, job.len);
+      if (presetUploadLastLen && job.offset == presetUploadLastOffset && job.len == presetUploadLastLen) { // its ack was lost, the same chunk again
+        sendAck(job.port, CMD_PUT_PRESET_IMAGE, ACK_OK, presetUploadLastSum, presetUploadNext);
+        break;
+      }
+      if (job.offset != presetUploadNext || (uint32_t)job.offset + job.len > presetUploadSize || (job.offset == 0 && job.len < 4)) {
+        sendAck(job.port, CMD_PUT_PRESET_IMAGE, ACK_ERR_BAD_INDEX, 0, presetUploadNext);
+        break;
+      }
+      pauseHostForFlash();
+      const bool ok = presetUploadFile.write(job.data, job.len) == job.len;
+      if (!ok) presetUploadDrop();
+      resumeHostAfterFlash();
+      if (!ok) { sendAck(job.port, CMD_PUT_PRESET_IMAGE, ACK_ERR_FULL, 0, 0); break; }
+      if (job.offset == 0) memcpy(presetUploadMagic, job.data, 4);
+      presetUploadLastOffset = job.offset;
+      presetUploadLastLen = job.len;
+      presetUploadLastSum = sum;
+      presetUploadNext += job.len;
+      presetUploadMs = millis();
+      sendAck(job.port, CMD_PUT_PRESET_IMAGE, ACK_OK, sum, presetUploadNext);
+      break;
+    }
+    case PIMG_END: {
+      const bool whole = presetUploadOpen && job.slot == presetUploadSlot && presetUploadNext == presetUploadSize;
+      uint32_t magic = 0;
+      memcpy(&magic, presetUploadMagic, sizeof(magic)); // stored little-endian, like the image in the EEPROM
+      const bool known = magic == EEPROM_MAGIC_V2 || magic == EEPROM_MAGIC_V1;
+      if (!whole || !known || job.slot == presetActive) {
+        pauseHostForFlash();
+        presetUploadDrop();
+        resumeHostAfterFlash();
+        sendAck(job.port, CMD_PUT_PRESET_IMAGE, whole && !known ? ACK_ERR_BAD_DATA : ACK_ERR_BAD_INDEX, 0, 0);
+        break;
+      }
+      char path[16];
+      presetPath(job.slot, path);
+      pauseHostForFlash();
+      presetUploadFile.close();
+      presetUploadOpen = false;
+      const bool ok = LittleFS.rename(PRESET_UPLOAD_FILE, path); // replaces the slot's file in one step
+      if (ok) presetFileMask |= (uint16_t)(1u << job.slot);
+      else LittleFS.remove(PRESET_UPLOAD_FILE);
+      resumeHostAfterFlash();
+      sendAck(job.port, CMD_PUT_PRESET_IMAGE, ok ? ACK_OK : ACK_ERR_FULL, 0, job.slot);
+      break;
+    }
+    default:
+      break;
+  }
+}
+
+// The names file into the table at power on. A file that is not ours, or the wrong size, leaves every name empty.
+void presetNamesLoad() {
+  memset(presetNames, 0, sizeof(presetNames));
+  if (!loopFsReady) return;
+  File file = LittleFS.open(PRESET_NAMES_FILE, "r");
+  if (!file) return;
+  uint8_t magic[4] = {0};
+  if (file.size() == 4 + sizeof(presetNames) && file.read(magic, 4) == 4 && memcmp(magic, "FPNM", 4) == 0) {
+    if (file.read(&presetNames[0][0], sizeof(presetNames)) != sizeof(presetNames)) memset(presetNames, 0, sizeof(presetNames));
+  }
+  file.close();
+  for (uint8_t i = 0; i < PRESET_NAME_PAGES * PRESET_NAMES_PER_PAGE; ++i) {
+    bool ended = i >= PRESET_NAME_COUNT; // the unused names stay empty
+    for (uint8_t c = 0; c < PRESET_NAME_LEN; ++c) {
+      uint8_t &b = presetNames[i][c];
+      if (ended || b < 0x20 || b > 0x7E) { b = 0; ended = true; }
+    }
+  }
+}
+
+// A names write waits for the top of the main loop, like the image commands, then acknowledges.
+void servicePresetNames() {
+  if (!presetNamesWritePending) return;
+  presetNamesWritePending = false;
+  rp2040.wdt_reset();
+  pauseHostForFlash();
+  const bool ok = presetNamesWrite();
+  resumeHostAfterFlash();
+  sendAck(presetNamesWritePort, CMD_SET_PRESET_NAMES, ok ? ACK_OK : ACK_ERR_FULL, 0, presetNamesWritePage);
+}
+
 // At power on, after the filesystem is up: which files exist, the slot count and the slot in use, and its file loaded.
 void presetBegin(bool factoryReset) {
   presetSlots = 1;
@@ -4344,6 +4577,8 @@ void presetBegin(bool factoryReset) {
   presetDeviceDirty = false;
   if (!loopFsReady) return;
   if (factoryReset) presetWipe();
+  if (LittleFS.exists(PRESET_UPLOAD_FILE)) LittleFS.remove(PRESET_UPLOAD_FILE); // an upload that a restart cut short
+  presetNamesLoad();
   char path[16];
   for (uint8_t slot = 0; slot < PRESET_SLOTS_MAX; ++slot) {
     presetPath(slot, path);
@@ -5939,6 +6174,106 @@ bool fwResetUpdate() {
   return !Update.isRunning();
 }
 
+// What a block's reply, or its failure, means to the SysEx that carried it.
+void fwRelayFinish(const fw::relay::Result &r) {
+  using namespace fw::relay;
+  const uint8_t sourcePort = fwRelay.sourcePort;
+  fwRelayLastMs = millis();
+  const uint8_t cmd = fwRelay.block.cmd == UPD_CMD_BEGIN ? CMD_FW_BEGIN : (fwRelay.block.cmd == UPD_CMD_DATA ? CMD_FW_DATA : CMD_FW_END);
+  if (r.outcome == DONE) {
+    if (cmd == CMD_FW_BEGIN) {
+      fwNextChunk = 0;
+      sendAck(sourcePort, cmd, ACK_OK, fwRelay.checksum, 0);
+    } else if (cmd == CMD_FW_DATA) {
+      fwLastChecksum = fwRelay.checksum;
+      fwNextChunk++;
+      sendAck(sourcePort, cmd, ACK_OK, fwRelay.checksum, fwRelay.chunk);
+    } else {
+      fwTarget = TARGET_MAIN; // the module restarts itself
+      sendAck(sourcePort, cmd, ACK_OK, 0, 0);
+    }
+    return;
+  }
+  if (cmd != CMD_FW_DATA) fwTarget = TARGET_MAIN; // a chunk can be tried again, the others start over
+  sendAck(sourcePort, cmd, r.status == UPD_BAD_INDEX ? ACK_ERR_BAD_INDEX : ACK_ERR_UPDATE, 0, r.extra);
+}
+
+void serviceFwRelay() {
+  using namespace fw::relay;
+  if (!fwRelay.busy) return;
+  const Result r = fwRelay.target == TARGET_HOST ? fwRelay.pump(millis(), linkRtQueue) : fwRelay.pump(millis(), s3RtQueue);
+  if (r.outcome != PENDING) fwRelayFinish(r);
+}
+
+// A reply frame from a module's link.
+void fwRelayReply(uint8_t target, const uint8_t packet[4]) {
+  if ((packet[0] >> 4) != UPD_REPLY || !fwRelay.busy || fwRelay.target != target) return;
+  const fw::relay::Result r = fwRelay.reply(packet[1], packet[2], packet[3]);
+  if (r.outcome != fw::relay::PENDING) fwRelayFinish(r);
+}
+
+// A block is still on its way: the same command again (Patchling's retry) just waits for it, anything else is refused.
+bool fwRelayBusy(uint8_t sourcePort, uint8_t cmd, uint8_t blockCmd, uint16_t chunk) {
+  if (!fwRelay.busy) return false;
+  if (fwRelay.block.cmd == blockCmd && (blockCmd != UPD_CMD_DATA || fwRelay.chunk == chunk)) fwRelay.sourcePort = sourcePort;
+  else sendAck(sourcePort, cmd, ACK_ERR_UPDATE, 0, fw::relay::ERR_BUSY);
+  return true;
+}
+
+void fwRelayBegin(uint8_t sourcePort, const uint8_t *payload, uint8_t payloadLen) {
+  using namespace fw::relay;
+  if (fwRelayBusy(sourcePort, CMD_FW_BEGIN, UPD_CMD_BEGIN, 0)) return;
+  const uint8_t target = payload[35];
+  uint8_t err = ERR_ABSENT;
+  if (target == TARGET_HOST && hostPresent()) err = hostFwVersion < UPDATE_HOST_MIN ? ERR_OLD : 0;
+  else if (target == TARGET_BLE && s3Present()) err = s3FwVersion < UPDATE_BLE_MIN ? ERR_OLD : 0;
+  if (err) { sendAck(sourcePort, CMD_FW_BEGIN, ACK_ERR_UPDATE, 0, err); return; }
+  uint8_t md5[16];
+  for (uint8_t i = 0; i < 16; ++i) {
+    uint8_t v = 0;
+    for (uint8_t k = 0; k < 2; ++k) {
+      const char c = (char)payload[3 + i * 2 + k];
+      const uint8_t d = c >= '0' && c <= '9' ? c - '0' : (c >= 'a' && c <= 'f' ? c - 'a' + 10 : (c >= 'A' && c <= 'F' ? c - 'A' + 10 : 0xFF));
+      if (d == 0xFF) { sendAck(sourcePort, CMD_FW_BEGIN, ACK_ERR_BAD_DATA, 0, 0); return; }
+      v = (uint8_t)(v << 4 | d);
+    }
+    md5[i] = v;
+  }
+  const uint32_t size = (uint32_t)payload[0] | ((uint32_t)payload[1] << 7) | ((uint32_t)payload[2] << 14);
+  fwResetUpdate(); // this unit's own half-sent update, if there is one
+  fwTarget = target;
+  fwRelayLastMs = millis();
+  fwRelay.sourcePort = sourcePort;
+  fwRelay.checksum = checksum7(payload, payloadLen);
+  fwRelay.begin(target, size, md5);
+}
+
+void fwRelayData(uint8_t sourcePort, const uint8_t *payload, uint8_t payloadLen) {
+  using namespace fw::relay;
+  if (payloadLen < 3) { sendAck(sourcePort, CMD_FW_DATA, ACK_ERR_UPDATE, 0, ERR_NOT_READY); return; }
+  const uint16_t idx = read16(payload);
+  if (fwRelayBusy(sourcePort, CMD_FW_DATA, UPD_CMD_DATA, idx)) return;
+  if (fwNextChunk > 0 && idx == fwNextChunk - 1) { sendAck(sourcePort, CMD_FW_DATA, ACK_OK, fwLastChecksum, idx); return; } // its ACK was lost
+  if (idx != fwNextChunk) { sendAck(sourcePort, CMD_FW_DATA, ACK_ERR_BAD_INDEX, 0, fwNextChunk); return; }
+  const uint8_t packedLen = payloadLen - 2;
+  if (packedLen > 147) { sendAck(sourcePort, CMD_FW_DATA, ACK_ERR_BAD_DATA, 0, idx); return; }
+  uint8_t raw[FW_CHUNK_BYTES];
+  const uint8_t rawLen = unpack7(payload + 2, packedLen, raw);
+  if (rawLen == 0) { sendAck(sourcePort, CMD_FW_DATA, ACK_ERR_BAD_DATA, 0, idx); return; }
+  fwRelayLastMs = millis();
+  fwRelay.sourcePort = sourcePort;
+  fwRelay.chunk = idx;
+  fwRelay.checksum = checksum7(raw, rawLen);
+  fwRelay.data(fwTarget, idx, raw, rawLen);
+}
+
+void fwRelayEnd(uint8_t sourcePort) {
+  if (fwRelayBusy(sourcePort, CMD_FW_END, UPD_CMD_END, 0)) return;
+  fwRelayLastMs = millis();
+  fwRelay.sourcePort = sourcePort;
+  fwRelay.end(fwTarget);
+}
+
 void handleSysexCommand(uint8_t sourcePort, const uint8_t *cmdBuf, uint8_t cmdLen) {
   if (cmdLen < 1) return;
   uint8_t cmd = cmdBuf[0];
@@ -6085,7 +6420,7 @@ void handleSysexCommand(uint8_t sourcePort, const uint8_t *cmdBuf, uint8_t cmdLe
         appendReply(slotsGeneration);
         appendReply(s3Present() ? bleFreeSlots() : 0);
         appendReply(s3Present() ? (s3Hosts & 0x7F) : 0);
-        appendReply(s3Present() ? ((s3Flags >> 4) & 3) : 0); // the module's USB port: bit 0 a host port, bit 1 the host failed to start and it fell back
+        appendReply(s3Present() ? ((s3Flags >> 4) & 7) : 0); // the module's USB port: bit 0 a host port, bit 1 the host failed to start and it is a device port, bit 2 the Bluetooth radio is off
         appendReply(s3Present() ? (s3BoardCheck & 0x7F) : 0);
       } else if (index == BLE_DEVICE_SLOT) { // BLE Device: kind 3
         appendReply(3);
@@ -6121,6 +6456,10 @@ void handleSysexCommand(uint8_t sourcePort, const uint8_t *cmdBuf, uint8_t cmdLe
       } else if (action == 3) { // the module's USB port, 0 a host port, 1 a device port. The module saves it and restarts
         if (!s3Present()) { sendAck(sourcePort, cmd, ACK_ERR_BAD_INDEX, 0, 0); break; }
         const uint8_t pkt[4] = {CONTROL_BLE_COMMAND, BLE_CMD_USB_ROLE, (uint8_t)(value ? 1 : 0), 0};
+        s3Send(LINK_PORT_CONTROL, pkt);
+      } else if (action == 4) { // the module's Bluetooth radio, 0 on, 1 off. The module saves it and restarts
+        if (!s3Present()) { sendAck(sourcePort, cmd, ACK_ERR_BAD_INDEX, 0, 0); break; }
+        const uint8_t pkt[4] = {CONTROL_BLE_COMMAND, BLE_CMD_RADIO, (uint8_t)(value ? 1 : 0), 0};
         s3Send(LINK_PORT_CONTROL, pkt);
       } else {
         sendAck(sourcePort, cmd, ACK_ERR_BAD_DATA, 0, 0);
@@ -6309,6 +6648,71 @@ void handleSysexCommand(uint8_t sourcePort, const uint8_t *cmdBuf, uint8_t cmdLe
       break;
     }
 
+    case CMD_GET_PRESET_IMAGE: {
+      if (payloadLen < 3 || payload[0] >= presetSlots) { sendAck(sourcePort, cmd, ACK_ERR_BAD_INDEX, 0, 0); break; }
+      if (presetImageJob.kind != PIMG_NONE) { sendAck(sourcePort, cmd, ACK_ERR_FULL, 0, 0); break; } // the last request is still being served
+      presetImageJob.slot = payload[0];
+      presetImageJob.offset = read16(payload + 1);
+      presetImageJob.port = sourcePort;
+      presetImageJob.kind = PIMG_READ; // the top of the main loop reads the file and answers
+      break;
+    }
+
+    case CMD_PUT_PRESET_IMAGE: {
+      if (payloadLen < 2 || payload[0] >= presetSlots) { sendAck(sourcePort, cmd, ACK_ERR_BAD_INDEX, 0, 0); break; }
+      if (presetImageJob.kind != PIMG_NONE) { sendAck(sourcePort, cmd, ACK_ERR_FULL, 0, 0); break; }
+      const uint8_t step = payload[1];
+      presetImageJob.slot = payload[0];
+      presetImageJob.port = sourcePort;
+      presetImageJob.len = 0;
+      presetImageJob.offset = 0;
+      if (step == 0 && payloadLen >= 4) {
+        presetImageJob.offset = read16(payload + 2);
+        presetImageJob.kind = PIMG_BEGIN;
+      } else if (step == 1 && payloadLen >= 5 && payloadLen - 4 <= 74) { // 64 bytes pack7 to 74
+        presetImageJob.offset = read16(payload + 2);
+        presetImageJob.len = unpack7(payload + 4, payloadLen - 4, presetImageJob.data);
+        presetImageJob.kind = PIMG_DATA;
+      } else if (step == 2) {
+        presetImageJob.kind = PIMG_END;
+      } else {
+        sendAck(sourcePort, cmd, ACK_ERR_BAD_DATA, 0, 0);
+      }
+      break;
+    }
+
+    case CMD_GET_PRESET_NAMES: {
+      if (payloadLen < 1 || payload[0] >= PRESET_NAME_PAGES) { sendAck(sourcePort, cmd, ACK_ERR_BAD_INDEX, 0, 0); break; }
+      beginReply(CMD_PRESET_NAMES);
+      appendReply(payload[0]);
+      const uint8_t *src = &presetNames[payload[0] * PRESET_NAMES_PER_PAGE][0];
+      for (uint8_t i = 0; i < PRESET_NAMES_PER_PAGE * PRESET_NAME_LEN; ++i) appendReply(src[i]);
+      sendReply(sourcePort);
+      break;
+    }
+
+    case CMD_SET_PRESET_NAMES: {
+      if (payloadLen < 1 || payload[0] >= PRESET_NAME_PAGES) { sendAck(sourcePort, cmd, ACK_ERR_BAD_INDEX, 0, 0); break; }
+      if (payloadLen != 1 + PRESET_NAMES_PER_PAGE * PRESET_NAME_LEN) { sendAck(sourcePort, cmd, ACK_ERR_BAD_DATA, 0, 0); break; }
+      bool printable = true;
+      for (uint8_t i = 1; i < payloadLen; ++i) if (payload[i] != 0 && (payload[i] < 0x20 || payload[i] > 0x7E)) printable = false;
+      if (!printable) { sendAck(sourcePort, cmd, ACK_ERR_BAD_DATA, 0, 0); break; }
+      if (!loopFsReady || presetNamesWritePending) { sendAck(sourcePort, cmd, ACK_ERR_FULL, 0, 0); break; } // no filesystem, or the last write is still being made
+      for (uint8_t n = 0; n < PRESET_NAMES_PER_PAGE; ++n) {
+        const uint8_t index = payload[0] * PRESET_NAMES_PER_PAGE + n;
+        bool ended = index >= PRESET_NAME_COUNT; // the unused names stay empty
+        for (uint8_t c = 0; c < PRESET_NAME_LEN; ++c) {
+          uint8_t b = payload[1 + n * PRESET_NAME_LEN + c];
+          if (b == 0) ended = true;
+          presetNames[index][c] = ended ? 0 : b;
+        }
+      }
+      presetNamesWritePort = sourcePort;
+      presetNamesWritePage = payload[0];
+      presetNamesWritePending = true; // the top of the main loop writes the file and acknowledges
+      break;
+    }
+
     case CMD_SELECT_PRESET: {
       if (payloadLen < 1 || payload[0] >= presetSlots) { sendAck(sourcePort, cmd, ACK_ERR_BAD_INDEX, 0, 0); break; }
       presetRequestAction(2 + payload[0], sourcePort); // the swap happens at the top of the main loop, then it acknowledges
@@ -6332,6 +6736,10 @@ void handleSysexCommand(uint8_t sourcePort, const uint8_t *cmdBuf, uint8_t cmdLe
     case CMD_FACTORY_RESET: {
       presetWipe();
       bleWipe();
+      if (s3Present()) { // the Bluetooth side goes back to new too: nothing remembered, the radio on, its USB port a host
+        const uint8_t pkt[4] = {CONTROL_BLE_COMMAND, BLE_CMD_FACTORY, 0, 0};
+        s3Send(LINK_PORT_CONTROL, pkt);
+      }
       setFactoryDefaults();
       applyBrightnessToLeds();
       resetButtonRuntimeState();
@@ -6346,6 +6754,9 @@ void handleSysexCommand(uint8_t sourcePort, const uint8_t *cmdBuf, uint8_t cmdLe
     // file, so a failed or abandoned transfer leaves the running firmware untouched.
     case CMD_FW_BEGIN: {
       if (payloadLen < 35) { sendAck(sourcePort, cmd, ACK_ERR_BAD_DATA, 0, 0); break; }
+      if (payloadLen >= 36 && payload[35] != fw::relay::TARGET_MAIN) { fwRelayBegin(sourcePort, payload, payloadLen); break; }
+      fwTarget = fw::relay::TARGET_MAIN;
+      fwRelay.giveUp();
       uint32_t size = (uint32_t)payload[0] | ((uint32_t)payload[1] << 7) | ((uint32_t)payload[2] << 14);
       char md5[33];
       memcpy(md5, payload + 3, 32);
@@ -6364,6 +6775,7 @@ void handleSysexCommand(uint8_t sourcePort, const uint8_t *cmdBuf, uint8_t cmdLe
     }
 
     case CMD_FW_DATA: {
+      if (fwTarget != fw::relay::TARGET_MAIN) { fwRelayData(sourcePort, payload, payloadLen); break; }
       if (payloadLen < 3 || !Update.isRunning()) { sendAck(sourcePort, cmd, ACK_ERR_UPDATE, 0, 0); break; }
       uint16_t idx = read16(payload);
       if (fwNextChunk > 0 && idx == fwNextChunk - 1) {
@@ -6386,6 +6798,7 @@ void handleSysexCommand(uint8_t sourcePort, const uint8_t *cmdBuf, uint8_t cmdLe
     }
 
     case CMD_FW_END: {
+      if (fwTarget != fw::relay::TARGET_MAIN) { fwRelayEnd(sourcePort); break; }
       if (!Update.isRunning()) { sendAck(sourcePort, cmd, ACK_ERR_UPDATE, 0, 0); break; }
       rp2040.wdt_reset(); // Update.end() re-reads the whole file for its MD5
       if (!Update.end()) { // checks size and MD5, then stages the file for the OTA bootloader
@@ -6748,6 +7161,8 @@ void pumpHostIn() {
         bleReserveHonored = packet[1] & 0x7F;
       } else if (type == CONTROL_DEVICE_NAME) {  // host firmware 9: the name of the USB device in a slot
         usbNameChunk(packet[1] & 0x0F, packet[1] >> 4, packet[2], packet[3]);
+      } else if (type == CONTROL_UPDATE) {       // host firmware 10: the answer to a block of a relayed update
+        fwRelayReply(fw::relay::TARGET_HOST, packet);
       }
       continue;
     }
@@ -6798,7 +7213,7 @@ void s3Send(uint8_t port, const uint8_t pkt[4]) {
     s3RtQueue.push(f, true);
     return;
   }
-  if (!s3Present()) return;
+  if (!s3Present() || fwRelayQuiet(fw::relay::TARGET_BLE)) return;
   uint32_t words[4];
   const uint8_t idx = s3Index(port);
   if (idx == 0xFF) return;
@@ -7045,6 +7460,8 @@ void handleS3Control(const uint8_t packet[4]) {
     }
   } else if (type == CONTROL_DEVICE_NAME) {
     bleNameChunk(packet[1] & 0x0F, packet[1] >> 4, packet[2], packet[3]);
+  } else if (type == CONTROL_UPDATE) {
+    fwRelayReply(fw::relay::TARGET_BLE, packet);
   } else if (type == CONTROL_BLE_EVENT) {
     if (packet[1] == BLE_EVENT_CLEAR_ALL) bleClearAll();
   } else if (type == CONTROL_FLOW) {
@@ -7649,6 +8066,8 @@ void loop() {
   serviceBle();
   serviceButton();
   servicePresets(); // after every input of this pass, before anything that reads the routes
+  servicePresetImage();
+  servicePresetNames();
   serviceCommit();
   serviceRamp();
   serviceLeds();
@@ -7670,6 +8089,7 @@ void loop() {
   pumpTrsOut();
   pumpUsbOut();
   CRUMB(81);
+  serviceFwRelay();
   serviceLinkFlow();
   serviceS3Flow();
   CRUMB(82);

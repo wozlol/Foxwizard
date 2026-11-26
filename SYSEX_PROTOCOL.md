@@ -81,8 +81,14 @@ The route struct is 41 bytes → five groups of 7 + one group of 6 → packed to
 | 0x3A   | SELECT_PRESET         | host→dev  | slot (0-15). ACKs once the slot is live, checksum is the active slot, extra the slot count. ERR_BAD_INDEX past the slot count |
 | 0x3B   | GET_SLOTS             | host→dev  | index (0 the summary, 1-8 a host slot, 9 BLE Device). Protocol 8 |
 | 0x3C   | SLOT_DATA             | dev→host  | index, then the summary or the record, see Bluetooth slots |
-| 0x3D   | BLE_ACTION            | host→dev  | action (1 learning, 2 forget, 3 the module's USB port), value. ACK, ERR_BAD_INDEX with no Bluetooth module or a slot past 8. Protocol 8 |
-| 0x40   | FW_BEGIN              | host→dev  | size(3) + md5 (32 lowercase hex ASCII characters). Firmware 1.2+ |
+| 0x3D   | BLE_ACTION            | host→dev  | action (1 learning, 2 forget, 3 the module's USB port, 4 the module's Bluetooth radio), value. ACK, ERR_BAD_INDEX with no Bluetooth module or a slot past 8. Protocol 8, action 4 protocol 10 |
+| 0x3E   | GET_PRESET_IMAGE      | host→dev  | slot (0-15), offset(2). Another slot's saved image without switching to it. Answers PRESET_IMAGE. ERR_BAD_INDEX for a slot past the slot count or with nothing saved, ERR_FULL while the last request is still served. Protocol 11 |
+| 0x3F   | PRESET_IMAGE          | dev→host  | slot, offset(2), the image's size(2), pack7 of up to 64 image bytes from that offset. Protocol 11 |
+| 0x44   | GET_PRESET_NAMES      | host→dev  | page (0-4). Four names to a page. Protocol 12 |
+| 0x45   | PRESET_NAMES          | dev→host  | page, then four names of 24 bytes each, printable ASCII, zero-padded. Names 0-15 are the preset slots, 16 is the bundle, 17-19 are never used |
+| 0x46   | SET_PRESET_NAMES      | host→dev  | page, then the page's four names (96 bytes). The unit writes its names file and then ACKs, extra is the page. ERR_BAD_INDEX past page 4, ERR_BAD_DATA for a short page or a byte that is not printable ASCII or zero, ERR_FULL with no filesystem or while the last write is still being made. Protocol 12 |
+| 0x43   | PUT_PRESET_IMAGE      | host→dev  | slot, step. Step 0 begins with the image's size(2). Step 1 sends offset(2) and pack7 of up to 64 bytes. Step 2 ends. Every step ACKs, a data step's checksum is the checksum7 of its bytes and its extra the next offset. Protocol 11 |
+| 0x40   | FW_BEGIN              | host→dev  | size(3) + md5 (32 lowercase hex ASCII characters) + optional target (1: the USB host module, 2: the Bluetooth module, 0 or absent: this unit). Firmware 1.2+, target protocol 9 |
 | 0x41   | FW_DATA               | host→dev  | index(2) + pack7(up to 128 firmware bytes → up to 147 bytes). Firmware 1.2+ |
 | 0x7C   | DIAG_STACK_DIVE       | host→dev  | frames(1). Only in a build made with `FW_EXTRA_FLAGS=-DFW_DIAG`, never in a release. Recurses that many 64-byte frames so the stack goes that deep, then ACKs with the stack depth in 16-byte units as extra |
 | 0x42   | FW_END                | host→dev  | (none). Checks size and MD5, stages the install, ACKs, then reboots. Firmware 1.2+ |
@@ -126,6 +132,16 @@ receive these commands. Firmware 1.0 ignores them anyway.
 - The file is the sketch `.bin`, staged in the LittleFS partition, so the firmware must be built
   with Flash Size `2MB (Sketch: 1MB, FS: 1MB)`. `mmm_web_interface/firmware/build_firmware.sh`
   does this.
+
+## Module updates (protocol 9, firmware 2.3)
+
+`FW_BEGIN` with a 36th byte, the target, sends the update to a module instead of this unit: 1 the USB host module (its `.bin`), 2 the Bluetooth module (its `.bin`). `FW_DATA` and `FW_END` then go to that module until `FW_END` or the next `FW_BEGIN`. The main brain passes each one over the module's link and ACKs when the module has answered, so a `FW_DATA` ACK means the module has the chunk, and a `FW_END` ACK means the module has checked the MD5 of the whole image, staged it and is restarting. Sizes, chunks, checksums and the ACKs are as above.
+
+- **When it is done:** the module's version changes in `GET_STATUS` (host brain, byte 14) and `GET_SLOTS` (Bluetooth module, summary byte 2) once it is back.
+- **First versions that take an update:** host brain 10, Bluetooth module 2. Below that, or with no module, `FW_BEGIN` gets `ERR_UPDATE`.
+- **ERR_UPDATE extra:** below 16 the module's updater error code. 0x70 no such module, 0x71 it did not answer, 0x72 its firmware is too old, 0x73 a block is still on its way, 0x74 blocks kept arriving damaged, 0x75 no update open. A `FW_BEGIN` or `FW_DATA` repeated while its block is still on its way waits for the same answer, a different command gets 0x73.
+- **Time:** the main brain answers a `FW_DATA` within 2.1 s and a `FW_BEGIN` within 9 s, inside Patchling's timeouts. `FW_END` waits up to 8 s and is not sent twice.
+- **Link:** `Foxwizard Host Edition/README.md`, Module updates.
 
 ## Global clock (protocol 3)
 
@@ -386,6 +402,8 @@ A slot is a copy of the saved settings image (the `FOX2` layout below) in the fl
 - Kept across a change: slot count, active slot, LED brightness, and button action 12.
 - With more than one slot, a mapping to Preset in Note to Feature, CC to Feature or the Launchpad table sets button action 12. SET_GLOBAL and SET_FEATURE apply this too.
 - The active slot is written to `/device.fw` once the unit has been quiet for 2 s, since a flash write holds the clock. At power on the unit loads the file of the active slot.
+- Preset names (2.8, protocol 12): the names are in `/names.fw`, `FPNM` then 20 names of 24 bytes, not in the settings image, which has no room. Nothing on the unit reads them. Writing a page changes the RAM table at once and the file at the top of the next main loop pass, with the host paused like any flash write, and the ACK follows the file. A factory reset removes the file. Names for slots past Number of Preset Slots Total are kept.
+- Reading and writing another slot (2.7, protocol 11): GET_PRESET_IMAGE returns the slot's file, PUT_PRESET_IMAGE replaces it. Neither switches the unit. The file work runs at the top of the main loop like a slot change, one request at a time. The slot in use is never written this way, it is saved with COMMIT. An upload goes into `/upload.tmp` and replaces the slot's file in one step at its end step, so one that stops leaves the slot as it was, and one with nothing heard for 10 s is dropped. The end step checks the `FOX2` or `FOX1` magic and that all the bytes arrived. A data step sent twice with the same offset and length is acknowledged again without writing again. The image is up to 4,096 bytes, 64 per message. The host pauses its MIDI around each flash write like a save. Patchling's all-presets zip is built on these two commands and `js/slotImage.js`, which cuts an image into the same route and block bytes the other commands carry.
 - FACTORY_RESET deletes every slot file, `/device.fw` and `/slots.fw`. Holding the button while plugging in does nothing (2.1).
 
 ## Bluetooth slots (protocol 8, firmware 2.2)
@@ -394,9 +412,9 @@ The Bluetooth module (an ESP32-S3) is on a second link. USB Host, BLE Host and U
 
 Who has which slot, and their names, are in `/slots.fw` on the unit's filesystem: a returning device gets its slot back, a new one takes a slot nothing has used, then the one whose device has been gone longest, and a connected device's slot is never taken. Rules and tests: `Mini_MIDI_Multitool/src/ble_slots.h`.
 
-GET_SLOTS index 0, the summary, answers SLOT_DATA with: 0, flags (bit 0 the module is there, 1 BLE Device is connected, 2 learning, 3 scanning, 4 force peripheral, 5 the module says its Tools settings are wrong), module firmware, generation (0-127, changes whenever a record would read differently), free (slots a Bluetooth device could take now), hosts (devices connected on the module, Bluetooth and USB), usb (bit 0 the module's USB port is a host port, bit 1 the host failed to start and it fell back to a device port), board check code (0 fine, 1 Flash Size wrong). Index 1-8 answers: index, kind (0 empty, 1 USB, 2 Bluetooth), state (bit 0 a device is there now, bit 1 a module device may take this slot, bit 2 a module device holds it, Bluetooth or USB), name length, the name in ASCII (printable, 24 at most). Index 9 answers: 9, 3, state bit 0 connected, 0. A host reads the summary each poll and the records when the generation changes.
+GET_SLOTS index 0, the summary, answers SLOT_DATA with: 0, flags (bit 0 the module is there, 1 BLE Device is connected (Bluetooth, or a computer on the module's USB device port), 2 learning, 3 scanning, 4 force peripheral, 5 the module says its Tools settings are wrong), module firmware, generation (0-127, changes whenever a record would read differently), free (slots a Bluetooth device could take now), hosts (devices connected on the module, Bluetooth and USB), usb (bit 0 the module's USB port is a USB MIDI host, bit 1 unused (the port never changes role by itself), bit 2 the Bluetooth radio is off, protocol 10), board check code (0 fine, 1 Flash Size wrong). Index 1-8 answers: index, kind (0 empty, 1 USB, 2 Bluetooth), state (bit 0 a device is there now, bit 1 a module device may take this slot, bit 2 a module device holds it, Bluetooth or USB), name length, the name in ASCII (printable, 24 at most). Index 9 answers: 9, 3, state bit 0 connected, 0. A host reads the summary each poll and the records when the generation changes.
 
-BLE_ACTION action 1 starts (value 1) or stops (0) adding devices, as the module's button does: connect compatible Bluetooth MIDI devices and remember each. Action 2 forgets a host slot 1-8, disconnecting its device and clearing its name. Action 3 sets the module's USB port, 0 a host port and 1 a device port. It is saved on the module, which restarts, and the module's devices reconnect. With no free slot the unit sends a new device away, and Patchling does not offer Add Bluetooth Device.
+BLE_ACTION action 1 starts (value 1) or stops (0) adding devices, as the module's button does: connect compatible Bluetooth MIDI devices and remember each. Action 2 forgets a host slot 1-8, disconnecting its device and clearing its name. Action 3 sets the module's USB port, 0 a USB MIDI host and 1 a USB MIDI device. Action 4 (protocol 10) turns the module's Bluetooth radio on (0) or off (1), with USB devices on the module carrying on. Both are saved on the module, which restarts, and the module's devices reconnect. With no free slot the unit sends a new device away, and Patchling does not offer Add Bluetooth Device.
 
 The names of USB devices come from the host brain (host firmware 9) and those of Bluetooth devices from the module, both over their links as control frames, see the link tables in `Foxwizard Host Edition/README.md`.
 

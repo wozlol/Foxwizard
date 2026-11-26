@@ -38,6 +38,12 @@ export const CMD = {
   GET_SLOTS: 0x3B,
   SLOT_DATA: 0x3C,
   BLE_ACTION: 0x3D,
+  GET_PRESET_IMAGE: 0x3E,
+  PRESET_IMAGE: 0x3F,
+  PUT_PRESET_IMAGE: 0x43,
+  GET_PRESET_NAMES: 0x44,
+  PRESET_NAMES: 0x45,
+  SET_PRESET_NAMES: 0x46,
   COMMIT: 0x31,
   FACTORY_RESET: 0x32,
   FW_BEGIN: 0x40,
@@ -85,7 +91,7 @@ export const SIDECAR_TRS_PORTS = 0x07C0; // TRS 2-6, wired only when a TRS board
 // switches), arpSlot, and 5 spare bytes.
 const ROUTE_BYTES_V1 = 17 + ROUTE_NAME_MAX_LEN;
 const ROUTE_BYTES_V2 = ROUTE_BYTES_V1 + 4;
-const ROUTE_BYTES_V4 = ROUTE_BYTES_V2 + 10; // +2 in 1.48 for Break Off a Quad
+export const ROUTE_BYTES_V4 = ROUTE_BYTES_V2 + 10; // +2 in 1.48 for Break Off a Quad
 
 // Route feature switches (route.features), same as FEATURE_* in the firmware.
 export const FEATURE = { NOTE_TO_CC: 1 << 0, LAUNCHPAD: 1 << 1, SCALE: 1 << 2, AUTO_CHORD: 1 << 3, ECHO: 1 << 4, STUTTER: 1 << 5, CC_MAP: 1 << 6, PLOCK: 1 << 7 };
@@ -357,13 +363,17 @@ const FW_BEGIN_TIMEOUT_MS = 10000; // first use may have to format the device's 
 const FW_DATA_TIMEOUT_MS = 3000;   // a chunk can land on a 4 KB flash write
 const FW_END_TIMEOUT_MS = 10000;   // device re-reads the whole file to check its MD5
 const FW_DATA_ATTEMPTS = 4;
+export const PRESET_IMAGE_CHUNK = 64; // must match PRESET_IMAGE_CHUNK in the firmware
+export const PRESET_NAME_MAX_LEN = 24; // must match PRESET_NAME_LEN in the firmware
+export const PRESET_NAME_COUNT = 17; // names 0-15 belong to the preset slots, name 16 is the bundle's
+const PRESET_NAMES_PER_PAGE = 4; // must match PRESET_NAMES_PER_PAGE in the firmware
 const LEARN_TIMEOUT_MS = 10500; // the device listens for 10 s
 
 // Fixed-length, zero-padded ASCII — matches the firmware's raw char[ROUTE_NAME_MAX_LEN] field
 // exactly, so there's no separate length byte to keep in sync.
-function encodeName(name) {
+function encodeName(name, length = ROUTE_NAME_MAX_LEN) {
   const bytes = [];
-  for (let i = 0; i < ROUTE_NAME_MAX_LEN; i++) {
+  for (let i = 0; i < length; i++) {
     const ch = (name || '')[i];
     // restrict to printable ASCII — anything else (emoji, accents, etc.) would need multiple raw
     // bytes per character and break the fixed-length assumption on both ends of the wire
@@ -672,7 +682,12 @@ export class DeviceLink extends EventTarget {
         const ack = await this._sendAndWait([cmd, ...payload], CMD.ACK, timeoutMs);
         const [originalCmd, status, checksum, extraLo, extraHi] = ack;
         const extra = extraLo | (extraHi << 7);
-        if (status !== 0) throw new Error('device-error-' + status);
+        if (status !== 0) {
+          const err = new Error('device-error-' + status);
+          err.status = status;
+          err.extra = extra; // for a relayed module update this says why, see UPDATE_ERRORS in app.js
+          throw err;
+        }
         if (expectedChecksum !== undefined && checksum !== expectedChecksum) throw new Error('checksum-mismatch');
         return { status, checksum, extra };
       } catch (err) {
@@ -829,8 +844,8 @@ export class DeviceLink extends EventTarget {
     const summary = {
       present: !!(s[1] & 1), deviceConnected: !!(s[1] & 2), learning: !!(s[1] & 4), scanning: !!(s[1] & 8), peripheral: !!(s[1] & 16),
       boardCheck: !!(s[1] & 32), fw: s[2] ?? 0, generation: s[3] ?? 0, free: s[4] ?? 0, hosts: s[5] ?? 0, slots: null,
-      // The module's USB port: a host port, or fell back to a device port because the host failed to start. boardCheckCode: 1 flash size wrong.
-      usbHost: !!((s[6] ?? 0) & 1), usbFellBack: !!((s[6] ?? 0) & 2), boardCheckCode: s[7] ?? 0
+      // The module's USB port: a USB MIDI host, or a USB MIDI device (only when the user chose that). radioOff: the Bluetooth radio is off (protocol 10). boardCheckCode: 1 flash size wrong.
+      usbHost: !!((s[6] ?? 0) & 1), radioOff: !!((s[6] ?? 0) & 4), boardCheckCode: s[7] ?? 0
     };
     if (summary.generation !== knownGeneration) {
       const slots = [];
@@ -844,7 +859,7 @@ export class DeviceLink extends EventTarget {
     return summary;
   }
 
-  /** 2.2: action 1 starts (value 1) or stops (0) adding Bluetooth devices, action 2 forgets host slot 1-8, action 3 sets the module's USB port, 0 host and 1 device (it restarts). */
+  /** 2.2: action 1 starts (value 1) or stops (0) adding Bluetooth devices, action 2 forgets host slot 1-8, action 3 sets the module's USB port, 0 USB MIDI host and 1 USB MIDI device (it restarts), action 4 turns the module's Bluetooth radio on (0) or off (1) (protocol 10, it restarts). */
   async bleAction(action, value) {
     return this._sendMutating(CMD.BLE_ACTION, [action, value]);
   }
@@ -858,6 +873,78 @@ export class DeviceLink extends EventTarget {
     return this._sendMutating(CMD.SELECT_PRESET, [slot], undefined, PRESET_SELECT_TIMEOUT_MS);
   }
 
+  /**
+   * 2.7 (protocol 11): another slot's saved image, read without switching to it. A Uint8Array in the layout the unit keeps in flash
+   * (see slotImage.js). A slot with nothing saved has no image, ask only for the slots getPresets marks as used. The slot in use
+   * is not read this way, its saved image may be older than what it runs. progressCb(bytesRead, size).
+   */
+  async getPresetImage(slot, progressCb) {
+    const out = [];
+    let size = null;
+    while (size === null || out.length < size) {
+      let reply = null;
+      for (let attempt = 0; attempt < 2 && !reply; attempt++) {
+        try { reply = await this._sendAndWait([CMD.GET_PRESET_IMAGE, slot, ...write16(out.length)], CMD.PRESET_IMAGE, PRESET_SELECT_TIMEOUT_MS); }
+        catch (err) { if (attempt === 1) throw err; }
+      }
+      if (reply[0] !== slot || read16(reply, 1) !== out.length) throw new Error('unexpected-image-reply');
+      size = read16(reply, 3);
+      const raw = unpack7(reply.slice(5));
+      if (raw.length === 0 && out.length < size) throw new Error('short-image');
+      out.push(...raw);
+      if (progressCb) progressCb(Math.min(out.length, size), size);
+    }
+    return Uint8Array.from(out.slice(0, size));
+  }
+
+  /**
+   * 2.7: writes an image into another slot without switching to it, 64 bytes at a time, each checked. The slot's file is replaced in
+   * one step at the end, so a transfer that stops halfway leaves the slot as it was. Not for the slot in use, save that the usual way.
+   */
+  async putPresetImage(slot, image, progressCb) {
+    const size = image.length;
+    await this._sendMutating(CMD.PUT_PRESET_IMAGE, [slot, 0, ...write16(size)], undefined, PRESET_SELECT_TIMEOUT_MS);
+    for (let offset = 0; offset < size; offset += PRESET_IMAGE_CHUNK) {
+      const raw = Array.from(image.subarray(offset, offset + PRESET_IMAGE_CHUNK));
+      await this._sendMutating(CMD.PUT_PRESET_IMAGE, [slot, 1, ...write16(offset), ...pack7(raw)], checksum7(raw), PRESET_SELECT_TIMEOUT_MS, FW_DATA_ATTEMPTS);
+      if (progressCb) progressCb(Math.min(size, offset + PRESET_IMAGE_CHUNK), size);
+    }
+    await this._sendMutating(CMD.PUT_PRESET_IMAGE, [slot, 2], undefined, PRESET_SELECT_TIMEOUT_MS, 1);
+  }
+
+  /**
+   * 2.8 (protocol 12): the preset names and the bundle's, 17 strings. Index 0-15 is a slot, 16 is the bundle. An empty string is no name.
+   * Four names come in a page, so this is five round trips.
+   */
+  async getPresetNames() {
+    const names = [];
+    const pages = Math.ceil(PRESET_NAME_COUNT / PRESET_NAMES_PER_PAGE);
+    for (let page = 0; page < pages; page++) {
+      const r = await this._sendAndWait([CMD.GET_PRESET_NAMES, page], CMD.PRESET_NAMES, DEFAULT_TIMEOUT_MS);
+      if (r[0] !== page) throw new Error('unexpected-names-reply');
+      for (let n = 0; n < PRESET_NAMES_PER_PAGE && names.length < PRESET_NAME_COUNT; n++) {
+        names.push(decodeName(r.slice(1 + n * PRESET_NAME_MAX_LEN, 1 + (n + 1) * PRESET_NAME_MAX_LEN)));
+      }
+    }
+    return names;
+  }
+
+  /**
+   * 2.8: writes names to the unit, the pages that hold the given indexes. names is all 17 strings, so a page keeps the names next to
+   * the one that changed. The unit answers once its names file is written. Never switches a preset.
+   */
+  async setPresetNames(names, indexes) {
+    const pages = [...new Set(indexes.map((i) => Math.floor(i / PRESET_NAMES_PER_PAGE)))].sort((a, b) => a - b);
+    for (const page of pages) {
+      const body = [];
+      for (let n = 0; n < PRESET_NAMES_PER_PAGE; n++) {
+        const index = page * PRESET_NAMES_PER_PAGE + n;
+        body.push(...encodeName(index < PRESET_NAME_COUNT ? names[index] : '', PRESET_NAME_MAX_LEN));
+      }
+      await this._sendMutating(CMD.SET_PRESET_NAMES, [page, ...body], undefined, PRESET_SELECT_TIMEOUT_MS);
+    }
+  }
+
   async commit() {
     return this._sendMutating(CMD.COMMIT, []);
   }
@@ -869,12 +956,13 @@ export class DeviceLink extends EventTarget {
   /**
    * Sends a firmware .bin to the device. Each 128-byte chunk is confirmed by checksum before the
    * next is sent. Nothing is installed until FW_END, where the device checks the size and MD5 of
-   * the whole file, then reboots to install it. progressCb(bytesSent, totalBytes).
+   * the whole file, then reboots to install it. progressCb(bytesSent, totalBytes). Protocol 9: target 1 sends
+   * the file through the FoxWizard to the USB host module, 2 to the Bluetooth module, which install it themselves.
    */
-  async updateFirmware(bin, md5Hex, progressCb) {
+  async updateFirmware(bin, md5Hex, progressCb, target = 0) {
     const size = bin.length;
     const md5 = Array.from(md5Hex.toLowerCase(), (c) => c.charCodeAt(0));
-    const begin = [size & 0x7F, (size >> 7) & 0x7F, (size >> 14) & 0x7F, ...md5];
+    const begin = [size & 0x7F, (size >> 7) & 0x7F, (size >> 14) & 0x7F, ...md5, ...(target ? [target] : [])];
     await this._sendMutating(CMD.FW_BEGIN, begin, checksum7(begin), FW_BEGIN_TIMEOUT_MS);
     const chunks = Math.ceil(size / FW_CHUNK_BYTES);
     for (let i = 0; i < chunks; i++) {

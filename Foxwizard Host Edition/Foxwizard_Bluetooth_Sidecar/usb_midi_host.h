@@ -2,10 +2,11 @@
 
 // USB MIDI host on the ESP32-S3's own USB port, on top of ESP-IDF's USB Host Library, which the Arduino core ships with hub support on
 // (CONFIG_USB_HOST_HUBS_SUPPORTED and CONFIG_USB_HOST_HUB_MULTI_LEVEL), so a device on a hub works as far as the chip's 8 host
-// channels go. Each endpoint of each device takes one channel and a hub takes some, so plan on 2 or 3 MIDI devices through a hub.
+// channels go. Each endpoint of each device takes one channel and a hub takes some, so the module takes 2 MIDI devices (USB_HOSTS_MAX in
+// board_config.h), through a hub or one straight in.
 //
-// The USB port is shared with the chip's USB serial and JTAG function, so while the host runs the module no longer shows up as a serial
-// port on a computer. The sketch decides, at start, which one the port is.
+// The USB port is either this host or a USB MIDI device (TinyUSB, started by the sketch), never both. The sketch decides, at start,
+// which one the port is.
 //
 // Every USB Host Library call is made from this file's client task. The rest of the sketch only sets flags and passes bytes through
 // two rings, so nothing here is called from two tasks at once.
@@ -17,11 +18,12 @@
 
 #include "usb/usb_host.h"
 
+#include "board_config.h"
 #include "foxwizard_link.h"
 
 namespace usbmidi {
 
-constexpr uint8_t kMaxDevices = 4;
+constexpr uint8_t kMaxDevices = USB_HOSTS_MAX;
 constexpr uint16_t kOutRing = 256; // bytes of USB MIDI packets waiting to go to a device
 
 enum State : uint8_t {

@@ -90,14 +90,12 @@
       <div class="toolbar-group">
         <button id="loadFromDeviceBtn" class="btn"><span class="label-full">Load from Device</span><span class="label-short">Load</span></button>
         <button id="saveToDeviceBtn" class="btn btn-primary"><span class="label-full">Save to Device</span><span class="label-short">Save</span></button>
-        <label class="switch autosave-switch"><input type="checkbox" id="autosaveSwitch"><span class="switch-track"><span class="switch-thumb"></span></span><span class="switch-label"><span class="label-full">Autosave</span><span class="label-short">Auto</span></span></label>
+        <label class="switch autosave-switch"><input type="checkbox" id="autosaveSwitch"><span class="switch-track"><span class="switch-thumb"></span></span><span class="switch-label"><span class="label-full">Autosave</span><span class="label-short">Autosave</span></span></label>
       </div>
       <div class="toolbar-group">
-        <button id="downloadPresetBtn" class="btn btn-ghost">Download Preset</button>
-        <label class="btn btn-ghost file-btn">
-          Upload Preset
-          <input type="file" id="uploadPresetInput" accept=".xml,text/xml" hidden>
-        </label>
+        <button id="presetsBtn" class="btn btn-ghost">Presets</button>
+        <input type="file" id="uploadPresetInput" accept=".xml,text/xml" hidden>
+        <input type="file" id="uploadPresetsZipInput" accept=".zip,application/zip" hidden>
       </div>
       <div class="toolbar-group">
         <button id="addRouteBtn" class="btn btn-accent">+ Add Route</button>
@@ -123,7 +121,7 @@
   </main>
 
   <footer class="app-footer">
-    <p><a href="https://woz.lol" target="_blank" rel="noopener">woz.lol</a> &middot; FOXWIZARD PATCHLING v2.2 &middot; Programming Software for the <a href="https://woz.lol/foxwizard" target="_blank" rel="noopener">FoxWizard Mini MIDI Multitool</a> &middot; Works in Chrome and other Chromium-based browsers (Edge, Brave, Opera). Firefox and Safari don't support Web MIDI yet.</p>
+    <p><a href="https://woz.lol" target="_blank" rel="noopener">woz.lol</a> &middot; FOXWIZARD PATCHLING v2.8 &middot; Programming Software for the <a href="https://woz.lol/foxwizard" target="_blank" rel="noopener">FoxWizard Mini MIDI Multitool</a> &middot; Works in Chrome and other Chromium-based browsers (Edge, Brave, Opera). Firefox and Safari don't support Web MIDI yet.</p>
   </footer>
 
   <script type="module" src="js/app.js"></script>

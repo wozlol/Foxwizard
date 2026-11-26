@@ -4,7 +4,7 @@
 
 USB-C to TRS MIDI adapter and router. Onboard memory for 16 switchable presets, with up to 60 programmable routes each, live performance features (Arp, Scale, Auto Chord, Echo, Stutter, Looper, Launchpad, Per-Note Parameter Lock), all handled live over MIDI via a web app called Patchling.
 
-NOTE: This manual covers every edition of the FoxWizard, listed under Editions. All the routing and performance features work on all of them. The editions differ in their ports and, on the Deluxe, in audio.
+NOTE: This manual covers the FoxWizard OG MkII and the Hella, listed under Editions. All the routing and performance features work on both. The Hella adds ports.
 
 ## V2 Highlights
 
@@ -15,21 +15,17 @@ NOTE: This manual covers every edition of the FoxWizard, listed under Editions. 
 - **Auto clock.** Follows an external clock, takes over with its own when that stops, and locks back on. Loop Lock keeps a loop in the beat. Restart on Clock Start is a switch.
 - **A looper that keeps your performance.** Layer Undo and Redo, Double and Half, Note Delete, held notes carried across layers and the loop top.
 - **Aftertouch that cannot jam the DIN port.** Poly aftertouch and channel pressure thin out gracefully when a flood is more than DIN can carry, and USB stays steady under 1,600 aftertouch messages a second.
-- **MIDI 2.0 ready.** The parts of a Host Edition already pass MIDI 2.0 packets between them. USB MIDI 2.0 is next.
+- **MIDI 2.0 ready.** The parts of a Hella already pass MIDI 2.0 packets between them. USB MIDI 2.0 is next.
 - **Patchling keeps up with the unit.** It follows presets switched on the unit, asks before dropping unsaved changes, and has Autosave.
 
 ## Editions
 
-Find your edition here. Everything in this manual applies to every edition unless a section says otherwise.
+Find your edition here. Everything in this manual applies to both editions unless a section says otherwise.
 
 | Edition | What it is |
 |---|---|
-| FoxWizard Jr | The FoxWizard without TRS-B. |
-| FoxWizard | The original. USB-C, one TRS/DIN in and one out. |
-| Host Edition | The FoxWizard plus a USB host module (an RP2040 sidecar). Up to 7 USB MIDI devices through hubs. |
-| Bluetooth Edition (planned) | The FoxWizard plus a Bluetooth module (an ESP32-S3 sidecar). Bluetooth MIDI devices, the FoxWizard as a Bluetooth MIDI device, and a USB port that hosts USB MIDI devices as well as it can, how many on a hub is not guaranteed. |
-| Hella Edition (planned) | The FoxWizard plus both sidecar modules, the USB host module and the Bluetooth module. |
-| Deluxe (planned) | Everything on one board, with the extra TRS ports, the Bluetooth module's USB port, an AMY Synth and an Audio Looper. |
+| FoxWizard OG MkII | USB-C, one TRS/DIN in and one out. |
+| Hella (planned) | The OG MkII plus a USB Host port on the right and Bluetooth, with its own USB port, on the left. |
 
 ## Connections
 
@@ -37,35 +33,47 @@ Find your edition here. Everything in this manual applies to every edition unles
 - TRS MIDI IN: 3.5mm TRS-A OR TRS-B OR Classic DIN MIDI input.
 - TRS MIDI OUT: 3.5mm TRS-A OR TRS-B OR Classic DIN MIDI output.
 - Button: single multi-function button.
+- Hella only, on the right: the USB Host port, see USB Host port.
+- Hella only, on the left: the Bluetooth-side USB port, see Bluetooth.
 
-## Host Edition ports
+## USB Host port (Hella)
 
-The Host Edition, the Hella Edition and the Deluxe add USB Host ports, and the Deluxe adds more TRS ports. All of them route through the same routes.
+The Hella adds a USB Host port, always on the right. It takes up to 7 USB MIDI devices through up to 2 hubs. All of them route through the same routes.
 
-Up to seven USB devices work at once, whichever hub jacks they're plugged into. An eighth waits and starts working when a port frees up. Patchling shows only the USB Host ports there's room for. With no hub, that's one, for a device plugged straight in. With a hub it's the hub's jacks, up to seven, and the next port shows up once a device is plugged into the one before it. A hub made of more than one chip, or a hub plugged into a hub, works too. Seven devices on bus power is a lot for one USB supply, so power the hub if they don't all come up.
+Up to seven USB devices work at once, whichever hub jacks they're plugged into. An eighth waits and starts working when a port frees up. Patchling shows only the USB Host ports there's room for. With no hub, that's one, for a device plugged straight in. With a hub it's the hub's jacks, up to seven, and the next port shows up once a device is plugged into the one before it. A hub made of more than one chip, or a hub plugged into a hub (2 hubs in all), works too. Seven devices on bus power is a lot for one USB supply, so power the hub if they don't all come up.
 
 ## Bluetooth (planned)
 
-The Bluetooth Edition, the Hella Edition and the Deluxe add two kinds of Bluetooth port and a USB port on the Bluetooth module. Each has its own input and output switch on every route.
+The Hella adds two kinds of Bluetooth port and a Bluetooth-side USB port, always on the left. Each has its own input and output switch on every route.
 
 - **BLE Host:** a Bluetooth MIDI device the FoxWizard connects to, such as a keyboard. It works like a USB Host port.
-- **BLE Device:** the FoxWizard itself, showing up as a Bluetooth MIDI device to a phone or computer. It is one port, like the USB-C one.
-- **The module's USB port:** USB MIDI devices plugged into it play like the ones on the USB Host ports, on a hub too, as many as it can manage (about 2 or 3 through a hub, it is not guaranteed). The port needs power for the devices, so use a powered hub. Patchling's Bluetooth row has a **USB Port** setting, Host or Device. Device turns the port into a second device port instead of a host. The module restarts when you change it. If the host fails to start, the port falls back to Device by itself so the module can always be updated, and Patchling tells you.
+- **BLE Device:** the FoxWizard itself, showing up as a Bluetooth MIDI device to a phone or computer. It is one port, like the USB-C one. A computer plugged into the Bluetooth-side USB port (set to Device, below) uses this same port.
+- **The Bluetooth-side USB port:** USB MIDI devices plugged into it play like the ones on the USB Host port, up to 2 at once, on a hub too. A third is ignored until one of the two is gone and it is plugged in again. The port needs power for the devices, so use a powered hub. Patchling's Bluetooth row has a **USB Port** setting, Host or Device. Device turns the port into a USB MIDI device, so the FoxWizard shows up as a MIDI port named FoxWizard Bluetooth on a computer, and it never shows up as a serial port. Bluetooth restarts when you change it. The port never changes role by itself.
 
-The Bluetooth module's button (the small BOOT button on it) does the adding, and Patchling's Bluetooth row does the same with **Add Bluetooth Device**. There is nothing to choose between host and device, the other equipment decides which role the FoxWizard takes.
+Patchling's Bluetooth row also has a **Bluetooth Radio** setting, On or Off. Off turns Bluetooth off completely: nothing connects and phones cannot see the FoxWizard. Bluetooth restarts when you change it. The Bluetooth-side button does the same, see below.
+
+The Bluetooth-side button (the small one marked BOOT) adds and forgets Bluetooth devices, and Patchling's Bluetooth row adds them with **Add Bluetooth Device**. There is nothing to choose between host and device, the other equipment decides which role the FoxWizard takes.
 
 | What you do | What happens |
 |---|---|
 | Power on | Bluetooth devices you added before reconnect on their own. |
-| Hold 3 seconds, let go | Adds devices for a minute. A phone or computer can connect to BLE Device, and the FoxWizard connects to Bluetooth MIDI devices that are on and in pairing mode, up to the room there is. Each one is remembered when it connects. |
-| Short press | Stops adding early. |
-| Hold 10 seconds, let go | Forgets every Bluetooth device. |
+| Tap (let go within 1 second) | Adds devices for a minute, and the light blinks blue. Nothing that is connected is dropped. A phone or computer can connect to BLE Device, and the FoxWizard connects to Bluetooth MIDI devices that are on and in pairing mode, up to the room there is. Each one is remembered when it connects. Tap again to stop early. |
+| Hold until the light turns white | Turns Bluetooth off if it is on, and on if it is off. It switches when the light turns white, and you can let go any time after that. Let go before the white and nothing changes. |
+| Hold about 10 seconds | Forgets every Bluetooth device and leaves Bluetooth on. It happens when the red fade-out starts, and you can let go any time after that. Let go before it and nothing is forgotten. |
 
-The light on the module is off until something happens. It fades blue with Bluetooth MIDI, flashes green for a new connection and blinks blue while it is adding devices. While you hold the button it goes white at 3 seconds and red at 10, so you know what letting go will do. Right now the FoxWizard keeps up to 2 Bluetooth devices connected, plus BLE Device, and up to 4 devices in all on the module.
+The light is off until something happens. It fades blue with Bluetooth MIDI, flashes green for a new connection and blinks blue while it is adding devices. While you hold the button it shows how far along you are:
+
+- **Green flashes:** Bluetooth is almost on.
+- **Red flashes:** Bluetooth is almost off.
+- **White:** Bluetooth switched.
+- **Fast red blinking:** the Bluetooth devices are almost forgotten.
+- **Red fade-out:** every Bluetooth device is forgotten.
+
+Bluetooth restarts a moment after you let go. Right now the FoxWizard keeps up to 2 BLE Hosts connected, plus BLE Device, and the Bluetooth-side USB port takes up to 2 USB devices.
 
 ## Device slots and names (planned)
 
-With Bluetooth, USB Host and BLE Host devices, and USB devices on the module's own port, share the same 8 slots. The module's devices take slot 8 first, then USB Host 5 to 7 when nothing is plugged into those.
+USB Host devices, BLE Host devices and USB devices on the Bluetooth-side USB port share the same 8 slots. The Bluetooth-side devices take slot 8 first, then USB Host 5 to 7 when nothing is plugged into those.
 
 - Each slot remembers its device. A device you plug in or connect again gets its own slot back, so your routes keep working.
 - A new device takes a slot that has never been used, then the slot of the device that has been gone longest. Patchling tells you whose slot it took.
@@ -303,7 +311,7 @@ All the buttons are painted when a Launchpad first sends something to the FoxWiz
 
 ## Looper
 
-One loop, shared by the whole FoxWizard. Set Button Action to Looper, or use Note/CC to Feature and select Looper, or set a Looper Button trigger (a Note or CC, with Learn) in the Looper row.
+One loop, shared by the whole FoxWizard. The Looper needs something to activate it. For a one-button looper, press Learn in the Looper row, then press a key or button on your MIDI controller. Or set Button Action to Looper. For advanced controls, use CC to Feature or Note to Feature in a Route, or a Launchpad button set to Looper.
 
 | Setting | What it does |
 |---|---|
@@ -354,9 +362,9 @@ Hold Clears off swaps hold and double press.
 | Layer Redo | brings back the overdub layer removed most recently |
 | Double | the loop plays twice in a loop twice as long, ready to overdub something longer |
 | Half | plays the first half. Half then Double brings the original back. |
+| Note Delete | hold it and play notes to erase them from the loop, see below |
 
 With no loop yet, Double and Half change the Length the next take gets, 1 to 16 bars, and Free counts as 1 bar. Armed or recording at a set length, the take changes length right away. The change lasts until you Save to Device again. Either way, the lights blink the new number of bars.
-| Note Delete | hold it and play notes to erase them from the loop, see below |
 
 ### Held notes and the arp
 
@@ -392,18 +400,9 @@ On the unit, a preset switch is a Button Action of **Preset** (each press goes t
 
 A switch silences everything first, like Panic, and stops the loop (the loop itself stays). Then the preset is live and the lights flash the slot number, slower than the loop's bar count. Playing is not held up while they flash.
 
-Save to Device and Autosave save the preset in use. Changes you have not saved are dropped when you switch. Patchling asks first. Download Preset and Upload Preset work on the preset in use.
+Save to Device and Autosave save the preset in use. Changes you have not saved are dropped when you switch. Patchling asks first. The Presets button's Download and Upload work on the preset in use.
 
 The slot count, the slot in use, the lights brightness and the front button being Preset belong to the unit, not to a preset. The loop is the unit's, not a preset's. A Factory Reset deletes every preset.
-
-## AMY Synth and Audio Looper (Deluxe, planned)
-
-The Deluxe has a synth, a sampler and an audio looper built in, with audio in and out.
-
-- **AMY Synth:** a synth and sampler. Its notes come from your routes like any other MIDI output.
-- **Audio Looper:** records audio and layers it. Undo takes off the last layer, the same way the MIDI Looper's Layer Undo does.
-- **Samples:** AMY Synth plays very small audio files, mainly drum hits and simple sampled instruments. Load them from the AMY Synth row in Patchling over USB. They are small, so loading is quick enough.
-- **The AMY Synth row** only appears in Patchling when the connected unit has the synth and audio hardware.
 
 ## Configuring with Patchling
 
@@ -414,20 +413,33 @@ The Deluxe has a synth, a sampler and an audio looper built in, with audio in an
 
 Nothing is sent to the device until it's saved.
 
+With no FoxWizard connected, Patchling shows every port a FoxWizard could have, so you can build presets first. Once one is connected, Patchling hides the ports that FoxWizard does not have. The port settings stay in the preset.
+
+## Presets With No FoxWizard Connected
+
+With no FoxWizard connected, Patchling shows the same preset controls, Number of Preset Slots Total and the row of slot buttons, and keeps up to 16 presets in the browser you are using. Every change is kept as you make it, and the preset that was open comes back the next time you open Patchling in that browser. Presets, Download All saves all of them as one zip, which is also the backup, because clearing the browser's site data erases them.
+
+When a FoxWizard connects and you made presets without one, Patchling asks before anything is replaced. **Send to Unit** writes those presets into the same slots on the FoxWizard, which needs firmware 2.7 for more than one preset, and **Load from Unit** shows what the FoxWizard holds and leaves yours in the browser. Plugging the cable out keeps the preset on screen as the same slot.
+
 ## Preset Files
 
-- **Download Preset**: saves the current in-app state to an XML file.
-- **Upload Preset**: loads an XML file into the app. Save to Device afterward to push it to the hardware.
+The **Presets** button at the top of Patchling opens a window with two parts.
+
+- **This Preset, Download**: saves the preset on screen to an XML file.
+- **This Preset, Upload**: loads an XML file into the app. Save to Device afterward to push it to the hardware.
+- **Preset Name and Bundle Name**: Preset Name names the preset in use and also shows next to the slot buttons. Bundle Name names the whole set of presets. Both are up to 24 characters and the FoxWizard keeps them (firmware 2.8). A name is only a label. Upload fills a name from the file, and it reaches the FoxWizard when you Save to Device. Factory Reset clears every name.
+- **All Presets, Download All**: saves every saved preset on the FoxWizard to one zip, one XML file per slot, named by slot number and preset name. The zip is named after the bundle and also holds `bundle.txt` with the bundle name. The FoxWizard does not switch presets while it reads them. The preset open now is taken from the screen. Needs firmware 2.7 and 2 or more preset slots.
+- **All Presets, Upload All**: reads a zip like that and writes each file into its slot. Patchling lists the slots it will replace and asks first. Each preset takes the name in its file, and Bundle Name comes from `bundle.txt` when the zip has one. Other slots stay as they are. If the zip needs more slots than the FoxWizard has, Patchling raises Preset Slots in the same step. A file name that starts with a number is the slot, files without a number take the lowest free slots in order.
 
 ## Factory Reset
 
-Patchling's small Factory Reset button, at the bottom of the page while connected, asks once and then resets Mode, button action, brightness, features, all routes and all presets to factory defaults, and writes that to flash. Holding the button while plugging in does nothing.
+Patchling's small Factory Reset button, at the bottom of the page while connected, asks once and then resets Mode, button action, brightness, features, all routes and all presets to factory defaults, and writes that to flash. On a Hella it also forgets every Bluetooth device, turns Bluetooth on and sets the Bluetooth-side USB port to Host, so it is back to how it came. Holding the button while plugging in does nothing.
 
 ## Firmware Update
 
 When the FoxWizard connects, Patchling shows its firmware version in the badge at the top right.
 
-- Green: firmware is up to date. Click it to confirm.
+- Green: firmware is up to date. Click it to see the release before it and go back to it.
 - Yellow: an update is available. Patchling also asks when it connects.
 - Red: not connected. Click it to try connecting again.
 
@@ -437,6 +449,14 @@ Updates keep saved settings and routes.
 
 1. Click the yellow badge, then **Update Now**.
 2. Keep the board plugged in. It restarts by itself and reconnects.
+
+### The Hella's USB Host and Bluetooth sides
+
+A Hella updates its USB Host side and its Bluetooth side from the same yellow badge. One click on **Update Now** updates the whole Hella, with no buttons to press and nothing to short. Patchling lists what it will update, then does the FoxWizard first and each side after it. The USB Host side takes a few seconds and its USB devices come back by themselves. The Bluetooth side takes about a minute, and its Bluetooth devices reconnect when it is done. Keep the FoxWizard plugged in until the last message says the update is done.
+
+### Going back to the earlier firmware
+
+If the newest firmware gives you trouble, click the green badge, then **Go Back to** the earlier version. A Hella's USB Host and Bluetooth sides go back with it when the earlier release had its own for them. The earlier firmware may not read settings and presets saved by the newer one, so use Presets, Download All first to keep a copy. Patchling then offers the newest firmware again. The page [woz.lol/foxwizard-midi-multitool-firmware](https://woz.lol/foxwizard-midi-multitool-firmware/) keeps the earlier release too, along with separate files and steps for a Hella's USB Host side and Bluetooth side.
 
 ### Firmware 1.0 (once, by hand)
 
@@ -451,6 +471,24 @@ Updates keep saved settings and routes.
 
 The same steps recover a board from any firmware.
 
+## Troubleshooting
+
+### Nothing connects over Bluetooth
+
+Bluetooth may be switched off. In Patchling, set Bluetooth Radio to On. Without Patchling, hold the Bluetooth button until the light turns white, which switches Bluetooth between off and on.
+
+### My Bluetooth keyboard or other Bluetooth instrument will not connect to the FoxWizard
+
+A Bluetooth instrument usually stays connected to one phone or computer at a time, even one in another room. Look at every phone and computer you own, anywhere in the house, and tell each one to Forget the instrument in its Bluetooth settings. Then the FoxWizard should find it.
+
+### My phone or computer will not connect to the FoxWizard
+
+The FoxWizard stays connected to one phone or computer at a time. Another phone or computer, even one in another room, may already be connected to it. Look at every phone and computer you own and tell each one to Forget the FoxWizard in its Bluetooth settings. Then connect the one you want.
+
+### A USB device does not work on a USB Host port
+
+The FoxWizard may not be getting enough power. A computer or a phone may not give it enough. Plug it into a USB power adapter for the wall, or a battery pack, that is rated for more mA (milliamps). The mA number is printed on the adapter or battery, and a bigger number can supply more power.
+
 ## Technical documents
 
-For builders, not needed to use a FoxWizard: `Foxwizard Host Edition/README.md` (modules, pins, flashing), `SYSEX_PROTOCOL.md`, `DIAGNOSTICS.md` and `MIDI_2_PLAN.md`.
+For builders, not needed to use a FoxWizard. The project is on GitHub at [github.com/wozlol/Foxwizard](https://github.com/wozlol/Foxwizard): wiring, pins, flashing and recovery, the SysEx protocol, diagnostics and the MIDI 2.0 plan. It also covers the in-between versions, a FoxWizard with only the USB Host side or only the Bluetooth side.

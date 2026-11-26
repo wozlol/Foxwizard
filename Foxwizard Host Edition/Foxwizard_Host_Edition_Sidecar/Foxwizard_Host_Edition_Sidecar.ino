@@ -1,4 +1,13 @@
 /*
+  ARDUINO TOOLS SETTINGS, set these right before uploading. The build stops with the one to change if it can see a wrong one.
+  Board package: Raspberry Pi Pico/RP2040 (arduino-pico) 5.x. No library: TinyUSB and the updater are vendored in src/.
+    Board          Waveshare RP2040 Zero
+    Flash Size     2MB (Sketch: 1MB, FS: 1MB). The filesystem part holds the image while the main brain updates this module
+    USB Stack      Adafruit TinyUSB Host (native)
+    CPU Speed      200 MHz (the default)
+  Putting the module in upload mode: hold its BOOT button, plug in USB, let go, and upload (or drag the .uf2 onto the RPI-RP2 drive).
+*/
+/*
   Foxwizard_Host_Edition_Sidecar.ino by woz.lol
   FoxWizard Host Edition host brain: RP2040 native USB host for a 4-port hub, plus one DIN/TRS
   MIDI IN and five DIN/TRS MIDI OUTs, all bridged to the FoxWizard main brain over one serial link.
@@ -8,17 +17,13 @@
   ../README.md for the link frame format and the buffering rules.
 
   Wiring:
-  - GP28 = link TX to main brain GP28
-  - GP29 = link RX from main brain GP29
+  - GP28 = link TX to main brain GP26
+  - GP29 = link RX from main brain GP27
   - GP4  = DIN/TRS MIDI OUT 1 (UART1 TX)
   - GP5  = DIN/TRS MIDI IN (UART1 RX)
   - GP6, GP7, GP8, GP9 = DIN/TRS MIDI OUT 2-5 (PIO serial TX)
   - GP10, GP11, GP12, GP13 = hub port 1-4 status lights, active HIGH
   - Native USB = USB host, to the hub upstream port (or an OTG adapter for testing)
-
-  Arduino setup:
-  - Board: Waveshare RP2040-Zero
-  - Tools -> USB Stack = Adafruit TinyUSB Host (native)
 
   Status lights: on while a USB MIDI device is mounted on that hub port, blink off briefly on traffic.
 
@@ -46,6 +51,8 @@
 #include <hardware/clocks.h>
 #include <hardware/watchdog.h>
 #include "foxwizard_link.h"
+#include "src/ota/Updater.h" // vendored, see src/ota/VENDORED.md
+#include "src/ota/LittleFS.h"
 
 
 // ============================================================================================
@@ -66,7 +73,7 @@ constexpr uint8_t PIN_TRS_BOARD = 14; // floating (its internal pull-up): a bare
                                        // Tells the main brain whether TRS 2-6 physically exist.
 
 constexpr uint32_t DIN_BAUD = 31250;
-constexpr uint8_t HOST_FW_VERSION = 9; // 3: the host report. 4: chained hubs, hub and spare device reporting. 5: 64 endpoint slots, stack trace events. 6: 7 USB Host slots. 7: steadier TRS board pin read. 8: the link carries UMP. 9: device names, and slots held for Bluetooth devices
+constexpr uint8_t HOST_FW_VERSION = 11; // 3: the host report. 4: chained hubs, hub and spare device reporting. 5: 64 endpoint slots, stack trace events. 6: 7 USB Host slots. 7: steadier TRS board pin read. 8: the link carries UMP. 9: device names, and slots held for Bluetooth devices. 10: takes a firmware update from the main brain. 11: main brain link moved to its GP26 and GP27, only the wiring changed
 
 constexpr uint8_t HUB_PORTS = HOST_SLOTS; // USB Host slots, 7 from host firmware 6
 constexpr uint8_t LED_PORTS = 4;           // only the first four have a light on the board
@@ -682,11 +689,94 @@ void snapshotPortsForRestart() {
   }
 }
 
+// ============================================================================================
+// Firmware update from the main brain (host firmware 10), see foxwizard_link.h. The image is staged in the filesystem part of the
+// flash by the Updater and the bootloader installs it on the restart after the END block. While an update is open the USB host, the
+// DIN ports and the outputs are left alone, so nothing else is using the flash or the CPU, and 15 s of silence drops the update.
+// ============================================================================================
+UpdBlockReader updReader;
+bool updateOpen = false;
+uint16_t updateNextChunk = 0;
+uint32_t updateLastMs = 0;
+uint32_t updateRebootAtMs = 0;
+
+void updateReply(uint8_t cmd, uint8_t status, uint8_t extra) {
+  uint8_t pkt[4];
+  updControl(UPD_REPLY, cmd, status, extra, pkt);
+  sendToMain(LINK_PORT_CONTROL, pkt);
+}
+
+void updateBlock(UpdBlock &b) {
+  rp2040.wdt_reset();
+  updateLastMs = millis();
+  if (b.cmd == UPD_CMD_BEGIN) {
+    if (b.len < 19) { updateReply(b.cmd, UPD_BAD_BLOCK, 0); return; }
+    const uint32_t size = ((uint32_t)b.data[0] << 16) | ((uint32_t)b.data[1] << 8) | b.data[2];
+    char md5[33];
+    for (uint8_t i = 0; i < 16; ++i) {
+      md5[i * 2] = "0123456789abcdef"[b.data[3 + i] >> 4];
+      md5[i * 2 + 1] = "0123456789abcdef"[b.data[3 + i] & 15];
+    }
+    md5[32] = '\0';
+    if (Update.isRunning()) Update.end(false);
+    if (!Update.begin(size) || !Update.setMD5(md5)) { // the first one formats the update space
+      const uint8_t error = Update.getError();
+      if (Update.isRunning()) Update.end(false);
+      updateOpen = false;
+      updateReply(b.cmd, UPD_ERROR, error);
+      return;
+    }
+    fromMain.clear(); // nothing is dispatched while the update is open
+    updateOpen = true;
+    updateNextChunk = 0;
+    updateReply(b.cmd, UPD_OK, 0);
+  } else if (b.cmd == UPD_CMD_DATA) {
+    if (!updateOpen || !Update.isRunning() || b.len < 3) { updateReply(b.cmd, UPD_NOT_READY, 0); return; }
+    const uint16_t idx = (uint16_t)(((uint16_t)b.data[0] << 8) | b.data[1]);
+    if (updateNextChunk > 0 && idx == updateNextChunk - 1) { updateReply(b.cmd, UPD_OK, (uint8_t)idx); return; } // its reply was lost
+    if (idx != updateNextChunk) { updateReply(b.cmd, UPD_BAD_INDEX, (uint8_t)updateNextChunk); return; }
+    const uint8_t n = (uint8_t)(b.len - 2);
+    if (Update.write(b.data + 2, n) != n) { updateReply(b.cmd, UPD_ERROR, Update.getError()); return; }
+    ++updateNextChunk;
+    updateReply(b.cmd, UPD_OK, (uint8_t)idx);
+  } else if (b.cmd == UPD_CMD_END) {
+    if (!updateOpen || !Update.isRunning()) { updateReply(b.cmd, UPD_NOT_READY, 0); return; }
+    if (!Update.end()) { updateReply(b.cmd, UPD_ERROR, Update.getError()); return; } // checks the size and MD5, then stages the file
+    updateReply(b.cmd, UPD_OK, 0);
+    updateRebootAtMs = millis() + 300; // the bootloader installs it during this restart
+  }
+}
+
+void updateFrame(const uint8_t pkt[4]) {
+  const UpdBlockReader::Result r = updReader.feed(pkt);
+  if (r == UpdBlockReader::DONE) updateBlock(updReader.block);
+  else if (r == UpdBlockReader::BAD) updateReply(updReader.block.cmd, UPD_BAD_BLOCK, 0);
+}
+
+// While an update is open: the heartbeat that tells the main brain this module is here, the link out, and the silence timeout.
+void serviceUpdate() {
+  const uint32_t now = millis();
+  if (updateRebootAtMs && (int32_t)(now - updateRebootAtMs) >= 0) rp2040.reboot();
+  if (!updateRebootAtMs && now - updateLastMs > UPD_SILENCE_MS) { // dropped: a restart puts everything back as it was
+    if (Update.isRunning()) Update.end(false);
+    rp2040.reboot();
+  }
+  if (now - lastPortMapMs >= PORT_MAP_HEARTBEAT_MS) {
+    uint8_t mask = 0;
+    for (uint8_t p = 0; p < HUB_PORTS; ++p) if (hubPorts[p].mounted) mask |= 1 << hostMaskBit(p + 1);
+    if (trsBoard) mask |= 0x10;
+    uint8_t pkt[4] = {CONTROL_PORT_MAP, mask, HOST_FW_VERSION, 0};
+    sendToMain(LINK_PORT_CONTROL, pkt);
+    lastPortMapMs = now;
+  }
+  pumpLinkOut();
+}
+
 void pumpLinkIn() {
   uint16_t budget = LINK_RX_BUDGET;
   while (budget-- && Serial1.available() > 0) {
     // With fromMain nearly full, bytes stay in the 4 KB UART buffer instead of being dropped. A message is up to 4 frames.
-    if (fromMain.freeSlots(false) < 4) return;
+    if (!updateOpen && fromMain.freeSlots(false) < 4) return;
     if (!linkReader.feed((uint8_t)Serial1.read())) continue;
     uint32_t word;
     bool first;
@@ -701,6 +791,10 @@ void pumpLinkIn() {
         mainFlowMs = millis();
       } else if (type == CONTROL_BRIGHTNESS) {
         ledBrightnessStep = data > 10 ? 10 : data;
+      } else if (type == CONTROL_UPDATE) {
+        const uint8_t pkt[4] = {(uint8_t)(word >> 24), (uint8_t)(word >> 16), (uint8_t)(word >> 8), (uint8_t)word};
+        updateLastMs = millis();
+        updateFrame(pkt);
       } else if (type == CONTROL_SLOT_RESERVE) {
         const uint8_t before = reservedSlots;
         reservedSlots = data & 0x7F;
@@ -709,6 +803,7 @@ void pumpLinkIn() {
       }
       continue;
     }
+    if (updateOpen) continue; // MIDI is not used while the update is open
     if (first && isRealtimeWord(word)) { // goes straight out, as a packet, never behind other traffic
       const uint8_t pkt[4] = {(uint8_t)((fw::ump::group(word) << 4) | 0x0F), (uint8_t)(word >> 16), 0, 0};
       dispatchRealtime(port, pkt);
@@ -1205,6 +1300,13 @@ void loop() {
   loopStartUs = nowUs;
   blackBox.uptimeMs = millis();
   rp2040.wdt_reset();
+  if (updateOpen) { // only the link, see the update section
+    blackBox.stage = HOST_STAGE_LINK_IN;
+    pumpLinkIn();
+    blackBox.stage = HOST_STAGE_LINK_OUT;
+    serviceUpdate();
+    return;
+  }
   blackBox.stage = HOST_STAGE_USB_TASK;
   USBHost.task();
 

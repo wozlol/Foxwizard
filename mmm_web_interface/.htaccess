@@ -1,0 +1,7 @@
+# Patchling's pages and scripts are checked with the server on every load, so a published version reaches every browser at once.
+# The browser still keeps them and the server answers "not changed" when they are the same.
+<IfModule mod_headers.c>
+  <FilesMatch "\.(html|js|css|json|webmanifest)$">
+    Header set Cache-Control "no-cache"
+  </FilesMatch>
+</IfModule>
