@@ -25,34 +25,34 @@ Find your edition here. Everything in this manual applies to both editions unles
 | Edition | What it is |
 |---|---|
 | FoxWizard OG MkII | USB-C, one MIDI in and one MIDI out. Each has three ways to plug in: a 3.5mm TRS-A jack, a 3.5mm TRS-B jack and a Half-DIN port for classic DIN. |
-| Hella | The OG MkII plus a USB Host port on the right and Bluetooth, with its own USB port, on the left. |
+| Hella | The OG MkII plus a left USB port that switches between Host and Device, a right USB Host port, and Bluetooth MIDI. |
 
 ## Connections
 
-- USB-C: connects to a computer or USB MIDI host.
+- USB-C: a Device port. Connects to a computer or USB MIDI host.
 - MIDI IN: one input with three ways to plug in. A 3.5mm TRS-A jack, a 3.5mm TRS-B jack, or the Half-DIN port for a classic DIN cable.
 - MIDI OUT: one output with three ways to plug in. A 3.5mm TRS-A jack, a 3.5mm TRS-B jack, or the Half-DIN port for a classic DIN cable.
 - Button: single multi-function button.
-- Hella only, on the right: the USB Host port, see USB Host port.
-- Hella only, on the left: the Bluetooth-side USB port, see Bluetooth.
+- Hella only, left USB port: switches between Host and Device. As a Host it takes up to 2 USB MIDI devices. See Bluetooth.
+- Hella only, right USB port: a Host. It takes up to 7 USB MIDI devices over 2 chained hubs. See USB Host port.
 
 ## USB Host port (Hella)
 
-The Hella adds a USB Host port, always on the right. It takes up to 7 USB MIDI devices through up to 2 hubs. All of them route through the same routes.
+The right USB port is a Host. It takes up to 7 USB MIDI devices over 2 chained hubs, all through the same routes.
 
-Up to seven USB devices work at once, whichever hub jacks they're plugged into. An eighth waits and starts working when a port frees up. Patchling shows only the USB Host ports there's room for. With no hub, that's one, for a device plugged straight in. With a hub it's the hub's jacks, up to seven, and the next port shows up once a device is plugged into the one before it. A hub made of more than one chip, or a hub plugged into a hub (2 hubs in all), works too. Seven devices on bus power is a lot for one USB supply, so power the hub if they don't all come up.
+Up to seven USB devices work at once, whichever hub jacks they are plugged into. An eighth waits and starts working when a port frees up. Patchling shows only the USB Host ports there is room for. Seven devices on bus power is a lot for one USB supply, so power the hub if they do not all come up.
 
 ## Bluetooth
 
-The Hella adds two kinds of Bluetooth port and a Bluetooth-side USB port, always on the left. Each has its own input and output switch on every route.
+The Hella has Bluetooth MIDI. It hosts up to 2 Bluetooth devices and can also show up as a device to a phone or computer. Each has its own input and output switch on every route.
 
 - **BLE Host:** a Bluetooth MIDI device the FoxWizard connects to, such as a keyboard. It works like a USB Host port.
-- **BLE Device:** the FoxWizard itself, showing up as a Bluetooth MIDI device to a phone or computer. It is one port, like the USB-C one. A computer plugged into the Bluetooth-side USB port (set to Device, below) uses this same port.
-- **The Bluetooth-side USB port:** USB MIDI devices plugged into it play like the ones on the USB Host port, up to 2 at once, on a hub too. A third is ignored until one of the two is gone and it is plugged in again. The port needs power for the devices, so use a powered hub. Patchling's Bluetooth row has a **USB Port** setting, Host or Device. Device turns the port into a USB MIDI device, so the FoxWizard shows up as a MIDI port named FoxWizard Bluetooth on a computer, and it never shows up as a serial port. Bluetooth restarts when you change it. The port never changes role by itself.
+- **BLE Device:** the FoxWizard itself, showing up as a Bluetooth MIDI device to a phone or computer. It is one port, like the USB-C one. A computer plugged into the left USB port (set to Device, below) uses this same port.
+- **The left USB port:** switches between Host and Device with the **USB Port** setting in Patchling's Bluetooth row. As a Host it plays up to 2 USB MIDI devices, on a hub too. A third waits until one is unplugged. Use a powered hub for devices that need power. As a Device the FoxWizard shows up on a computer as a MIDI port named FoxWizard Bluetooth. Bluetooth restarts when you change it. The port never changes role by itself.
 
-Patchling's Bluetooth row also has a **Bluetooth Radio** setting, On or Off. Off turns Bluetooth off completely: nothing connects and phones cannot see the FoxWizard. Bluetooth restarts when you change it. The Bluetooth-side button does the same, see below.
+Patchling's Bluetooth row also has a **Bluetooth Radio** setting, On or Off. Off turns Bluetooth off completely: nothing connects and phones cannot see the FoxWizard. Bluetooth restarts when you change it. The Bluetooth button does the same, see below.
 
-The Bluetooth-side button (the small one marked BOOT) adds and forgets Bluetooth devices, and Patchling's Bluetooth row adds them with **Add Bluetooth Device**. There is nothing to choose between host and device, the other equipment decides which role the FoxWizard takes.
+The Bluetooth button (the small one marked BOOT) adds and forgets Bluetooth devices, and Patchling's Bluetooth row adds them with **Add Bluetooth Device**. There is nothing to choose between host and device, the other equipment decides which role the FoxWizard takes.
 
 | What you do | What happens |
 |---|---|
@@ -69,11 +69,11 @@ The light is off until something happens. It fades blue with Bluetooth MIDI, fla
 - **Fast red blinking:** the Bluetooth devices are almost forgotten.
 - **Red fade-out:** every Bluetooth device is forgotten.
 
-Bluetooth restarts a moment after you let go. Right now the FoxWizard keeps up to 2 BLE Hosts connected, plus BLE Device, and the Bluetooth-side USB port takes up to 2 USB devices.
+Bluetooth restarts a moment after you let go. Right now the FoxWizard keeps up to 2 BLE Hosts connected, plus BLE Device, and the left USB port takes up to 2 USB devices.
 
 ## Device slots and names
 
-USB Host devices, BLE Host devices and USB devices on the Bluetooth-side USB port share the same 8 slots. The Bluetooth-side devices take slot 8 first, then USB Host 5 to 7 when nothing is plugged into those.
+USB Host devices, BLE Host devices and USB devices on the left USB port share the same 8 slots. The left USB port and Bluetooth devices take slot 8 first, then USB Host 5 to 7 when nothing is plugged into those.
 
 - Each slot remembers its device. A device you plug in or connect again gets its own slot back, so your routes keep working.
 - A new device takes a slot that has never been used, then the slot of the device that has been gone longest. Patchling tells you whose slot it took.
@@ -433,7 +433,7 @@ The **Presets** button at the top of Patchling opens a window with two parts.
 
 ## Factory Reset
 
-Patchling's small Factory Reset button, at the bottom of the page while connected, asks once and then resets Mode, button action, brightness, features, all routes and all presets to factory defaults, and writes that to flash. On a Hella it also forgets every Bluetooth device, turns Bluetooth on and sets the Bluetooth-side USB port to Host, so it is back to how it came. Holding the button while plugging in does nothing.
+Patchling's small Factory Reset button, at the bottom of the page while connected, asks once and then resets Mode, button action, brightness, features, all routes and all presets to factory defaults, and writes that to flash. On a Hella it also forgets every Bluetooth device, turns Bluetooth on and sets the left USB port to Host, so it is back to how it came. Holding the button while plugging in does nothing.
 
 ## Firmware Update
 
@@ -450,13 +450,13 @@ Updates keep saved settings and routes.
 1. Click the yellow badge, then **Update Now**.
 2. Keep the board plugged in. It restarts by itself and reconnects.
 
-### The Hella's USB Host and Bluetooth sides
+### Updating a Hella
 
-A Hella updates its USB Host side and its Bluetooth side from the same yellow badge. One click on **Update Now** updates the whole Hella, with no buttons to press and nothing to short. Patchling lists what it will update, then does the FoxWizard first and each side after it. The USB Host side takes a few seconds and its USB devices come back by themselves. The Bluetooth side takes about a minute, and its Bluetooth devices reconnect when it is done. Keep the FoxWizard plugged in until the last message says the update is done.
+A Hella updates everything from the same yellow badge. One click on **Update Now** updates the whole Hella, with no buttons to press and nothing to short. Patchling lists what it will update, then does the FoxWizard first and the rest after it. The USB devices on the Host port come back by themselves after a few seconds. Bluetooth takes about a minute, and its devices reconnect when it is done. Keep the FoxWizard plugged in until the last message says the update is done.
 
 ### Going back to the earlier firmware
 
-If the newest firmware gives you trouble, click the green badge, then **Go Back to** the earlier version. A Hella's USB Host and Bluetooth sides go back with it when the earlier release had its own for them. The earlier firmware may not read settings and presets saved by the newer one, so use Presets, Download All first to keep a copy. Patchling then offers the newest firmware again. The page [woz.lol/foxwizard-midi-multitool-firmware](https://woz.lol/foxwizard-midi-multitool-firmware/) keeps the earlier release too, along with separate files and steps for a Hella's USB Host side and Bluetooth side.
+If the newest firmware gives you trouble, click the green badge, then **Go Back to** the earlier version. A Hella's Bluetooth and USB Host parts go back with it when the earlier release had its own for them. The earlier firmware may not read settings and presets saved by the newer one, so use Presets, Download All first to keep a copy. Patchling then offers the newest firmware again. The page [woz.lol/foxwizard-midi-multitool-firmware](https://woz.lol/foxwizard-midi-multitool-firmware/) keeps the earlier release too, along with separate files and steps for updating a Hella's USB Host port and Bluetooth by hand.
 
 ### Firmware 1.0 (once, by hand)
 
