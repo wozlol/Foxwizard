@@ -491,4 +491,4 @@ The FoxWizard may not be getting enough power. A computer or a phone may not giv
 
 ## Technical documents
 
-For builders, not needed to use a FoxWizard. The project is on GitHub at [github.com/wozlol/Foxwizard](https://github.com/wozlol/Foxwizard): wiring, pins, flashing and recovery, the SysEx protocol, diagnostics and the MIDI 2.0 plan. It also covers the in-between versions, a FoxWizard with only the USB Host side or only the Bluetooth side.
+You do not need any of this to use a FoxWizard. It is for people who want to build one or work on the firmware. The project is on GitHub at [github.com/wozlol/Foxwizard](https://github.com/wozlol/Foxwizard). It has the wiring, pins, flashing and recovery steps, the SysEx protocol, diagnostics and the MIDI 2.0 plan. It also covers the in-between versions that have only the USB Host side or only the Bluetooth side.
